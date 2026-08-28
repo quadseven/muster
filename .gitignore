@@ -1,0 +1,14 @@
+local.properties
+.gradle/
+build/
+*.iml
+.venv/
+__pycache__/
+.pytest_cache/
+
+# The agent APK, downloaded into the build context by build.server-image.yml.
+# Never committed: it is a build output of the mac mini, not source.
+server/agent/
+
+# Claude Code session-tooling checkpoints: local resume artifacts, not source.
+.claude/

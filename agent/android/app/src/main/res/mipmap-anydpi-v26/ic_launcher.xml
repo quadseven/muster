@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon. The foreground is the full plate, inset to 85% so the mark
+  stays inside the 66dp safe zone of the 108dp layer - a launcher crops a third
+  of this layer away, and artwork drawn to the edge loses its corners to the
+  mask on exactly the devices that use the roundest one.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

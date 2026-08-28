@@ -1,0 +1,276 @@
+name: build - server image
+
+# Builds AND PUBLISHES the control plane image to GHCR.
+#
+# WHY GHCR AND NOT THE IN-CLUSTER REGISTRY. Pushing to the operator's
+# in-cluster registry needs the push password at SSM
+# /infra/cluster/registry/push_pass, and a repo
+# does not get to mint its own deploy credentials. GHCR needs no credential at
+# all - GITHUB_TOKEN plus `packages: write` - and infra-public's own standard
+# asks for it in preference to the self-hosted registry. quadseven/zippie
+# reached the same conclusion in build.clienthome-image.yml after evaluating all
+# three; this follows that rather than re-deciding it.
+#
+# THE CONSEQUENCE, stated rather than discovered at deploy time: muster is a
+# PRIVATE repo, so the package is private, so pulling it into k8s-oke needs an
+# imagePullSecret in the muster namespace.
+#
+# ONE IMMUTABLE TAG PER COMMIT. `sha-<12>`, no :latest, no :main. A mutable tag
+# makes "what is running" unanswerable, which is the question a control plane
+# holding a CA should never be vague about.
+
+#
+# THE IMAGE CARRIES THE AGENT APK. /agent.apk serves bytes and /agent.json
+# advertises the SHA-256 of the certificate those bytes are signed with, and the
+# two MUST describe the same file: a QR whose checksum does not match the
+# download fails on a phone that has already been wiped, reported by Android as
+# a generic setup failure. Shipping them as one artifact makes that skew
+# impossible rather than unlikely. The APK is built on the mac mini by
+# check.agent-android.yml - this workflow only distributes it.
+
+on:
+  pull_request:
+    paths:
+      - 'server/**'
+      - '.github/workflows/build.server-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/build.server-image.yml'
+  # A new agent must reach the server that serves it. Without this, merging an
+  # agent change rebuilds the APK and nothing ever picks it up, and the endpoint
+  # keeps serving the previous one indefinitely - silently, since both are valid.
+  workflow_run:
+    workflows: ["agent - android"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  # Reading an artifact from ANOTHER workflow's run needs this.
+  actions: read
+
+concurrency:
+  group: server-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: server image (build + publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve image ref and whether to publish
+        id: meta
+        env:
+          OWNER: ${{ github.repository_owner }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/muster-server"
+          sha="${PR_HEAD_SHA:-$GITHUB_SHA}"
+
+          # The tag must name the tree that was built. If the checkout resolved
+          # to something else, a later reader tracing a digest back to a commit
+          # would be led to the wrong source.
+          head="$(git rev-parse HEAD)"
+          if [ "$head" != "$sha" ]; then
+            echo "::error::checked out $head but would tag $sha"
+            exit 1
+          fi
+
+          publish=true
+          if [ -n "$PR_HEAD_REPO" ] && [ "$PR_HEAD_REPO" != "$THIS_REPO" ]; then
+            publish=false
+            echo "fork PR ($PR_HEAD_REPO): building without publishing"
+          fi
+
+          {
+            echo "image=$image"
+            echo "tag=sha-${sha:0:12}"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          echo "will build $image:sha-${sha:0:12} (publish=$publish)"
+
+      - name: Find the newest agent APK the mini published
+        id: apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Always the newest SUCCESSFUL build on main, whatever triggered this.
+        # On a workflow_run that is the build which just finished; on a
+        # server-only push it is whatever the agent last published, which is
+        # correct - the agent did not change, so re-serving it is the answer.
+        #
+        # curl and python3 rather than `gh`: a self-hosted runner is not
+        # guaranteed to have the gh CLI, and discovering that here would be a
+        # red build for a reason unrelated to the change.
+        run: |
+          set -euo pipefail
+          runs="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/check.agent-android.yml/runs"
+          run_id="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      "$runs?branch=main&status=success&per_page=1" \
+                    | python3 -c 'import json,sys; r=json.load(sys.stdin)["workflow_runs"]; print(r[0]["id"] if r else "")')"
+          if [ -z "$run_id" ]; then
+            echo "::error::no successful agent build on main - there is no APK to serve, and an image without one publishes a server whose provisioning QR points at a 404"
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "::notice::baking the APK from agent build run $run_id"
+
+      - uses: actions/download-artifact@v4
+        with:
+          # A PATTERN, NOT A NAME, AND THE REASON IS THE CHANGEOVER ITSELF.
+          #
+          # This step reads an artifact from the newest successful agent build
+          # ON MAIN, which for any PR is a run that predates that PR. Renaming
+          # the artifact therefore breaks this workflow for every build between
+          # the rename landing here and the first agent build on main carrying
+          # the new name - including the PR that does the renaming, which is how
+          # this was found.
+          #
+          # Matching both names spans the changeover. It is safe beyond it too:
+          # an agent run publishes exactly one APK artifact, so the pattern can
+          # only ever resolve to that one.
+          pattern: muster-agent-*apk
+          merge-multiple: true
+          run-id: ${{ steps.apk.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: server/agent
+
+      - name: Name it what the image expects
+        working-directory: server/agent
+        # The Dockerfile COPYs this exact path, so a rename that silently did
+        # not happen fails the build rather than producing an image with no APK.
+        run: |
+          set -euo pipefail
+          # WHICHEVER APK THE AGENT BUILD SHIPPED. It emits app-release.apk when
+          # the signing keystore is configured and app-debug.apk when it is not,
+          # and this workflow must not care which - it bakes what it was given.
+          # Globbing on one hardcoded name would break the day the ceremony is
+          # performed, which is the one day nobody wants a broken image.
+          # FLATTEN FIRST, AT ANY DEPTH. This step also consumes artifacts
+          # from OLDER agent runs, whose archive root depended on the path list
+          # that built them, so what arrives here is not reliably at the top.
+          # A depth assumption here failed silently once already - see the
+          # staging comment in check.agent-android.yml.
+          find . -mindepth 2 -type f \( -name '*.apk' -o -name 'agent-version.txt' \) \
+            -exec mv -f {} . \;
+          APK="$(find . -maxdepth 1 -name '*.apk' | head -1)"
+          [ -n "$APK" ] || { echo "::error::the agent artifact carried no APK"; exit 1; }
+          mv "$APK" muster-agent.apk
+          ls -l muster-agent.apk
+          # OLDER ARTIFACTS HAVE NO VERSION FILE, because this workflow can bake
+          # an APK from an agent build that predates the stamp - which is
+          # exactly the run that ships the FIRST versioned agent. Absent means
+          # "muster does not know", and /agent.json omits it rather than
+          # claiming a number; a fabricated 0 would read as an agent older than
+          # every device, and every handset would try to downgrade to it.
+          if [ -f agent-version.txt ]; then
+            echo "::notice::agent versionCode $(cat agent-version.txt)"
+          else
+            echo "::warning::this agent build predates the version stamp; the image will not advertise a versionCode"
+            : > agent-version.txt
+          fi
+
+      - name: Log in to GHCR
+        if: steps.meta.outputs.publish == 'true'
+        run: echo "${{ github.token }}" | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: Build
+        working-directory: server
+        run: docker build -t '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}' .
+
+      - name: The image must refuse to start without administrator sign-in
+        # THE property worth testing on the built artifact rather than in a unit
+        # test: app_from_env raises when no OIDC provider is configured, and the
+        # container must therefore exit non-zero. If a future change made that a
+        # warning, the pod would come up serving an OPEN admin console and
+        # nothing would be red. This is the check that notices.
+        run: |
+          set -euo pipefail
+          if docker run --rm '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}' \
+               python -c "from muster.api import app_from_env; app_from_env()" 2>/dev/null; then
+            echo "::error::the image started with no administrator sign-in configured - it would serve an open admin console"
+            exit 1
+          fi
+          echo "::notice::the image refuses to start without an admin token"
+
+      - name: The kith store's driver must actually load inside the image
+        # THE silent failure of the kith store, made red here instead.
+        #
+        # psycopg is imported LAZILY (server/muster/kith.py) so that a machine
+        # without libpq can still run the tests and the CLI. The cost of that is
+        # exactly this: an image built without libpq comes up perfectly healthy,
+        # passes both probes, issues certificates - and defers every single kith
+        # write forever, with /readyz the only place that says so.
+        #
+        # musl is the specific risk. psycopg publishes no musllinux binary
+        # wheels, so this alpine image runs the pure-Python implementation and
+        # needs libpq present at RUNTIME, from `apk add`. A base image bump that
+        # dropped it would not fail the build.
+        #
+        # Proven by CONNECTING to a port with nothing on it: ImportError would
+        # mean libpq is missing, OperationalError means the driver loaded and
+        # did its job. Anything succeeding means the test itself is wrong.
+        run: |
+          set -euo pipefail
+          docker run --rm '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}' python -c '
+          import datetime as dt
+
+          # THE GATE. A missing or unloadable libpq dies right here, which is
+          # the whole point - everything below would otherwise pass without the
+          # driver ever having worked.
+          import psycopg
+
+          from muster.kith import NoConnection, PostgresRecords
+
+          records = PostgresRecords("postgresql://muster:x@127.0.0.1:1/muster", timeout_s=2)
+          try:
+              records.record_seen("nobody", dt.datetime.now(dt.timezone.utc))
+          except NoConnection as refused:
+              # The store wraps EVERY connect-phase failure, an ImportError
+              # among them, so the class alone proves nothing. What it wrapped
+              # has to be a refused connection and not a driver that would not
+              # load - see NoConnection in muster/kith.py for why it wraps at
+              # all.
+              if "OperationalError" not in str(refused):
+                  raise SystemExit(f"expected a refused connection, got: {refused}")
+              print("psycopg loaded; the connection was refused as expected:", refused)
+          else:
+              raise SystemExit("something answered on a port with nothing on it")
+          '
+          echo "::notice::psycopg loads against libpq inside the image"
+
+      - name: The baked APK must have a certificate we can read
+        # Computed from the bytes that shipped, inside the image that shipped
+        # them. provisioning.signature_checksum raises NotSigned for an APK that
+        # is unsigned or signed only with v2/v3, and that APK cannot be
+        # provisioned - the QR's checksum is of the v1 signing certificate.
+        # Discovering it here costs a red build; discovering it on the handset
+        # costs a wipe, and Android reports it only as "can't set up device".
+        run: |
+          set -euo pipefail
+          sum="$(docker run --rm '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}' \
+                   python -c "from muster import provisioning; print(provisioning.signature_checksum('/app/agent/muster-agent.apk'))")"
+          [ -n "$sum" ] || { echo "::error::no checksum came back from the baked APK"; exit 1; }
+          echo "::notice::baked APK signing-certificate checksum: $sum"
+          echo "APK signing-certificate checksum: \`$sum\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push
+        if: steps.meta.outputs.publish == 'true'
+        run: |
+          docker push '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}'
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' '${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}')"
+          echo "::notice::published $digest"
+          echo "$digest" >> "$GITHUB_STEP_SUMMARY"

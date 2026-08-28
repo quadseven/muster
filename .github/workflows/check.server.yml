@@ -1,0 +1,63 @@
+name: server
+
+# The enrollment exchange and the provisioning preflight are the two places
+# muster decides something, and both are pure logic behind an injected seam
+# precisely so they can be tested with no device and no network. That only
+# counts for anything if the tests run on every change, so this workflow is what
+# makes them a gate rather than a habit.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'agent/android/app/src/main/AndroidManifest.xml'
+      - 'agent/android/app/build.gradle.kts'
+      - '.github/workflows/check.server.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - 'agent/android/app/src/main/AndroidManifest.xml'
+      - 'agent/android/app/build.gradle.kts'
+      - '.github/workflows/check.server.yml'
+  workflow_dispatch:
+
+# The Android manifest and build file are watched deliberately. One test here
+# asserts the admin component string in provision.py still matches what the APK
+# actually ships - rename the receiver without that test running and the mismatch
+# surfaces on a wiped phone with a cable in hand.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: server tests
+    # SELF-HOSTED, AND THIS JOB RUNS ON `pull_request` TOO - so a PR's own
+    # `pytest` invocation, and anything its own test/conftest code does, runs
+    # on shared household hardware before that PR has been reviewed. This job
+    # holds no release-signing secrets, but it is the same self-hosted-runner
+    # class of risk that docs/signing-ceremony.md writes up in full for
+    # check.agent-android.yml ("Residual risk, accepted 2026-08-23", tracked as
+    # muster#89) - accepted on the same grounds (private repo, no outside
+    # contributors) and due the same revisit once that stops being true.
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: pytest
+        # --python 3.12 pinned rather than whatever the runner happens to have:
+        # the mini currently carries 3.14, and a test suite that silently moves
+        # interpreter when homebrew updates is a suite that fails for reasons
+        # nobody changed.
+        run: uv run --group dev --python 3.12 python -m pytest -q

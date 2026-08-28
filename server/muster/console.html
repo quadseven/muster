@@ -1,0 +1,1046 @@
+<!--
+  The administrator's console.
+
+  ONE FILE, NO BUILD, NO DEPENDENCIES. This is served by the same process that
+  holds the CA. A build step here would mean node on the path of the thing that
+  signs certificates, and a framework would mean a supply chain reaching the
+  same box - for a page that lists a handful of rows and draws one QR.
+
+  NOTHING IS LOADED FROM ANYWHERE ELSE, and the response header enforces it
+  rather than trusting this comment: see `_csp` in console.py, and
+  docs/observability.md for why this particular page takes no third-party
+  script. `__CSP_NONCE__` is replaced per response; the style and script tags
+  below are the only two things the policy permits to run.
+
+  THE DESIGN CONSTRAINT: this page must make the operator LOOK AT THE
+  FINGERPRINT. The whole security model is that a vouch is a comparison between
+  two screens; a one-click Approve button turns it into a comparison between a
+  human and their own impatience. So approving is deliberately two steps, and
+  the second one shows the fingerprint alone with nothing else to click.
+
+  THE SECOND CONSTRAINT, AND IT IS THE PROVISIONING SECTION'S WHOLE SHAPE: a
+  person scans that QR off this monitor with a phone camera, at arm's length,
+  standing up. Size and quiet zone beat layout every time - which is why the QR
+  is drawn as large as the panel allows, why there is a full-screen view, and
+  why the image carries its own white rather than borrowing the page's.
+
+  A QR IS OPAQUE, so what it commits to is printed beside it: the download URL,
+  the signing-certificate checksum and the server address the device will enroll
+  against. The checksum is the field that decides whether a wiped phone
+  provisions or factory resets itself, and it is checked against /agent.json
+  before the image is drawn - a stale copy of either, from any cache anywhere,
+  and this refuses to show a QR rather than showing one that wipes a handset.
+
+  THERE IS NO PAIRING QR HERE ANY MORE. This page used to draw one "so a freshly
+  provisioned device needs neither typed at it", and nothing on a device could
+  read it: the agent declares no CAMERA permission and contains no scanner. A QR
+  that cannot be scanned teaches an operator to hold a phone up and wait for
+  something that will never happen.
+
+  A code THIS page mints is typed on the handset. The other way a device gets
+  one is inside the provisioning QR below, which Android's setup wizard reads on
+  a wiped phone - so that code is never on this page at all, and the device
+  presents itself with nobody touching it (muster#48).
+
+  THE PALETTE AND THE TYPE SCALE COME FROM docs/brand.md and nowhere else.
+  Amber appears twice on any view - the middle plate of the mark, and the dot on
+  the section you are in - because the study uses it as an accent and it stops
+  being one the moment it fills something.
+
+  LIGHT ONLY, deliberately. The study records one palette. A dark variant would
+  be five colors nobody has chosen, and inventing brand is exactly what the
+  last section of docs/brand.md warns about.
+
+  WHAT IS NOT HERE, AND WHY, also from docs/brand.md: no total/online/offline
+  counts, because muster has no concept of a device being online - lapse is the
+  revocation mechanism BECAUSE devices sit unreachable for days, so "12 Offline"
+  in red would report a healthy estate as broken. No platform breakdown, because
+  muster manages Android. No posture or compliance, because no such data is
+  collected. An empty section that says what will be there beats a number that
+  is always wrong.
+-->
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muster</title>
+<style nonce="__CSP_NONCE__">
+  :root {
+    color-scheme: light;
+    /* docs/brand.md */
+    --charcoal: #1D1F23;
+    --amber: #FFB703;
+    --warm-white: #FAF7F2;
+    --mist: #E9ECEF;
+    --stone: #6B7280;
+    --panel: #FFFFFF;
+
+    /* The type scale, as given. Satoshi is the face; the fallback is the
+       system stack because the license has not been checked for serving a
+       webfont from our own origin, and fetching one from anybody else's is
+       the third-party request this page exists without. */
+    --face: Satoshi, ui-sans-serif, -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --h1: 48px; --h2: 32px; --h3: 24px; --body: 16px; --caption: 12px;
+  }
+  * { box-sizing: border-box; }
+  /* `hidden` has to win. Every rule below that sets `display` on a class would
+     otherwise override the attribute's default and the element stays on screen
+     while the script believes it is gone. */
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--warm-white); color: var(--charcoal);
+    font: 400 var(--body)/1.6 var(--face);
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
+  h1 { font-size: var(--h1); font-weight: 700; line-height: 1.1; }
+  h2 { font-size: var(--h2); font-weight: 600; line-height: 1.2; }
+  h3 { font-size: var(--h3); font-weight: 500; line-height: 1.3; }
+  p { margin: 0; }
+  .caption { font-size: var(--caption); color: var(--stone); letter-spacing: .02em; }
+  .muted { color: var(--stone); }
+
+  /* ---- the bar ---- */
+  header {
+    border-bottom: 1px solid var(--mist); background: var(--panel);
+    position: sticky; top: 0; z-index: 2;
+  }
+  .bar {
+    max-width: 62rem; margin: 0 auto; padding: .9rem 1.25rem;
+    display: flex; align-items: center; gap: 1rem;
+  }
+  .wordmark { display: flex; align-items: center; gap: .6rem; font-weight: 600; }
+  .wordmark svg { display: block; }
+  nav { display: flex; gap: .25rem; margin-left: 1rem; flex: 1; flex-wrap: wrap; }
+  nav button {
+    font: inherit; font-size: .95rem; color: var(--stone); background: none;
+    border: 0; border-radius: .4rem; padding: .45rem .7rem; cursor: pointer;
+    display: flex; align-items: center; gap: .45rem;
+  }
+  nav button:hover { color: var(--charcoal); background: var(--warm-white); }
+  nav button[aria-current="page"] { color: var(--charcoal); font-weight: 500; }
+  /* The one accent, on the one section you are in. */
+  nav button::before {
+    content: ""; width: .4rem; height: .4rem; border-radius: 50%;
+    background: transparent;
+  }
+  nav button[aria-current="page"]::before { background: var(--amber); }
+  .who { display: flex; align-items: center; gap: .75rem; font-size: .9rem; }
+
+  /* ---- the page ---- */
+  main { max-width: 62rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; }
+  .lede { margin: 0 0 1.75rem; }
+  .lede p { color: var(--stone); margin-top: .4rem; }
+  section[hidden] { display: none; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--mist); border-radius: .7rem;
+    padding: 1.4rem 1.5rem; margin-bottom: 1.25rem;
+  }
+  .panel > h3 + p { margin-top: .35rem; }
+  .stack { display: flex; flex-direction: column; gap: 1.25rem; }
+
+  /* Not `button.action`: the sign-in control is an <a>, because it navigates.
+     A selector that only matched buttons left it rendering as a bare link. */
+  .action {
+    font: inherit; font-size: .95rem; font-weight: 500;
+    padding: .6rem 1.1rem; border-radius: .45rem;
+    border: 1px solid var(--mist); background: var(--panel);
+    color: var(--charcoal); cursor: pointer;
+    text-decoration: none; display: inline-block; line-height: 1.4;
+  }
+  .action:hover { border-color: var(--stone); }
+  .action.primary {
+    background: var(--charcoal); border-color: var(--charcoal); color: var(--warm-white);
+  }
+  .action.primary:hover { opacity: .9; }
+  .action:disabled { opacity: .45; cursor: not-allowed; }
+  .actions { display: flex; gap: .6rem; justify-content: flex-end; margin-top: 1.4rem; }
+
+  .code {
+    font: 700 var(--h1)/1.1 var(--mono); letter-spacing: .16em;
+    margin: .6rem 0 .2rem;
+  }
+  .fp {
+    font: 500 1.05rem/1.7 var(--mono); letter-spacing: .06em; word-spacing: .4em;
+  }
+  /* Under the fingerprint, quiet but present: how this request got here decides
+     what the fingerprint above it is worth. Not a colored badge - it is a fact
+     about the row, not a warning, and a red pill beside every QR-provisioned
+     device would be an alarm nobody can act on. */
+  .shape { font-size: .82rem; letter-spacing: .02em; }
+  .row {
+    display: flex; gap: 1rem; align-items: center; justify-content: space-between;
+    padding: 1rem 0; border-bottom: 1px solid var(--mist);
+  }
+  .row:last-child { border-bottom: 0; }
+  .empty {
+    border: 1px dashed var(--mist); border-radius: .6rem;
+    padding: 1.6rem; color: var(--stone); background: var(--warm-white);
+  }
+  .empty strong { color: var(--charcoal); font-weight: 500; }
+  .empty ul { margin: .7rem 0 0; padding-left: 1.1rem; }
+  .empty li { margin: .2rem 0; }
+  dl { margin: 0; display: grid; grid-template-columns: 12rem 1fr; gap: .5rem 1rem; }
+  dt { color: var(--stone); font-size: .9rem; }
+  dd { margin: 0; font-size: .9rem; overflow-wrap: anywhere; }
+
+  /* ---- the two-step vouch ---- */
+  dialog {
+    border: 1px solid var(--mist); border-radius: .7rem; background: var(--panel);
+    color: var(--charcoal); max-width: 34rem; padding: 1.75rem;
+  }
+  dialog::backdrop { background: rgba(29, 31, 35, .55); }
+
+  /* ---- signed out ---- */
+  .gate { max-width: 34rem; margin: 5rem auto 0; text-align: left; }
+  .gate h1 { margin-bottom: .75rem; }
+  .gate p { color: var(--stone); }
+  .gate .actions { justify-content: flex-start; margin-top: 1.75rem; }
+
+  /* Spacing lives here rather than in style attributes because the policy on
+     this page permits a nonced <style> element and nothing else - and a nonce
+     does not cover an inline style attribute, so every one of them would be
+     dropped and the page would arrive unspaced. */
+  .breath { margin-top: .5rem; }
+  .breath-more { margin-top: .9rem; }
+  .breath-most { margin-top: 1.75rem; }
+  #pending { margin-top: .6rem; }
+  .confirm-lede { margin: .5rem 0 1.2rem; }
+
+  /* ---- fields ---- */
+  .field { display: block; font-size: .9rem; color: var(--stone); margin-bottom: .3rem; }
+  .field-input {
+    font: inherit; width: 100%; padding: .55rem .7rem;
+    border: 1px solid var(--mist); border-radius: .45rem;
+    background: var(--warm-white); color: var(--charcoal);
+  }
+  .field-input:focus { outline: 2px solid var(--amber); outline-offset: 1px; }
+
+  /* ---- provisioning ---- */
+  .steps { margin: .9rem 0 0; padding-left: 1.2rem; color: var(--stone); }
+  .steps li { margin: .35rem 0; }
+  details summary { cursor: pointer; font-weight: 500; }
+  /* The one place amber is allowed to carry meaning rather than decorate: a
+     password about to be put on a screen in clear text. It is a left edge and
+     not a fill, so the accent is still an accent. */
+  .warn {
+    border-left: 3px solid var(--amber); padding: .1rem 0 .1rem .8rem;
+    color: var(--stone);
+  }
+  .warn strong { color: var(--charcoal); font-weight: 600; }
+  .qr-layout { display: grid; grid-template-columns: auto 1fr; gap: 2rem; align-items: start; }
+  @media (max-width: 46rem) { .qr-layout { grid-template-columns: 1fr; } }
+  /* SIZE IS THE FEATURE. This is scanned by a phone camera held at arm's length
+     from a monitor, so the QR gets as much room as the panel has: a whole
+     column at a wide window, and the width of the page on a narrow one. The
+     white plate is the quiet zone made visible - the SVG carries its own, and
+     this keeps the page's warm white from crowding it. */
+  .qr-plate {
+    background: #fff; padding: 1rem; border-radius: .5rem;
+    border: 1px solid var(--mist); display: inline-block; line-height: 0;
+  }
+  .qr-plate img { display: block; width: min(24rem, 68vw); height: auto; }
+  .qr-actions { justify-content: flex-start; margin-top: .9rem; }
+  #qr-facts { grid-template-columns: 14rem 1fr; }
+  #qr-facts dd { font-family: var(--mono); font-size: .85rem; }
+  #qr-facts dd.plain { font-family: var(--face); font-size: .9rem; }
+
+  /* The full-screen view. `dialog` is the only element that can sit above the
+     sticky header without a stacking-context argument, and its backdrop is what
+     removes everything else from the shot the camera is pointed at. */
+  #stage {
+    max-width: none; width: 100vw; height: 100vh; padding: 1rem;
+    border: 0; background: #fff; color: var(--charcoal);
+  }
+  #stage[open] {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 1rem;
+  }
+  #stage img { width: min(84vh, 84vw); height: auto; }
+  #stage .caption { font-family: var(--mono); overflow-wrap: anywhere; text-align: center; }
+</style>
+
+<header id="chrome" hidden>
+  <div class="bar">
+    <span class="wordmark">
+      <!-- The mark: three stacked plates, the middle one amber. Drawn here
+           rather than fetched, because a page with a strict policy and no
+           third-party requests should not make an exception for a logo. -->
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 2.5 21 7l-9 4.5L3 7z" fill="#1D1F23"/>
+        <path d="M12 8 21 12.5 12 17 3 12.5z" fill="#FFB703"/>
+        <path d="M12 13.5 21 18l-9 4.5L3 18z" fill="#1D1F23"/>
+      </svg>
+      Muster
+    </span>
+    <nav id="nav" aria-label="Sections">
+      <button data-section="overview" aria-current="page">Overview</button>
+      <button data-section="provision">Provisioning</button>
+      <button data-section="devices">Devices</button>
+      <button data-section="policies">Policies</button>
+      <button data-section="settings">Settings</button>
+    </nav>
+    <span class="who">
+      <span class="muted" id="signed-in-as"></span>
+      <button class="action" id="signout">Sign out</button>
+    </span>
+  </div>
+</header>
+
+<main>
+  <!-- Signed out. A password is typed at the identity provider and never here,
+       on the page served by the process that holds the CA. -->
+  <div class="gate" id="gate" hidden>
+    <h1>Muster</h1>
+    <p>
+      To muster is to assemble a company and take the roll. Sign in to mint a
+      pairing code, show a provisioning QR, and vouch for a device.
+    </p>
+    <div class="actions" id="gate-actions">
+      <a class="action primary" id="signin" href="/auth/signin">Sign in</a>
+    </div>
+    <div class="empty breath-most" id="gate-unconfigured" hidden>
+      <strong>Administrator sign-in is not configured on this server.</strong>
+      <p class="breath">
+        Nobody signs in at the identity provider here until an operator applies
+        it. The enrollment and proof endpoints are unaffected. See
+        <code>docs/administrator-sign-in.md</code>.
+      </p>
+    </div>
+  </div>
+
+  <div id="shell" hidden>
+    <!-- ---- Overview ---- -->
+    <section id="section-overview">
+      <div class="lede">
+        <h2>Overview</h2>
+        <p>Mint a pairing code, then vouch for what presents itself.</p>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <h3>Pairing code</h3>
+          <p class="muted">
+            Single use, and it expires in minutes. Type it into the device's
+            Muster app - nothing on the device can scan a code, so this one is
+            read off the screen and typed. A wiped phone does not need it: the
+            provisioning QR carries its own.
+          </p>
+          <div class="code" id="code">------</div>
+          <div class="actions">
+            <button class="action primary" id="mint">Generate a code</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Waiting to be vouched for</h3>
+          <p class="muted">
+            A <b>typed</b> request has the same fingerprint on the device's own
+            screen, and comparing them is the whole security model. A
+            <b>scanned</b> one does not: nobody is holding that phone, so there
+            is no second copy to compare and each row says which it is.
+          </p>
+          <div id="pending">
+            <p class="muted">Nothing is waiting.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- Provisioning ---- -->
+    <section id="section-provision" hidden>
+      <div class="lede">
+        <h2>Provisioning</h2>
+        <p>Take a wiped device to Device Owner, with no cable.</p>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <h3>Before you show it</h3>
+          <ol class="steps">
+            <li>
+              Factory reset the device and let it boot to the welcome screen.
+              Stop there: going past it, and especially adding an account, means
+              another reset.
+            </li>
+            <li>Tap the same spot on the welcome screen six times. That opens a scanner.</li>
+            <li>Show the QR below and hold the device up to it.</li>
+          </ol>
+          <p class="caption breath-most">
+            A device provisioned now is bound to the key this agent is signed
+            with. Device Owner cannot be replaced by a build signed with a
+            different key - that takes another factory reset - so do this for a
+            device that matters only once the signing ceremony is done. See
+            <code>docs/state-of-play.md</code>.
+          </p>
+        </div>
+
+        <div class="panel">
+          <h3>What is this device for?</h3>
+          <p class="muted">
+            A role decides which policy the device gets. Leave it blank and it
+            gets the kith's - the same as every other device. Name one and it
+            also gets that role's, including app configuration the kith is
+            never served.
+          </p>
+          <label class="field breath-more" for="qr-role">Role</label>
+          <input class="field-input" id="qr-role" autocomplete="off"
+                 spellcheck="false" placeholder="blank, or e.g. zippie">
+          <p class="caption breath">
+            Lowercase letters, digits and dashes. The role is fixed when the QR
+            is made, because that is the only moment anything knows what this
+            device will be - it has no identity yet.
+          </p>
+        </div>
+
+        <div class="panel">
+          <h3>Wi-Fi</h3>
+          <p class="muted">
+            The device needs a network before it can download the agent. Leave
+            this closed and join one by hand in the setup wizard, or put the
+            credentials in the QR and let it join on its own.
+          </p>
+          <details id="wifi" class="breath-more">
+            <summary>Put Wi-Fi credentials in the QR</summary>
+            <!-- The endpoint's own docstring says this is the one genuinely
+                 secret thing in the whole flow. Saying it here too, in the
+                 place where somebody is about to do it. -->
+            <p class="warn breath">
+              <strong>The password goes into the QR in clear text</strong>, and
+              the QR goes on this screen. Anyone who can see it, or photograph
+              it over your shoulder, has your network password. It is not
+              redacted, hashed or short-lived.
+            </p>
+            <label class="field" for="wifi-ssid">Network name</label>
+            <input class="field-input" id="wifi-ssid" autocomplete="off" spellcheck="false">
+            <label class="field breath-more" for="wifi-password">Password</label>
+            <input class="field-input" id="wifi-password" type="password" autocomplete="off">
+            <label class="field breath-more" for="wifi-security">Security</label>
+            <select class="field-input" id="wifi-security">
+              <option value="WPA">WPA / WPA2</option>
+              <option value="WEP">WEP</option>
+              <option value="NONE">Open</option>
+            </select>
+          </details>
+          <div class="actions">
+            <button class="action primary" id="show-qr">Show the QR</button>
+          </div>
+        </div>
+
+        <!-- role=alert so a refusal is announced rather than silently
+             appearing where the QR was about to be. -->
+        <div class="panel" id="qr-refused" role="alert" hidden>
+          <h3 id="qr-refused-title">No QR</h3>
+          <p class="muted breath" id="qr-refused-detail"></p>
+        </div>
+
+        <div class="panel" id="qr-panel" hidden>
+          <div class="qr-layout">
+            <div>
+              <div class="qr-plate">
+                <img id="provision-qr" alt="Provisioning QR code">
+              </div>
+              <div class="actions qr-actions">
+                <button class="action" id="hide-qr">Hide</button>
+                <button class="action primary" id="fullscreen-qr">Full screen</button>
+              </div>
+            </div>
+            <div>
+              <h3>What this QR commits to</h3>
+              <p class="muted breath">
+                Checked against what this server publishes at the moment it was
+                drawn. The checksum is the field the setup wizard tests before
+                it installs anything.
+              </p>
+              <dl class="breath-more" id="qr-facts"></dl>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- Devices ---- -->
+    <section id="section-devices" hidden>
+      <div class="lede">
+        <h2>Devices</h2>
+        <p>The kith: the devices Muster recognizes.</p>
+      </div>
+      <div class="empty">
+        <strong>The kith is written down now, and this page does not read it yet.</strong>
+        <p class="breath">
+          Since #34 every issued certificate is recorded, and the roll is
+          already answerable over the API. Drawing it here is the next slice.
+          What belongs on it:
+        </p>
+        <ul>
+          <li>The name the device was vouched for under</li>
+          <li>Its key fingerprint, as read off both screens at enrollment</li>
+          <li>When its certificate was issued, and when it expires</li>
+        </ul>
+        <p class="breath">
+          What will not be on it is a count of devices online. Muster has no
+          idea whether a device is reachable and does not need one: an identity
+          that is not renewed lapses, which is how a device in a drawer stops
+          being a member. Nor will an empty list stand in for an unreachable
+          store - the API answers 503 for that on purpose, because "no devices"
+          and "the database is gone" send an operator looking in opposite
+          directions.
+        </p>
+      </div>
+    </section>
+
+    <!-- ---- Policies ---- -->
+    <section id="section-policies" hidden>
+      <div class="lede">
+        <h2>Policies</h2>
+        <p>What a device is made to do once it is a member.</p>
+      </div>
+      <div class="empty">
+        <strong>Policy is not authored here.</strong>
+        <p class="breath">
+          The restrictions in force, and which applications stay on the
+          launcher, are files pushed to the device from the command line. The
+          agent enforces them locally, so a device keeps its policy while Muster
+          is unreachable - which is the same reason enrollment is the only part
+          that needs the internet. Nothing about them travels through this page
+          yet. See <code>docs/policy.md</code> for the files and how they are
+          pushed.
+        </p>
+      </div>
+    </section>
+
+    <!-- ---- Settings ---- -->
+    <section id="section-settings" hidden>
+      <div class="lede">
+        <h2>Settings</h2>
+        <p>Who you are, and what this server is serving.</p>
+      </div>
+      <div class="stack">
+        <div class="panel">
+          <h3>You</h3>
+          <dl class="breath-more">
+            <dt>Signed in as</dt><dd id="settings-email"></dd>
+            <dt>Subject</dt><dd id="settings-subject"></dd>
+          </dl>
+          <p class="caption breath-more">
+            The subject is what allows this account to vouch for devices. An
+            email address can move to somebody else; a subject cannot.
+          </p>
+        </div>
+        <div class="panel">
+          <h3>This server</h3>
+          <dl class="breath-more">
+            <dt>Address</dt><dd id="settings-origin"></dd>
+            <dt>Published agent</dt><dd id="settings-agent">Checking...</dd>
+            <dt>Signing certificate</dt><dd id="settings-checksum">Checking...</dd>
+          </dl>
+          <!-- TWO DIGESTS, AND ONLY ONE OF THEM IS THE ONE THE WIZARD CHECKS.
+               This panel used to show the file's sha256 under a caption saying
+               it was what the setup wizard tests, which is the exact confusion
+               provisioning.py's longest comment exists to prevent. -->
+          <p class="caption breath-more">
+            The published agent is the APK a provisioning device downloads, and
+            its size and sha256 identify those bytes. What the setup wizard
+            actually checks is the second line: the SHA-256 of the certificate
+            the APK is signed with, which is what the provisioning QR carries
+            and what stays the same across agent releases.
+          </p>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<!-- TWO QUESTIONS, NOT ONE, AND THE WRONG ONE IS WORSE THAN NONE. The typed
+     text asks the operator to compare this against a phone in their hand. On a
+     scanned request there is no phone in anybody's hand and no second copy of
+     the fingerprint anywhere, so asking that question teaches a check that
+     cannot be made - the operator either cancels a device that is theirs, or
+     clicks through and learns that the words above this button mean nothing.
+     `openConfirm` swaps both the heading and the lede on `shape`. -->
+<dialog id="confirm">
+  <h3 id="confirm-question">Does this match the device?</h3>
+  <p class="muted confirm-lede" id="confirm-lede">
+    Read the fingerprint on the device's own screen. If it is not identical to
+    this, someone else is enrolling against your code &mdash; cancel.
+  </p>
+  <p class="fp" id="confirm-fp"></p>
+  <p class="muted" id="confirm-name"></p>
+  <div class="actions">
+    <button class="action" id="cancel">Cancel</button>
+    <button class="action primary" id="approve">Vouch for this device</button>
+  </div>
+</dialog>
+
+<!-- The QR as big as the screen allows, because that is what the ceremony is:
+     a phone held up to a monitor. The checksum stays visible in it - the whole
+     point of the text beside the QR is lost if the view somebody actually scans
+     from does not carry it. -->
+<dialog id="stage">
+  <img id="stage-qr" alt="Provisioning QR code">
+  <p class="caption" id="stage-checksum"></p>
+  <button class="action" id="stage-close">Close</button>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+  // NO SCRIPT HERE EVER TOUCHES A WAY IN. The session is an HttpOnly cookie the
+  // browser attaches on its own, which is the point: nothing below can read it,
+  // and neither can a script that should not be here.
+  //
+  // The one credential a line below does read is the wifi password, which is
+  // the payload of a QR the operator is deliberately putting on their own
+  // screen. It is a credential for a network and grants nothing here.
+  const $ = (id) => document.getElementById(id);
+  let poll = null;
+  let section = 'overview';
+
+  async function api(path, options = {}) {
+    const response = await fetch(path, options);
+    if (response.status === 401) { await load(); throw new Error('signed out'); }
+    return response;
+  }
+
+  // ---- who is here --------------------------------------------------------
+
+  async function load() {
+    const session = await (await fetch('/v1/session')).json();
+    $('gate').hidden = session.signed_in;
+    $('chrome').hidden = !session.signed_in;
+    $('shell').hidden = !session.signed_in;
+    if (!session.signed_in) {
+      stopPolling();
+      clearProvisioningQr();
+      $('gate-actions').hidden = !session.sign_in_configured;
+      $('gate-unconfigured').hidden = session.sign_in_configured;
+      return;
+    }
+    const label = session.email || session.subject || session.kind;
+    $('signed-in-as').textContent = label;
+    $('settings-email').textContent = session.email || 'not supplied by the provider';
+    $('settings-subject').textContent = session.subject || session.kind;
+    $('settings-origin').textContent = window.location.origin;
+    show(section);
+  }
+
+  $('signout').onclick = async () => {
+    const response = await fetch('/auth/signout', { method: 'POST' });
+    const { next } = await response.json();
+    // The provider is told to end its own session too when it can be. Without
+    // it, signing out here leaves a session there that signs straight back in.
+    if (next) { window.location.href = next; return; }
+    await load();
+  };
+
+  // ---- sections -----------------------------------------------------------
+
+  function show(name) {
+    section = name;
+    for (const button of $('nav').querySelectorAll('button')) {
+      const current = button.dataset.section === name;
+      if (current) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
+    }
+    for (const element of document.querySelectorAll('#shell > section')) {
+      element.hidden = element.id !== 'section-' + name;
+    }
+    // Polling only where something changes, and only while the tab is in
+    // front. A console left open on a second monitor should not ask the
+    // service that signs certificates for the pending list all week.
+    if (name === 'overview') startPolling(); else stopPolling();
+    // NOT LEFT ON THE MONITOR. A provisioning QR can carry the network password
+    // in clear text, and a console that keeps one drawn on a section nobody is
+    // looking at is a password on a screen in a room. Navigating away is the
+    // operator saying they are done with it.
+    if (name !== 'provision') clearProvisioningQr();
+    // Asked for when it is looked at, not on every page load. Describing the
+    // published agent means reading and hashing twelve megabytes on the server,
+    // and nobody opens this console to find out its checksum.
+    if (name === 'settings') describeAgent();
+  }
+
+  $('nav').onclick = (event) => {
+    const button = event.target.closest('button[data-section]');
+    if (button) show(button.dataset.section);
+  };
+
+  function startPolling() {
+    refresh();
+    if (poll) return;
+    poll = setInterval(() => {
+      if (document.visibilityState === 'visible') refresh();
+    }, 2000);
+  }
+
+  function stopPolling() {
+    if (poll) { clearInterval(poll); poll = null; }
+  }
+
+  // ---- the ceremony -------------------------------------------------------
+
+  $('mint').onclick = async () => {
+    const response = await api('/v1/enroll/codes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const data = await response.json();
+    $('code').textContent = data.code;
+  };
+
+  async function refresh() {
+    let pending;
+    try {
+      const response = await api('/v1/enroll/requests');
+      ({ pending } = await response.json());
+    } catch (error) {
+      return;  // load() has already redrawn the page as signed out.
+    }
+    const target = $('pending');
+    if (!pending.length) {
+      target.replaceChildren(element('p', 'muted', 'Nothing is waiting.'));
+      return;
+    }
+    target.replaceChildren();
+    for (const request of pending) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const left = document.createElement('div');
+      left.append(
+        element('div', '', request.device_name),
+        element('div', 'fp', request.fingerprint),
+        // WHICH KIND OF VOUCH THIS ROW IS ASKING FOR. Drawing the two the same
+        // way is the console telling an operator that a fingerprint with no
+        // second copy is one they compared. `shape` comes straight from the
+        // code the device presented against (server/muster/enroll.py).
+        element('div', 'muted shape', SHAPES[request.shape] || request.shape),
+      );
+      const button = document.createElement('button');
+      button.className = 'action';
+      button.textContent = 'Vouch...';
+      // Deliberately opens a confirmation rather than vouching. The security
+      // model is a comparison between two screens; a one-click approve makes it
+      // a comparison between a human and their own impatience.
+      button.onclick = () => openConfirm(request);
+      row.append(left, button);
+      target.append(row);
+    }
+  }
+
+  function element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    node.textContent = text;
+    return node;
+  }
+
+  // What each shape of pairing code means for the person about to vouch. Held
+  // as data rather than as branches in two places, so the row and the dialog
+  // cannot end up describing different ceremonies for the same request.
+  const SHAPES = { typed: 'typed on the device', scanned: 'scanned from a QR' };
+  const CONFIRM = {
+    typed: {
+      question: 'Does this match the device?',
+      lede: "Read the fingerprint on the device's own screen. If it is not "
+        + 'identical to this, someone else is enrolling against your code - cancel.',
+    },
+    scanned: {
+      question: 'Is this the device you scanned?',
+      lede: 'Nobody is holding this phone, so there is no second copy of this '
+        + 'fingerprint to compare against. What you are confirming is that you '
+        + 'scanned a QR from this console minutes ago, with a device in your '
+        + 'hand, and that this is the only request against it.',
+    },
+  };
+
+  let pendingRequest = null;
+  function openConfirm(request) {
+    pendingRequest = request;
+    // Falls back to the TYPED wording on a shape this page does not recognize.
+    // That is the stricter of the two - it asks for a comparison rather than
+    // waving one through - so a server that grows a third shape before this
+    // page does over-asks rather than under-asks.
+    const words = CONFIRM[request.shape] || CONFIRM.typed;
+    $('confirm-question').textContent = words.question;
+    $('confirm-lede').textContent = words.lede;
+    $('confirm-fp').textContent = request.fingerprint;
+    $('confirm-name').textContent = request.device_name;
+    $('confirm').showModal();
+  }
+  $('cancel').onclick = () => { $('confirm').close(); pendingRequest = null; };
+
+  $('approve').onclick = async () => {
+    if (!pendingRequest) return;
+    const response = await api(
+      '/v1/enroll/requests/' + encodeURIComponent(pendingRequest.request_id) + '/vouch',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: pendingRequest.fingerprint }),
+      },
+    );
+    $('confirm').close();
+    if (!response.ok) alert('That vouch was refused: ' + (await response.text()));
+    pendingRequest = null;
+    refresh();
+  };
+
+  // ---- the provisioning QR ------------------------------------------------
+  //
+  // The whole ceremony from this page: a wiped phone, six taps on the welcome
+  // screen, and this QR on the monitor. Everything below is in service of two
+  // things - that it is big enough to scan, and that it describes the agent
+  // this server is publishing RIGHT NOW.
+
+  // Where the server address rides in the admin extras bundle. Named so it can
+  // be shown as a first-class fact and not repeated among the other extras.
+  const SERVER_URL_EXTRA = 'muster.server_url';
+
+  $('show-qr').onclick = () => showProvisioningQr();
+  $('hide-qr').onclick = () => clearProvisioningQr();
+  $('fullscreen-qr').onclick = () => $('stage').showModal();
+  $('stage-close').onclick = () => $('stage').close();
+
+  async function showProvisioningQr() {
+    const button = $('show-qr');
+    button.disabled = true;
+    try {
+      // A POST, with the wifi credentials in the body. A password in a query
+      // string is a password in this server's access log, in whatever proxy is
+      // in front of it, and in the browser's history. Nothing caches a POST
+      // either, which is the half of "never stale" that no cache gets a vote on.
+      // The role is not a secret - it is the name of a policy scope and is
+      // printed beside the QR on purpose - but it travels in the body with
+      // everything else so there is one shape of request rather than two.
+      const body = {
+        wifi_ssid: '', wifi_password: '', wifi_security: 'WPA',
+        role: $('qr-role').value.trim(),
+      };
+      if ($('wifi').open) {
+        body.wifi_ssid = $('wifi-ssid').value.trim();
+        body.wifi_password = $('wifi-password').value;
+        body.wifi_security = $('wifi-security').value;
+      }
+      const response = await api('/v1/provision/qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        refuseQr('No QR was drawn', await refusalDetail(response));
+        return;
+      }
+      const qr = await response.json();
+
+      // THE CHECK THAT COST A HANDSET WHEN IT WAS NOT THERE. The checksum in
+      // the QR is what the setup wizard tests the download against, and a QR
+      // describing an agent that has since been replaced fails on a phone that
+      // has already been wiped. Both endpoints are `no-store` and both answer
+      // from one process, so these two values can only disagree if something
+      // between here and it is handing out a copy - which is precisely what
+      // four hours of a cached /agent.apk was. So this refuses to draw the QR
+      // rather than drawing it under a warning nobody reads.
+      const published = await fetch('/agent.json', { cache: 'no-store' });
+      if (!published.ok) {
+        refuseQr('No QR was drawn', await refusalDetail(published));
+        return;
+      }
+      const agent = await published.json();
+      if (agent.signature_checksum !== qr.signature_checksum) {
+        refuseQr(
+          'Do not scan anything',
+          'This QR carries the signing checksum ' + qr.signature_checksum +
+          ', and this server says it is publishing ' + agent.signature_checksum +
+          '. Something between this browser and Muster is serving a cached ' +
+          'copy of one of them. A device scanning a QR whose checksum does not ' +
+          'match the download it fetches fails mid-setup on a phone that has ' +
+          'already been wiped.',
+        );
+        return;
+      }
+      drawQr(qr);
+    } catch (error) {
+      refuseQr('No QR was drawn', 'The request did not complete: ' + error.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function drawQr(qr) {
+    // A blob rather than a data URL or an <img src>: the request carried the
+    // session cookie and an <img> cannot, and the payload has no business in a
+    // URL where the browser would remember it.
+    const url = URL.createObjectURL(new Blob([qr.svg], { type: 'image/svg+xml' }));
+    releaseQr();
+    $('provision-qr').src = url;
+    $('stage-qr').src = url;
+    $('provision-qr').dataset.url = url;
+
+    const facts = $('qr-facts');
+    facts.replaceChildren();
+    fact(facts, 'Download URL', qr.download_url);
+    fact(facts, 'Signing certificate', qr.signature_checksum);
+    fact(facts, 'Server address', qr.server_url);
+    fact(facts, 'Admin component', qr.component);
+    // Whatever else the platform hands the agent on first run, read generically
+    // out of the bundle, so a key added there shows up beside the QR without
+    // this page being rewritten for it. muster#48 added one and it is NOT here:
+    // the server takes the pairing code back out of `extras` before answering,
+    // because it is a credential rather than something to check, and printing
+    // it as text would put a second readable copy beside the image that already
+    // carries it. `qr.pairing` is what describes it instead.
+    for (const [key, value] of Object.entries(qr.extras || {})) {
+      if (key === SERVER_URL_EXTRA) continue;
+      fact(facts, key, String(value));
+    }
+    describePairing(facts, qr.pairing);
+    if (qr.wifi) {
+      fact(facts, 'Wi-Fi network', qr.wifi.ssid, 'plain');
+      fact(
+        facts,
+        'Wi-Fi password',
+        qr.wifi.carries_password
+          ? 'in this QR, in clear text'
+          : 'not included in this QR',
+        'plain',
+      );
+    }
+    $('stage-checksum').textContent = 'Signing certificate ' + qr.signature_checksum;
+    $('qr-refused').hidden = true;
+    $('qr-panel').hidden = false;
+  }
+
+  /**
+   * How long this QR is worth scanning, counted down.
+   *
+   * THE ONE FACT ON THIS PANEL THAT STOPS BEING TRUE WHILE YOU LOOK AT IT.
+   * Everything else the QR commits to is stable for the life of the signing
+   * key; the pairing code inside it dies in minutes, and a QR left on a monitor
+   * past that is a phone that provisions, comes up owned, and cannot enroll -
+   * with nothing on the handset saying why. A static "5 minutes" would be a
+   * number that is wrong the moment somebody walks away to fetch the phone.
+   *
+   * Client-side arithmetic off a duration, not a wall-clock deadline: the
+   * browser's clock and the server's do not have to agree for a countdown that
+   * starts when the answer arrives.
+   */
+  let pairingTimer = null;
+  function describePairing(facts, pairing) {
+    clearInterval(pairingTimer);
+    pairingTimer = null;
+    if (!pairing || !pairing.carries_code) {
+      fact(
+        facts, 'Enrollment',
+        'no pairing code in this QR - the device is enrolled by hand afterwards',
+        'plain',
+      );
+      return;
+    }
+    // SHOWN BESIDE THE QR because it is the one thing here an operator can
+    // actually check before scanning. Everything else in this panel is opaque
+    // or stable; "did I make this a zippie android?" is decided in a text box
+    // seconds earlier and getting it wrong is a phone that comes up the wrong
+    // kind of device with nothing on it saying so.
+    fact(
+      facts, 'Role',
+      pairing.role || 'none - this device gets the kith policy and nothing else',
+      'plain',
+    );
+
+    const term = document.createElement('dt');
+    term.textContent = 'Pairing code';
+    const detail = document.createElement('dd');
+    detail.className = 'plain';
+    facts.append(term, detail);
+
+    const expiresAt = Date.now() + pairing.expires_in_s * 1000;
+    const tick = () => {
+      const left = Math.round((expiresAt - Date.now()) / 1000);
+      if (left <= 0) {
+        clearInterval(pairingTimer);
+        pairingTimer = null;
+        // Says what to DO, not just that time is up. An operator holding a
+        // wiped phone needs the next step, and the next step is a new QR.
+        detail.textContent =
+          'expired - this QR will provision a device but not enroll it. '
+          + 'Draw a new one.';
+        return;
+      }
+      detail.textContent =
+        'in this QR, single use, ' + left + 's left';
+    };
+    tick();
+    pairingTimer = setInterval(tick, 1000);
+  }
+
+  function fact(list, label, value, className) {
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    if (className) detail.className = className;
+    list.append(term, detail);
+  }
+
+  function refuseQr(title, detail) {
+    clearProvisioningQr();
+    $('qr-refused-title').textContent = title;
+    $('qr-refused-detail').textContent = detail;
+    $('qr-refused').hidden = false;
+  }
+
+  function releaseQr() {
+    const previous = $('provision-qr').dataset.url;
+    if (previous) URL.revokeObjectURL(previous);
+  }
+
+  function clearProvisioningQr() {
+    // The countdown goes with the QR it describes. Left running it would keep
+    // ticking against a panel nobody can see, and the next QR drawn would have
+    // two timers writing to the same line.
+    clearInterval(pairingTimer);
+    pairingTimer = null;
+    releaseQr();
+    $('stage').close();
+    $('provision-qr').removeAttribute('src');
+    $('stage-qr').removeAttribute('src');
+    delete $('provision-qr').dataset.url;
+    $('qr-panel').hidden = true;
+    $('qr-refused').hidden = true;
+  }
+
+  async function refusalDetail(response) {
+    // This server answers 503 with a sentence when no APK is published, which
+    // is the common case here and is worth reading rather than a status code.
+    try {
+      const body = await response.json();
+      if (body && body.detail) return body.detail;
+    } catch (error) {
+      // Not JSON. The status is all there is.
+    }
+    return 'The server answered ' + response.status + '.';
+  }
+
+  // ---- what this server publishes ----------------------------------------
+
+  async function describeAgent() {
+    const target = $('settings-agent');
+    const checksum = $('settings-checksum');
+    try {
+      const response = await fetch('/agent.json', { cache: 'no-store' });
+      if (!response.ok) {
+        // 503 is the honest answer this server gives when no APK is published.
+        target.textContent = 'None published on this server';
+        checksum.textContent = 'None';
+        return;
+      }
+      const agent = await response.json();
+      const megabytes = (agent.bytes / 1048576).toFixed(1);
+      target.textContent = megabytes + ' MB, sha256 ' + agent.sha256.slice(0, 16) + '...';
+      checksum.textContent = agent.signature_checksum;
+    } catch (error) {
+      target.textContent = 'Could not be read';
+      checksum.textContent = 'Could not be read';
+    }
+  }
+
+  load();
+</script>

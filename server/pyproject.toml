@@ -1,0 +1,85 @@
+[project]
+name = "muster"
+version = "0.1.0"
+description = "Device enrollment and identity plane"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography>=45",
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "segno>=1.6",
+    # TWO DEPENDENCIES ADDED TO THE PROCESS THAT HOLDS THE CA, on purpose, and
+    # this file is where the reason belongs.
+    #
+    # telemetry.py argues the other way and is right for its case: DogStatsD is
+    # a line of text over UDP, so twenty lines beat a package. Verifying a
+    # signed token that a stranger supplies is a different class of problem -
+    # the failure mode of a subtle mistake is "anyone signs in", not "a graph is
+    # missing". pyjwt is pure Python over `cryptography`, which is already here
+    # for the CA, so the new surface is one small widely-read package.
+    #
+    # httpx was already installed as a test dependency (the test client imports
+    # it); it moves here because the sign-in flow talks to the identity provider
+    # over HTTPS at runtime.
+    "pyjwt>=2.10",
+    "httpx>=0.28",
+    # The kith store. ONE dependency, and deliberately not a heavier Postgres
+    # stack: sqlalchemy + asyncpg + alembic is three libraries and a migration
+    # framework for what is here two tables and a dozen statements.
+    # telemetry.py already argues the general case - "a dependency added to
+    # the process that signs certificates is a dependency in the blast radius
+    # of the CA" - and asyncpg would be the wrong half of it anyway, since
+    # every endpoint in api.py is sync.
+    #
+    # [binary], AND THIS WAS GOT WRONG ONCE - the correction is the useful part.
+    # It shipped as bare `psycopg` plus `apk add libpq` in the image, on the
+    # belief that psycopg-binary publishes no musllinux wheels. It publishes
+    # twenty, including musllinux_1_2_x86_64 and _aarch64 for cp312, and
+    # macosx_11_0_arm64 for the mac mini that runs CI. Checked against PyPI
+    # rather than remembered, this time.
+    #
+    # The bare package would have been the wrong answer anyway, and the way it
+    # failed is worth keeping: the pure-Python implementation finds libpq with
+    # ctypes.util.find_library, which on Linux shells out to ldconfig -p - and
+    # musl's ldconfig has no -p. So `apk add libpq` installed the library, the
+    # image built clean, and `import psycopg` still died with "libpq library not
+    # found". psycopg-binary carries its own libpq and asks nobody.
+    #
+    # That failure is invisible from outside the pod: the driver is imported
+    # lazily (muster/kith.py), so the pod comes up healthy, both probes pass,
+    # certificates are still issued, and every kith write is deferred forever.
+    # build.server-image.yml now connects to a dead port INSIDE the built image
+    # to make it a red build instead - which is how this was caught at all.
+    "psycopg[binary]>=3.2",
+]
+
+# Test dependencies declared here rather than repeated as --with flags at each
+# call site.
+[dependency-groups]
+# pglast embeds PostgreSQL's OWN parser. There is no Postgres on the workstation
+# and none on the mac mini that runs CI, so without it every statement in
+# muster/kith.py and muster/sql/0001_kith.sql would first be parsed by a real
+# server when an operator ran psql against the live cluster. It proves grammar
+# and not meaning - it cannot know a column is missing - but a typo in the SQL
+# that holds the kith should not be something a human discovers by hand.
+#
+# httpx is NOT here any more: the sign-in flow talks to the identity provider at
+# runtime, so it moved into the dependencies above. Listing it twice would let
+# the two specifiers drift.
+dev = ["pytest>=9", "pglast>=7"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+# A build backend so `uv run` treats this as a project and installs the
+# dependencies declared above. Without one, uv runs in a bare environment and
+# every dependency has to be repeated as a --with flag at each call site - which
+# is how a test suite ends up passing locally and failing in CI on an import.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["muster"]

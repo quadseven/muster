@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- directBootAware on the receiver below needs this to fire before the
+         first unlock, which is the only time it fires at all on an appliance
+         that sits in a cupboard for days. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- REQUIRED BY THE CATCH-UP JOB, and its absence was a crash loop.
+         JobScheduler refuses a job carrying a connectivity constraint from an
+         app that does not hold this, with a SecurityException rather than a
+         false return. CheckInJob.scheduleCatchUp sets NETWORK_TYPE_ANY - that
+         constraint IS the job's purpose - so every attempt to schedule it threw.
+         The periodic check-in deliberately carries no constraint, which is why
+         nothing noticed: the only path that needed this permission is the one
+         that runs after a fetch has ALREADY failed. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      HOW THE AGENT SEES OTHER APPLICATIONS, AND WHY THIS IS NOT A PERMISSION.
+
+      From targetSdk 30 the platform filters what an app can learn about other
+      installed packages, and BEING DEVICE OWNER DOES NOT EXEMPT US. That was
+      checked rather than assumed: `AppsFilterBase.shouldFilterApplication` in
+      AOSP (read 2026-08-19) exempts the calling app itself, uids below
+      FIRST_APPLICATION_UID, and force-queryable packages - there is no device
+      owner, profile owner or device admin case anywhere in it. Google's own
+      list of automatically visible packages does not mention a DPC either.
+
+      The alternative is QUERY_ALL_PACKAGES, and that is a permission. This
+      agent declares four, and a QR-provisioned Pixel 6a cleared Play Protect's
+      approved-DPC heuristic with exactly those four on 2026-08-19; a fifth
+      changes the only input to that heuristic this project controls, and the
+      way to find out what it did is a wiped handset.
+      `server/tests/test_agent_manifest.py` pins the profile for that reason.
+
+      The block below is not a permission. It grants visibility of the packages
+      that answer these intents and nothing else, which is a smaller ask than
+      QUERY_ALL_PACKAGES and is also exactly the right scope: muster manages
+      what a person can SEE on the launcher, so what it cannot see, it cannot
+      hide.
+
+      DROPPING THIS BLOCK DOES NOT BREAK THE BUILD. It leaves the agent able to
+      see only itself, and AppVisibilitySteward would find one launchable
+      application and quietly do nothing - which is why it refuses that case out
+      loud instead, and why a server test pins the block.
+    -->
+    <queries>
+        <!-- The set muster manages: everything with an icon a person can tap. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- The home screen, so it can be recognized on a device whose launcher
+             is not one of the two named in AppVisibilityPolicy. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+        <!-- The setup wizard, which is what a factory reset comes back to. On
+             AOSP it answers this alongside CATEGORY_HOME; it disables itself
+             once setup finishes, so this finds it only sometimes and the
+             policy names it too. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.SETUP_WIZARD" />
+        </intent>
+        <!-- Settings, found by what it answers rather than by what it is
+             called, because it is the last local way back into a device. -->
+        <intent>
+            <action android:name="android.settings.SETTINGS" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true">
+
+        <!--
+          allowBackup=false, deliberately. This app holds a device private key
+          once enrollment exists, and Android's backup would copy it off the
+          device to Google. The whole point of the key is that it never leaves.
+        -->
+
+        <!--
+          The home screen is status, not enrollment. The app used to launch
+          straight into a pairing-code form, which an already-enrolled Device
+          Owner was shown too - the one app on the phone representing whatever
+          manages it, saying something untrue about that.
+        -->
+        <activity
+            android:name=".StatusActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Reached from StatusActivity, and only when there is nothing to
+             enroll with. Not exported: nothing outside this app starts it. -->
+        <activity
+            android:name=".EnrollActivity"
+            android:exported="false"
+            android:label="@string/enroll_title" />
+
+        <!--
+          THE TWO ACTIVITIES PROVISIONING CANNOT HAPPEN WITHOUT.
+
+          Without these a QR-provisioned device downloads the agent, fails with
+          "Something went wrong", and factory-resets itself. AOSP states it
+          plainly in DevicePolicyManager: admin apps "must implement activities
+          with intent filters for the ACTION_GET_PROVISIONING_MODE and
+          ACTION_ADMIN_POLICY_COMPLIANCE intent actions", and provisioning that
+          cannot reach them "will cause the provisioning to fail".
+
+          Guarded by BIND_DEVICE_ADMIN, which only the system holds, so exporting
+          them does not expose them to other apps. Both are exported because the
+          system starts them, and a component with an intent-filter must declare
+          android:exported from API 31 regardless.
+        -->
+        <activity
+            android:name=".ProvisioningModeActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <intent-filter>
+                <action android:name="android.app.action.GET_PROVISIONING_MODE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".PolicyComplianceActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <intent-filter>
+                <action android:name="android.app.action.ADMIN_POLICY_COMPLIANCE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".MusterDeviceAdminReceiver"
+            android:label="@string/admin_label"
+            android:description="@string/admin_description"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+
+        <!-- Where the platform reports an install muster committed. Not
+             exported: the only sender is muster's own PendingIntent, and an
+             exported receiver here would let any app on the device fabricate
+             install results in muster's log. -->
+        <receiver
+            android:name=".InstallReport"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="app.muster.agent.INSTALL_REPORT" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Reconciles the device on a timer rather than only at boot
+             (muster#58). BIND_JOB_SERVICE is required by the platform and is
+             what stops any other app scheduling work into this service. -->
+        <service
+            android:name=".CheckInJob"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false" />
+    </application>
+</manifest>

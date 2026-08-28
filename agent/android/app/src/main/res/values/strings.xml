@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Capital M. This is the product's name, and it appears under the icon on
+         a phone somebody else is holding. -->
+    <string name="app_name">Muster</string>
+    <string name="admin_label">Muster device management</string>
+    <string name="admin_description">Applies configuration from your Muster control plane.</string>
+    <string name="enroll_title">Join Muster</string>
+    <string name="enroll_hint">Enter the pairing code from your Muster console.</string>
+    <string name="enroll_code_hint">000000</string>
+    <string name="enroll_action">Enroll this device</string>
+    <string name="enroll_fingerprint_label">Check this matches the console before approving there:</string>
+    <!-- Shown while the device enrolls itself during provisioning, which can
+         take a minute or so. It says what to do next rather than just spinning:
+         the person who scanned the QR is the one who has to approve it, and
+         they are standing at the console it is about to appear on. -->
+    <string name="provisioning_enrolling">Joining Muster.\n\nApprove this device in your Muster console.</string>
+    <string name="status_sync">Check in now</string>
+    <string name="status_enroll">Enroll this device</string>
+</resources>

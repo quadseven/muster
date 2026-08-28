@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The device half of the pairing ceremony.
+
+  THE FINGERPRINT IS THE LARGEST THING ON THIS SCREEN, deliberately. It exists
+  to be compared, by eye, with the same string on the console - and a person
+  holding a phone at arm's length while looking at a laptop will skim anything
+  small. Everything else here is subordinate to that comparison.
+-->
+<!--
+  fitsSystemWindows, or the top of this screen draws UNDER the app bar.
+  targetSdk 36 means Android 15 and later enforce edge-to-edge, so the
+  window extends behind the system bars and a layout that does not inset
+  itself loses its first lines. Measured: the headline rendered at
+  y=63..163 while the app bar occupied y=170..241, so the one line the
+  screen exists to deliver was invisible and looked like a scroll bug.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/enroll_title"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/enroll_hint"
+            android:textSize="15sp" />
+
+        <EditText
+            android:id="@+id/code"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:hint="@string/enroll_code_hint"
+            android:inputType="number"
+            android:maxLength="6"
+            android:textSize="34sp"
+            android:letterSpacing="0.3"
+            android:gravity="center"
+            android:autofillHints="" />
+
+        <Button
+            android:id="@+id/enroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/enroll_action" />
+
+        <TextView
+            android:id="@+id/fingerprint_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="@string/enroll_fingerprint_label"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/fingerprint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:fontFamily="monospace"
+            android:textSize="28sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.08"
+            android:visibility="gone" />
+
+    </LinearLayout>
+</ScrollView>

@@ -1,0 +1,482 @@
+name: agent - android
+
+# The DPC is the one component that cannot be built on a laptop here: there is
+# no Android SDK on the workstation, and there is one on the mac mini that
+# already builds quadseven/zippie's companion. So this workflow IS the build,
+# not a duplicate of a local one, and a red run means nobody has a working APK.
+#
+# NO HOSTED RUNNERS. The SDK, the JDK and (later) the signing keystore live on
+# the mini; a hosted runner would need all three staged on every run, and the
+# keystore is not going to a machine this estate does not own.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agent/android/**'
+      - '.github/workflows/check.agent-android.yml'
+  pull_request:
+    paths:
+      - 'agent/android/**'
+      - '.github/workflows/check.agent-android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  assemble:
+    name: assemble the DPC
+    # SELF-HOSTED, AND THIS JOB RUNS ON `pull_request` TOO - so it executes a
+    # PR author's own Gradle wrapper and build scripts on shared household
+    # hardware, before that PR has been reviewed. The release-signing secrets
+    # below are gated to push-on-main only (see the `Materialize the release
+    # keystore` step), which stops a PR reading the key during its own run but
+    # does not isolate the machine from one. That gap is an accepted residual
+    # risk, written up in full - including exactly when it must be revisited -
+    # in docs/signing-ceremony.md ("Residual risk, accepted 2026-08-23") and
+    # tracked as muster#89. Going public is the revisit trigger that doc names:
+    # re-read it before assuming this posture is still fine once outside
+    # contributors can open pull requests here.
+    runs-on: [self-hosted, macOS, ARM64, mac-mini]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: agent/android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # FULL HISTORY, because the agent's versionCode is derived from it.
+          # actions/checkout is SHALLOW by default - one commit - so
+          # `git rev-list --count HEAD` returns 1 on every build, forever. That
+          # is the exact bug this stamp exists to fix, reintroduced one layer
+          # down, and it passed the read-back check because 1 genuinely did
+          # reach the APK: the check proved the stamp LANDED, not that it MEANT
+          # anything. Caught by reading CI's own notice rather than by trusting
+          # a green run.
+          fetch-depth: 0
+
+      - name: Resolve the Android SDK path
+        # Computed here instead of a top-level `env:` (a literal string,
+        # never shell-expanded) or a repo *variable* (prints into public
+        # workflow logs once this repo is public, and this is a real
+        # filesystem account name on shared self-hosted hardware). $HOME
+        # resolves correctly in a run step's actual shell context.
+        run: echo "ANDROID_HOME=$HOME/Library/Android/sdk" >> "$GITHUB_ENV"
+
+      - name: Point Gradle at the SDK
+        # local.properties is deliberately NOT committed - it is a machine path
+        # and committing one makes the build work on exactly one workstation.
+        run: printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
+
+      - name: Unit tests
+        # Before assembling, because a compile error in a test is a compile
+        # error in the agent, and finding it after a two-minute APK build is
+        # two minutes wasted every time.
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Prove the tests actually ran
+        # `BUILD SUCCESSFUL` is not evidence. Gradle prints it for a test task
+        # that found NO SOURCES at all, and a test directory that stops being
+        # picked up - a renamed source set, a plugin change, a sourceSets block
+        # somebody tidied - fails exactly this way: green, fast, and testing
+        # nothing. The count is the only thing that distinguishes the two, and
+        # it cannot be checked afterwards on the runner because the next
+        # workflow's checkout cleans the workspace.
+        run: |
+          set -euo pipefail
+          RESULTS=app/build/test-results/testDebugUnitTest
+          [ -d "$RESULTS" ] || { echo "::error::no test-results directory - the test task ran no tests"; exit 1; }
+          TOTAL=$(python3 - "$RESULTS" <<'PY'
+          import sys, pathlib, xml.etree.ElementTree as ET
+          total = 0
+          for f in pathlib.Path(sys.argv[1]).glob("TEST-*.xml"):
+              total += int(ET.parse(f).getroot().get("tests", 0))
+          print(total)
+          PY
+          )
+          echo "ran $TOTAL unit tests"
+          [ "$TOTAL" -gt 0 ] || { echo "::error::the test task reported success having run 0 tests"; exit 1; }
+          echo "::notice::$TOTAL unit tests ran and passed"
+
+      # THE AGENT'S versionCode, AND WITHOUT IT MUSTER CANNOT UPDATE ITSELF.
+      # `build.gradle.kts` reads MUSTER_VERSION_CODE and falls back to 1, and
+      # nothing ever set it - so every build muster has ever published was
+      # version 1. `AppInstallPolicy` installs only when the device is carrying
+      # a LOWER version than it is told, so 1 could never replace 1, and Android
+      # refuses a same-version install anyway. Over-the-air agent updates were
+      # impossible and looked implemented.
+      #
+      # `git rev-list --count` rather than a run number: monotonic with the
+      # history itself, so it survives this workflow being renamed or re-created,
+      # and two builds of the same commit produce the SAME number rather than
+      # two versions of identical bytes.
+      - name: Stamp the version
+        id: version
+        run: |
+          set -euo pipefail
+          CODE="$(git rev-list --count HEAD)"
+          # `-gt 1`, NOT `-gt 0`. A shallow checkout yields exactly 1 and that
+          # is indistinguishable from a real repository with one commit - but
+          # this one has hundreds, and a version that is always 1 is precisely
+          # the inert self-update this stamp exists to end. Guarding on 0 let
+          # that through once already.
+          [ "$CODE" -gt 1 ] || {
+            echo "::error::versionCode came out as $CODE - the checkout is shallow (needs fetch-depth: 0), so every build would be version 1 and muster could never replace its own agent"
+            exit 1
+          }
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "MUSTER_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "::notice::agent versionCode $CODE"
+
+      # THE BRIDGE THE CEREMONY DID NOT HAVE, AND WITHOUT IT THE CEREMONY IS
+      # THEATRE.
+      #
+      # docs/signing-ceremony.md seeds four repository secrets, and
+      # build.gradle.kts reads MUSTER_KEYSTORE_PATH - a FILE on disk. Nothing
+      # connected the two. The ceremony could be performed exactly as written -
+      # key generated, backed up, stored in SSM under the shared CMK, seeded
+      # into GitHub - and this workflow would go on emitting a debug-signed APK,
+      # with every step below reporting success. A procedure whose whole purpose
+      # is to avoid factory-resetting the fleet, changing nothing.
+      #
+      # OUTSIDE THE CHECKOUT is not a preference: build.gradle.kts REFUSES a
+      # keystore inside the working tree rather than trusting .gitignore, so an
+      # in-tree path fails the build outright.
+      - name: Materialize the release keystore
+        id: keystore
+        env:
+          # NOT ON A PULL REQUEST, AND THIS IS THE IMPORTANT PART.
+          #
+          # A same-repository PR receives repository secrets, and this job
+          # checks out and EXECUTES the candidate's own build logic - the Gradle
+          # wrapper, the build scripts, anything they invoke. A PR that edited
+          # those could read the keystore and its passwords straight out of the
+          # runner. The key is the permanent update identity for every installed
+          # agent: losing control of it is not a leak to rotate past, it is the
+          # end of the fleet's upgrade path.
+          #
+          # A PUSH TO MAIN AND NOTHING ELSE. Excluding only `pull_request`
+          # was not enough: this workflow also has `workflow_dispatch`, and
+          # GitHub lets anyone who can dispatch it choose ANY branch. That
+          # branch's Gradle wrapper and build scripts then run with the key
+          # decoded on disk - unreviewed, and around branch protection
+          # entirely. `push` to `refs/heads/main` is the only event whose code
+          # has necessarily been through review.
+          #
+          # Everything else - PRs, dispatches, tags - builds DEBUG, unsigned,
+          # which is the right validation anyway: it exercises the compile, the
+          # tests and the manifest checks without ever holding the key.
+          #
+          # Safe by construction on the consumer side too: build.server-image.yml
+          # bakes only `?branch=main&status=success` runs, so a PR artifact is
+          # never published.
+          #
+          # ACCEPTED RESIDUAL RISK, recorded deliberately - see muster#89.
+          # This is a persistent self-hosted runner, and it also executes
+          # pull-request code. Event-gating the secret stops a PR reading the
+          # key DURING ITS OWN RUN; it does not isolate the machine. A PR can
+          # leave a Gradle init script in ~/.gradle or replace SDK tooling and
+          # collect the key on a later main build, and the certificate pin
+          # cannot detect that, because a build signed with the genuinely
+          # stolen key matches the pin by definition.
+          #
+          # Accepted because the writer set is the operator and agents under
+          # the operator's control, on a private repository with no external
+          # contributors. THIS STOPS BEING TRUE THE MOMENT ANYONE ELSE CAN OPEN
+          # A PULL REQUEST HERE, and at that point signing must move to a
+          # runner that never executes candidate code.
+          KEYSTORE_BASE64: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && secrets.MUSTER_KEYSTORE_BASE64 || '' }}
+          # THE PIN, and the switch that makes absence fatal. Set once, as the
+          # last step of docs/signing-ceremony.md. While it is empty the estate
+          # has no release key yet and a debug build is the honest answer; once
+          # it holds a digest, a build that cannot produce that exact
+          # certificate must fail rather than publish something else.
+          PINNED_CERT: ${{ vars.MUSTER_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64:-}" ]; then
+            # FAIL CLOSED once a key is known to exist. Without this, deleting
+            # or rotating a secret silently downgrades main to debug-signed, the
+            # image bakes it, and the result is an APK that no release-signed
+            # handset can upgrade to while every newly provisioned one binds to
+            # the runner's throwaway debug key. A warning does not prevent that;
+            # only a red build does.
+            # THE SAME CONDITION THAT GRANTS THE SECRET, NOT ITS INVERSE.
+            # Failing closed on "not a pull request" also caught
+            # workflow_dispatch, which is deliberately never given the key - so
+            # once a pin existed, every manual run would have died here instead
+            # of producing the debug build this workflow documents. Only a push
+            # to main is expected to be able to sign, so only a push to main is
+            # wrong when it cannot.
+            if [ -n "${PINNED_CERT:-}" ] \
+               && [ "${{ github.event_name }}" = "push" ] \
+               && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+              echo "::error::MUSTER_RELEASE_CERT_SHA256 is set, so this estate HAS a release key - but MUSTER_KEYSTORE_BASE64 is missing on a $GITHUB_EVENT_NAME build. Refusing to publish a debug-signed agent. Re-seed the secret from SSM; see docs/signing-ceremony.md."
+              exit 1
+            fi
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::no MUSTER_KEYSTORE_BASE64 - this APK is DEBUG-SIGNED. Any device provisioned against it is bound to the SDK's auto-generated debug key, which is not backed up and is recreated if deleted; freeing such a device later costs a factory reset. See docs/signing-ceremony.md."
+            exit 0
+          fi
+          KS="$RUNNER_TEMP/muster-agent-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KS"
+          chmod 600 "$KS"
+          # A secret that exists but decodes to nothing is the failure mode the
+          # ceremony's own `tr -d '\n'` note is about. Catch it here rather than
+          # as an opaque gradle error.
+          [ -s "$KS" ] || { echo "::error::MUSTER_KEYSTORE_BASE64 decoded to an empty file"; exit 1; }
+          echo "MUSTER_KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::building RELEASE-signed"
+
+      - name: Assemble
+        env:
+          MUSTER_VERSION_CODE: ${{ steps.version.outputs.code }}
+          MUSTER_VERSION_LABEL: ${{ github.sha }}
+          # Guarded the same way the keystore itself is: a pull request runs
+          # candidate build logic, and must never be handed these.
+          MUSTER_KEYSTORE_PASSWORD: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && secrets.MUSTER_KEYSTORE_PASSWORD || '' }}
+          MUSTER_KEY_ALIAS: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && secrets.MUSTER_KEY_ALIAS || '' }}
+          MUSTER_KEY_PASSWORD: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && secrets.MUSTER_KEY_PASSWORD || '' }}
+        # MUSTER_APK RATHER THAN A HARDCODED PATH, because the release and debug
+        # outputs land in different directories and every step below reads the
+        # APK back rather than trusting what went in. A step still pointing at
+        # the debug path would happily verify an APK this build did not ship.
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
+            ./gradlew --no-daemon assembleRelease
+            echo "MUSTER_APK=app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+          else
+            ./gradlew --no-daemon assembleDebug
+            echo "MUSTER_APK=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+          fi
+
+      # READ BACK OUT OF THE APK, not echoed from the variable that went in.
+      # A stamp the build silently ignored would otherwise be reported as
+      # applied, which is the same class of lie as a green suite that ran no
+      # tests. aapt reads what actually shipped.
+      - name: Prove the version reached the APK
+        run: |
+          set -euo pipefail
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          APK="$MUSTER_APK"
+          SHIPPED="$("$BT/aapt" dump badging "$APK" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
+          WANTED="${{ steps.version.outputs.code }}"
+          [ "$SHIPPED" = "$WANTED" ] \
+            || { echo "::error::asked for versionCode $WANTED, the APK carries $SHIPPED"; exit 1; }
+          echo "::notice::the shipped APK carries versionCode $SHIPPED"
+          # WRITTEN BY THE STEP THAT JUST READ IT OUT OF THE APK, so this file
+          # cannot drift from the bytes it describes - the verification above is
+          # its source. A number carried from the variable that went IN could be
+          # wrong about a build that ignored it.
+          printf '%s' "$SHIPPED" > "$(dirname "$MUSTER_APK")/agent-version.txt"
+
+      # READ THE CERTIFICATE OUT OF THE APK AND COMPARE IT TO A PINNED
+      # DIGEST, for the same reason the versionCode is read back rather than
+      # echoed: a build that quietly signed with the wrong key is identical, in
+      # every log line above this one, to one that signed correctly.
+      #
+      # A DIGEST, NOT A SUBJECT. The first version of this step tested for
+      # `CN=Android Debug` - and that check does not do what this comment
+      # describes. On 2026-08-23 quadseven/zippie shipped a build signed by a
+      # throwaway CI key to two handsets; it installed cleanly, ran correctly,
+      # and can never be upgraded, because Android identifies an app by its
+      # signing certificate for as long as it is installed. That build named
+      # itself TESTKEY in three places AND ITS CERTIFICATE SUBJECT WAS BYTE
+      # IDENTICAL TO THE RELEASE ONE. A subject test would have passed it.
+      #
+      # Every throwaway, rotated, restored-from-the-wrong-backup or
+      # attacker-supplied keystore produces a different digest, and only the
+      # real key produces the pinned one. That is the whole check.
+      - name: Prove the APK carries the pinned release certificate
+        if: steps.keystore.outputs.signed == 'true'
+        env:
+          PINNED_CERT: ${{ vars.MUSTER_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          CERTS="$("$BT/apksigner" verify --print-certs "$MUSTER_APK")"
+          # `head -1` is the v1/v2/v3 signer, which for this app is one key -
+          # build.gradle.kts pins v1 ON precisely so all schemes carry it.
+          GOT="$(printf '%s\n' "$CERTS" \
+                 | sed -n 's/.*certificate SHA-256 digest: *\([0-9a-fA-F]*\).*/\1/p' \
+                 | head -1 | tr 'A-F' 'a-f')"
+          [ -n "$GOT" ] || { echo "::error::could not read a certificate digest out of $MUSTER_APK"; exit 1; }
+          if [ -z "${PINNED_CERT:-}" ]; then
+            # FATAL, NOT A WARNING, AND THE REASON IS CIRCULARITY.
+            #
+            # The obvious design is to let the first signed build through and
+            # have the operator copy the digest it prints into the pin. That
+            # authenticates nothing: the pin would be derived from whatever CI
+            # happened to sign with, so a mis-seeded or substituted keystore
+            # gets published FIRST and legitimized afterwards by copying its
+            # own digest. The pin has to come from the keystore on the
+            # operator's machine, before any of this runs.
+            #
+            # So the ceremony computes it with `keytool -list -v` and sets the
+            # variable BEFORE seeding the secrets. If a key is present here and
+            # no pin is, the ordering was not followed and nothing should ship.
+            echo "::error::this APK is release-signed but MUSTER_RELEASE_CERT_SHA256 is not set, so nothing independently says WHICH key is legitimate. Read the digest off the keystore itself (keytool -list -v) and set the repository variable BEFORE seeding the signing secrets - see docs/signing-ceremony.md. Refusing to publish an unpinned release build. For reference, this APK carries $GOT."
+            exit 1
+          fi
+          WANT="$(printf '%s' "$PINNED_CERT" | tr -d ' :' | tr 'A-F' 'a-f')"
+          [ "$GOT" = "$WANT" ] || {
+            echo "::error::this APK is signed by a certificate that is NOT the pinned release key. Pinned $WANT, built $GOT. An agent signed with this cannot upgrade any installed handset, and provisioning against it binds a device to a key nobody chose."
+            exit 1
+          }
+          echo "::notice::release certificate matches the pin: $GOT"
+
+      - name: Prove the admin component survived the build
+        # THE thing that must be true. `dpm set-device-owner` names this
+        # component by string, and a manifest that drops the receiver, renames
+        # it, or loses the BIND_DEVICE_ADMIN permission still builds a perfectly
+        # valid APK - one that cannot be made Device Owner, discovered on a
+        # freshly wiped phone with a cable in hand. aapt reads what actually
+        # shipped rather than what the source says.
+        run: |
+          set -euo pipefail
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          APK="$MUSTER_APK"
+          [ -f "$APK" ] || { echo "::error::no APK at $APK"; exit 1; }
+          DUMP="$("$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK")"
+          echo "$DUMP" | grep -q 'MusterDeviceAdminReceiver' \
+            || { echo "::error::the device admin receiver is not in the shipped manifest"; exit 1; }
+          echo "$DUMP" | grep -q 'android.permission.BIND_DEVICE_ADMIN' \
+            || { echo "::error::BIND_DEVICE_ADMIN is missing - dpm set-device-owner will refuse this APK"; exit 1; }
+          echo "$DUMP" | grep -q 'android.app.action.DEVICE_ADMIN_ENABLED' \
+            || { echo "::error::the DEVICE_ADMIN_ENABLED intent filter is missing"; exit 1; }
+          echo "::notice::admin component, permission and intent filter all present in the built APK"
+
+      # READ OUT OF THE SHIPPED APK, like every other check here.
+      #
+      # A permission the code needs and the manifest does not declare is not a
+      # build error - it is a SecurityException at the moment the feature is
+      # first exercised. ACCESS_NETWORK_STATE was missing while the only code
+      # path needing it was the catch-up job, which runs solely AFTER a fetch has
+      # already failed; so the gap surfaced on a handset mid-enrolment, as a
+      # crash loop, in front of an operator.
+      - name: Prove the permissions the agent needs are declared
+        run: |
+          set -euo pipefail
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          DUMP="$("$BT/aapt2" dump xmltree --file AndroidManifest.xml "$MUSTER_APK")"
+          for want in \
+            android.permission.INTERNET \
+            android.permission.RECEIVE_BOOT_COMPLETED \
+            android.permission.SET_WALLPAPER \
+            android.permission.ACCESS_NETWORK_STATE
+          do
+            echo "$DUMP" | grep -q "$want" \
+              || { echo "::error::$want is not in the shipped manifest"; exit 1; }
+          done
+          echo "::notice::every permission the agent needs is in the shipped manifest"
+
+      - name: Prove the agent can still see other applications
+        # The `queries` element is how the agent enumerates anything other than
+        # itself, and it is the part of the app-hiding policy that fails
+        # SILENTLY. Drop it - by hand, or through a manifest merge that decides
+        # otherwise - and the build stays green, the APK installs, and
+        # AppVisibilitySteward comes up able to see only muster, so an allowlist
+        # hides nothing on a phone nobody is holding.
+        #
+        # `server/tests/test_agent_manifest.py` pins the SOURCE. This reads what
+        # was actually packaged, which is the same distinction the step above
+        # makes about the admin component.
+        #
+        # Matched on the three intents that appear nowhere else in the manifest.
+        # CATEGORY_LAUNCHER is deliberately not one of them: StatusActivity
+        # declares it too, so it would pass with the whole block deleted.
+        run: |
+          set -euo pipefail
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          APK="$MUSTER_APK"
+          DUMP="$("$BT/aapt2" dump xmltree --file AndroidManifest.xml "$APK")"
+          for intent in android.intent.category.HOME \
+                        android.intent.category.SETUP_WIZARD \
+                        android.settings.SETTINGS; do
+            echo "$DUMP" | grep -q "$intent" \
+              || { echo "::error::$intent is not in the shipped manifest - the agent cannot see the launcher"; exit 1; }
+          done
+          if echo "$DUMP" | grep -q 'QUERY_ALL_PACKAGES'; then
+            echo "::error::the APK asks for QUERY_ALL_PACKAGES, which is a fifth permission and changes the Play Protect input"
+            exit 1
+          fi
+          echo "::notice::the package queries survived the build and no fifth permission arrived with them"
+
+      - name: The CSR the agent builds must be one the CA accepts
+        # THE seam between the two halves of muster. The agent builds PKCS#10
+        # in Kotlin with BouncyCastle; the CA parses and signs it in Python
+        # with `cryptography`. Both can be perfectly self-consistent and still
+        # disagree, and neither test suite can see it because each only ever
+        # talks to itself. tools/accept_csr.py says why in full.
+        working-directory: server
+        run: |
+          set -euo pipefail
+          CSR=../agent/android/app/build/cross-language/agent.csr
+          [ -f "$CSR" ] || { echo "::error::the JVM test did not write the cross-language CSR"; exit 1; }
+          uv run --group dev --python 3.12 python tools/accept_csr.py "$CSR"
+
+      - name: The agent and the server must agree what each refusal means
+        # The other half of the same seam. api._STATUS maps a refusal to a
+        # status; the agent maps that status back to a behaviour. A code that
+        # quietly changes meaning on one side gives a device that retries what
+        # can never succeed, or gives up while the operator walks to a laptop.
+        working-directory: server
+        run: |
+          set -euo pipefail
+          MAP=../agent/android/app/build/cross-language/agent-status-map.json
+          [ -f "$MAP" ] || { echo "::error::the JVM test did not write the status map"; exit 1; }
+          uv run --group dev --python 3.12 python tools/check_status_map.py "$MAP"
+
+      - name: The agent and the server must agree which files may travel
+        # The third half of the same seam. policy.MANAGED_FILES decides what the
+        # server serves; ConfigurationPolicy.MANAGED decides what the device
+        # writes. A name on one side and not the other is refused at the handset
+        # or never sent, and neither produces an error anybody is looking at.
+        working-directory: server
+        run: |
+          set -euo pipefail
+          NAMES=../agent/android/app/build/cross-language/agent-managed-files.json
+          [ -f "$NAMES" ] || { echo "::error::the JVM test did not write the managed-file names"; exit 1; }
+          uv run --group dev --python 3.12 python tools/check_managed_files.py "$NAMES"
+
+      # STAGE INTO ONE DIRECTORY, and the reason is subtle enough that it
+      # already cost a red main build.
+      #
+      # upload-artifact roots the archive at the LEAST COMMON ANCESTOR of its
+      # path list. Listing the APK alongside `apk/*/agent-version.txt` widened
+      # that ancestor by one level, so both files arrived nested under `debug/`
+      # instead of at the archive root - and the consumer, which had always
+      # found them at the root, silently stopped finding either. The APK was a
+      # loud failure. The version file was NOT: its absence is a legitimate
+      # state meaning "this build predates the stamp", so the image would have
+      # published an agent advertising no versionCode at all, and self-update
+      # would have quietly stopped working.
+      #
+      # One directory, one glob, one unambiguous root.
+      - name: Stage the artifact
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/agent-artifact"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+          cp "$MUSTER_APK" "$STAGE/"
+          cp "$(dirname "$MUSTER_APK")/agent-version.txt" "$STAGE/"
+          ls -l "$STAGE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          # NOT "-debug-apk" ANY MORE. The name was a claim about how the
+          # bytes were signed, and once this workflow can emit either, a name
+          # that says "debug" while carrying a release APK is the kind of label
+          # nobody re-reads. build.server-image.yml consumes this name.
+          name: muster-agent-apk
+          path: ${{ runner.temp }}/agent-artifact/*
+          if-no-files-found: error
+          retention-days: 14

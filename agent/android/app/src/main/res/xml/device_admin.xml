@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The policies this admin declares it may use.
+
+  DECLARED IS NOT GRANTED, and the distinction bites: a Device Owner gets these
+  without a user prompt, but a policy call whose tag is MISSING here throws
+  SecurityException at runtime with a message about the admin not being allowed,
+  which reads like an ownership problem rather than a manifest one. Add the tag
+  when the call is added, not after the first confusing crash.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <wipe-data />
+        <reset-password />
+        <limit-password />
+        <watch-login />
+        <force-lock />
+        <disable-camera />
+        <disable-keyguard-features />
+    </uses-policies>
+</device-admin>
