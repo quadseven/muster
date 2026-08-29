@@ -155,6 +155,18 @@ class Authority:
                 f"expected an EC key, got {type(public_key).__name__}. Devices "
                 "generate P-256; anything else did not come from our agent."
             )
+        # THE CURVE, NOT JUST THE TYPE. The message above has always said
+        # "Devices generate P-256", but the check above only asked whether the
+        # key was EC at all - so a CSR on secp192r1 was certified clean, and a
+        # ~96-bit key carried a full device identity signed by this CA. Every
+        # EC curve passes an isinstance test; only this line makes the sentence
+        # above true.
+        if not isinstance(public_key.curve, ec.SECP256R1):
+            raise Untrusted(
+                f"expected a P-256 key, got {public_key.curve.name} "
+                f"({public_key.key_size}-bit). Devices generate P-256; anything "
+                "else did not come from our agent."
+            )
 
         now = self._clock()
         not_before = now - BACKDATE

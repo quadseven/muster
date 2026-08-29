@@ -193,3 +193,19 @@ def test_the_published_ca_certificate_carries_no_private_key(ca):
     pem = ca.certificate_pem
     assert b"BEGIN CERTIFICATE" in pem
     assert b"PRIVATE KEY" not in pem
+
+
+@pytest.mark.parametrize("curve", [ec.SECP192R1(), ec.SECP224R1()])
+def test_a_sub_p256_curve_is_refused(ca, curve):
+    """The refusal message has always said "Devices generate P-256". Until this
+    test the check only asked whether the key was EC AT ALL, so a CSR on
+    secp192r1 was certified clean and a ~96-bit key carried a full device
+    identity signed by this CA.
+
+    NOT a style point: EVERY EC curve passes an isinstance test, so the
+    sentence in that error message was load-bearing and unenforced. This fails
+    without the SECP256R1 check in ca.py."""
+    csr_der, _key = _csr(key=ec.generate_private_key(curve))
+
+    with pytest.raises(Untrusted, match="P-256"):
+        _issued(ca, csr_der)
