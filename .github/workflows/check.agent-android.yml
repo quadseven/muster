@@ -31,17 +31,37 @@ concurrency:
 jobs:
   assemble:
     name: assemble the DPC
-    # SELF-HOSTED, AND THIS JOB RUNS ON `pull_request` TOO - so it executes a
-    # PR author's own Gradle wrapper and build scripts on shared household
-    # hardware, before that PR has been reviewed. The release-signing secrets
-    # below are gated to push-on-main only (see the `Materialize the release
-    # keystore` step), which stops a PR reading the key during its own run but
-    # does not isolate the machine from one. That gap is an accepted residual
-    # risk, written up in full - including exactly when it must be revisited -
-    # in docs/signing-ceremony.md ("Residual risk, accepted 2026-08-23") and
-    # tracked as muster#89. Going public is the revisit trigger that doc names:
-    # re-read it before assuming this posture is still fine once outside
-    # contributors can open pull requests here.
+    # A FORK PULL REQUEST NEVER REACHES THIS RUNNER, AND THAT IS THE WHOLE
+    # REASON THIS CONDITION EXISTS.
+    #
+    # This job runs on hardware inside a home network and it executes the
+    # checked-out tree's own build logic - the Gradle wrapper JAR, the build
+    # scripts, every plugin they resolve. `pull_request` fires for forks, so
+    # without this guard a public repository means any stranger's first PR runs
+    # arbitrary code on that machine before a human has read a line of it.
+    #
+    # EVENT-GATING THE SECRETS WAS NEVER SUFFICIENT, and the distinction is the
+    # point. The `Materialize the release keystore` step below hands the signing
+    # key to a push-on-main build only, which stops a pull request reading the
+    # key DURING ITS OWN RUN - it does not isolate the machine. This is a
+    # PERSISTENT runner: candidate code can leave a Gradle init script in
+    # ~/.gradle, or replace a tool on PATH, and collect the key on a later main
+    # build. The certificate pin cannot see that, because a build signed with
+    # the genuinely stolen key matches the pin by definition.
+    #
+    # SAME-REPOSITORY BRANCHES ONLY, which is exactly the writer set. Only
+    # someone with write access can push a branch here, so this keeps the
+    # runner's trust boundary identical to the one it had while the repository
+    # was private. That is the precondition docs/signing-ceremony.md accepted
+    # its residual risk on ("Residual risk, accepted 2026-08-23"), and it is why
+    # going public no longer widens it - the acceptance now rests on a condition
+    # the workflow ENFORCES rather than on the repository being private.
+    #
+    # SKIPPED, NOT FAILED, for a fork: an outside contributor sees a skipped
+    # check rather than a red one they have no way to fix.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 30
     defaults:
@@ -61,13 +81,48 @@ jobs:
           # repository was recreated with a single commit. Nothing else here
           # reads history.
 
-      - name: Resolve the Android SDK path
-        # Computed here instead of a top-level `env:` (a literal string,
-        # never shell-expanded) or a repo *variable* (prints into public
-        # workflow logs once this repo is public, and this is a real
-        # filesystem account name on shared self-hosted hardware). $HOME
-        # resolves correctly in a run step's actual shell context.
-        run: echo "ANDROID_HOME=$HOME/Library/Android/sdk" >> "$GITHUB_ENV"
+      - name: Check the Android SDK this runner advertises
+        # THE RUNNER DECLARES ITS OWN SDK LOCATION AND THIS STEP NO LONGER
+        # OVERRIDES IT.
+        #
+        # What stood here computed `$HOME/Library/Android/sdk` and wrote it to
+        # $GITHUB_ENV. Its comment worried about a repository VARIABLE printing
+        # a real filesystem account name into a public workflow log - and then
+        # reached for a mechanism that is every bit as public. Everything in
+        # $GITHUB_ENV is echoed in the `env:` group of EVERY subsequent step, so
+        # the account name was printed fifteen times in a single run. It also
+        # clobbered the ambient value the runner supplies with a worse one.
+        #
+        # ANDROID_HOME comes from the runner's own `.env`, so it is already in
+        # the environment of every step here. Reading it instead of setting it
+        # keeps it out of the log entirely: a variable the workflow INHERITS is
+        # never echoed, only one it SETS. It also stops this workflow hardcoding
+        # a filesystem layout that is the runner's business - moving the SDK now
+        # needs no change here, and no other machine is excluded by a path only
+        # one of them has.
+        run: |
+          set -euo pipefail
+          # DEFENCE IN DEPTH FOR A LOG THAT IS ABOUT TO BE PUBLIC. The runner's
+          # home directory is not something a build should be able to print by
+          # accident, and a Gradle stack trace or a daemon path would do it
+          # without anybody choosing to. A mask applies to everything the rest
+          # of this job emits, so it covers output no step here writes
+          # deliberately - including an SDK that is itself under $HOME, which
+          # then prints as ***/Library/Android/sdk rather than an account name.
+          echo "::add-mask::$HOME"
+          [ -n "${ANDROID_HOME:-}" ] || {
+            echo "::error::this runner does not advertise ANDROID_HOME. The SDK location is the runner's to declare in its .env, not this workflow's to guess - a hardcoded path works on exactly one machine and prints that machine's account name into a public log."
+            exit 1
+          }
+          [ -d "$ANDROID_HOME" ] || { echo "::error::ANDROID_HOME does not point at a directory on this runner"; exit 1; }
+          # BUILD-TOOLS SPECIFICALLY, because five steps below reach into it for
+          # aapt, aapt2 and apksigner. An SDK without it fails those one at a
+          # time, late, with a `find` that silently returned nothing.
+          [ -d "$ANDROID_HOME/build-tools" ] || {
+            echo "::error::the Android SDK this runner advertises has no build-tools directory - aapt, aapt2 and apksigner are all read from there by the checks below"
+            exit 1
+          }
+          echo "::notice::using the Android SDK this runner advertises"
 
       - name: Point Gradle at the SDK
         # local.properties is deliberately NOT committed - it is a machine path
@@ -222,20 +277,22 @@ jobs:
           # bakes only `?branch=main&status=success` runs, so a PR artifact is
           # never published.
           #
-          # ACCEPTED RESIDUAL RISK, recorded deliberately - see muster#89.
-          # This is a persistent self-hosted runner, and it also executes
-          # pull-request code. Event-gating the secret stops a PR reading the
-          # key DURING ITS OWN RUN; it does not isolate the machine. A PR can
-          # leave a Gradle init script in ~/.gradle or replace SDK tooling and
-          # collect the key on a later main build, and the certificate pin
+          # ACCEPTED RESIDUAL RISK, recorded deliberately - see
+          # docs/signing-ceremony.md. This is a persistent self-hosted runner,
+          # so event-gating the secret stops a run reading the key DURING ITS
+          # OWN RUN but does not isolate the machine: code that executes here
+          # can leave a Gradle init script in ~/.gradle or replace SDK tooling
+          # and collect the key on a later main build, and the certificate pin
           # cannot detect that, because a build signed with the genuinely
           # stolen key matches the pin by definition.
           #
-          # Accepted because the writer set is the operator and agents under
-          # the operator's control, on a private repository with no external
-          # contributors. THIS STOPS BEING TRUE THE MOMENT ANYONE ELSE CAN OPEN
-          # A PULL REQUEST HERE, and at that point signing must move to a
-          # runner that never executes candidate code.
+          # Accepted because only the writer set executes here at all. The
+          # job-level condition above admits same-repository branches only, so
+          # the code that runs on this machine is the operator's and that of
+          # agents under the operator's control - the same set as when this
+          # repository was private, and unchanged by making it public. The
+          # acceptance rests on that condition; if it is ever relaxed, signing
+          # must move to a runner that never executes candidate code.
           KEYSTORE_BASE64: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && secrets.MUSTER_KEYSTORE_BASE64 || '' }}
           # THE PIN, and the switch that makes absence fatal. Set once, as the
           # last step of docs/signing-ceremony.md. While it is empty the estate

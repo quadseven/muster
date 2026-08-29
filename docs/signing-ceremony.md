@@ -23,18 +23,49 @@ and is recreated if deleted - so enrolling against it buys a wipe later. Doing
 this ceremony first makes every future agent update a silent install over the
 top instead.
 
-## Residual risk, accepted 2026-08-23
+## Residual risk, accepted 2026-08-23, re-based 2026-08-28
 
-Signing runs on the mac mini, which also executes pull-request code. Gating the
-secrets by event stops a PR reading the key during its own run; it does not
-isolate the machine. A PR can persist outside the checkout and collect the key
-on a later main build, and the certificate pin cannot detect that - a build
-signed with the genuinely stolen key matches the pin by definition.
+Signing runs on a self-hosted runner that also executes the checked-out tree's
+own build logic. Gating the secrets by event stops a run reading the key during
+its own run; it does not isolate the machine. Code that executes there can
+persist outside the checkout - a Gradle init script in `~/.gradle`, a replaced
+tool on `PATH` - and collect the key on a later main build, and the certificate
+pin cannot detect that: a build signed with the genuinely stolen key matches the
+pin by definition.
 
-Accepted because the only writers are the operator and agents under the
-operator's control, on a private repository with no external contributors.
-**Revisit the moment anyone else can open a pull request here.** Tracked as
-muster#89.
+This was accepted on the grounds that the only writers are the operator and
+agents under the operator's control, **on a private repository with no external
+contributors** - a precondition that expires the moment anyone else can open a
+pull request here.
+
+**What changed on 2026-08-28.** Rather than let that precondition expire on the
+day the repository goes public, both self-hosted workflows now enforce it
+directly. `check.agent-android.yml` and `check.server.yml` carry a job-level
+condition admitting `pull_request` events only when the head repository IS this
+repository:
+
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
+
+A fork pull request therefore schedules nothing on the runner - its checks
+report as skipped. Only a branch in this repository reaches the machine, and
+only someone with write access can push one. So the set of code that executes
+next to the signing key is unchanged by the repository becoming public, and the
+acceptance above now rests on a condition the workflows enforce rather than on
+the repository's visibility.
+
+**The condition is the control.** If it is ever relaxed - a `pull_request_target`
+trigger, a manual approval that lets fork code through, a second job without the
+guard - the acceptance lapses with it and signing must move to a runner that
+never executes candidate code.
+
+**Defence in depth, once public.** `PUT /repos/quadseven/muster/actions/permissions/fork-pr-contributor-approval`
+rejects a private repository outright (HTTP 422), so it can only be set after
+the flip. Set it to require approval for all outside collaborators. It is a
+second lock on a door the condition above already bolts, not a substitute for
+it: approval is a human reading a build graph, which is not a thing a human can
+reliably audit.
 
 ## The ceremony (performed 2026-08-23)
 

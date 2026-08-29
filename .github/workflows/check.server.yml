@@ -37,14 +37,29 @@ concurrency:
 jobs:
   pytest:
     name: server tests
-    # SELF-HOSTED, AND THIS JOB RUNS ON `pull_request` TOO - so a PR's own
-    # `pytest` invocation, and anything its own test/conftest code does, runs
-    # on shared household hardware before that PR has been reviewed. This job
-    # holds no release-signing secrets, but it is the same self-hosted-runner
-    # class of risk that docs/signing-ceremony.md writes up in full for
-    # check.agent-android.yml ("Residual risk, accepted 2026-08-23", tracked as
-    # muster#89) - accepted on the same grounds (private repo, no outside
-    # contributors) and due the same revisit once that stops being true.
+    # A FORK PULL REQUEST NEVER REACHES THIS RUNNER.
+    #
+    # This job runs on hardware inside a home network, and `pull_request` fires
+    # for forks. Without this guard, going public would mean any stranger's
+    # first PR executes their `pytest` invocation - and anything their own
+    # conftest imports at collection time - on that machine, before a human has
+    # read a line of it. No secret is needed for that to be bad: code execution
+    # on the runner is the loss, not what the runner happens to hold.
+    #
+    # SAME-REPOSITORY BRANCHES ONLY, which is exactly the writer set. A branch
+    # in this repository can only be pushed by someone with write access, so
+    # this condition keeps the runner's trust boundary identical to the one it
+    # had while the repository was private - the precondition
+    # docs/signing-ceremony.md accepted its residual risk on. Going public no
+    # longer widens it.
+    #
+    # SKIPPED, NOT FAILED, for a fork: the check reports as skipped rather than
+    # red, so an outside contributor is not shown a failure they cannot fix.
+    # `build.server-image.yml` is their signal - it runs on a GitHub-hosted
+    # runner, builds this server, and asserts against the built image.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 10
     defaults:
