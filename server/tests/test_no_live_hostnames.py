@@ -200,10 +200,17 @@ def test_no_tracked_file_names_a_live_host() -> None:
         ["git", "-C", str(root), "ls-files", "-z"], capture_output=True, check=True
     ).stdout.decode().split("\0")
 
+    # THIS FILE EXCLUDES ITSELF, and it has to. Its must-catch controls are
+    # live-looking hostnames by construction, so scanning itself makes the guard
+    # fail on the very strings that prove it works. Found the honest way: the
+    # first push went red in CI, because a local run had scanned the file while
+    # it was still untracked and `git ls-files` could not see it.
+    me = str(Path(__file__).resolve().relative_to(root))
+
     offenders: list[str] = []
     read = 0
     for rel in files:
-        if not rel or Path(rel).suffix.lower() in SKIP_SUFFIX:
+        if not rel or rel == me or Path(rel).suffix.lower() in SKIP_SUFFIX:
             continue
         try:
             text = (root / rel).read_text(encoding="utf-8")
