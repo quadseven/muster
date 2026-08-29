@@ -51,15 +51,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          # FULL HISTORY, because the agent's versionCode is derived from it.
-          # actions/checkout is SHALLOW by default - one commit - so
-          # `git rev-list --count HEAD` returns 1 on every build, forever. That
-          # is the exact bug this stamp exists to fix, reintroduced one layer
-          # down, and it passed the read-back check because 1 genuinely did
-          # reach the APK: the check proved the stamp LANDED, not that it MEANT
-          # anything. Caught by reading CI's own notice rather than by trusting
-          # a green run.
-          fetch-depth: 0
+          # NO `fetch-depth: 0`, AND THAT IS NOW DELIBERATE RATHER THAN AN
+          # OVERSIGHT. The version stamp below reads the HEAD commit's
+          # timestamp, which a one-commit checkout carries perfectly well, so
+          # the depth of the checkout can no longer change the number that
+          # ships. The previous stamp counted commits and therefore depended on
+          # history depth - a coupling that produced a wrong-but-green build
+          # when the checkout was shallow, and a hard failure when this
+          # repository was recreated with a single commit. Nothing else here
+          # reads history.
 
       - name: Resolve the Android SDK path
         # Computed here instead of a top-level `env:` (a literal string,
@@ -105,34 +105,79 @@ jobs:
           echo "::notice::$TOTAL unit tests ran and passed"
 
       # THE AGENT'S versionCode, AND WITHOUT IT MUSTER CANNOT UPDATE ITSELF.
-      # `build.gradle.kts` reads MUSTER_VERSION_CODE and falls back to 1, and
-      # nothing ever set it - so every build muster has ever published was
-      # version 1. `AppInstallPolicy` installs only when the device is carrying
-      # a LOWER version than it is told, so 1 could never replace 1, and Android
-      # refuses a same-version install anyway. Over-the-air agent updates were
-      # impossible and looked implemented.
+      # `build.gradle.kts` reads MUSTER_VERSION_CODE and falls back to 1.
+      # `AppInstallPolicy` installs only when the device is carrying a LOWER
+      # version than it is told, and Android refuses a same-or-lower install
+      # outright, so a stamp that fails to climb is an over-the-air update path
+      # that is inert while looking implemented.
       #
-      # `git rev-list --count` rather than a run number: monotonic with the
-      # history itself, so it survives this workflow being renamed or re-created,
-      # and two builds of the same commit produce the SAME number rather than
-      # two versions of identical bytes.
+      # THE COMMIT TIMESTAMP, NOT THE COMMIT COUNT, AND THE DIFFERENCE IS WHY
+      # THIS WORKFLOW WAS RED.
+      #
+      # The previous stamp was `git rev-list --count HEAD`. A count is monotonic
+      # only within ONE history: recreating this repository reset it from 90 to
+      # 1, which is not merely a smaller number but an UNUSABLE one. Android
+      # refuses downgrades, so every handset provisioned from a legacy build -
+      # release-signed up to versionCode 86, with a single debug-signed 87 built
+      # on a pull request - would have been permanently unreachable by anything
+      # this repository can now produce. A count also cannot be repaired by
+      # adding an offset, because the next recreation resets it again and the
+      # offset has to be rediscovered by whoever notices.
+      #
+      # A COMMITTER TIMESTAMP HAS NONE OF THAT. It is wall-clock time carried
+      # inside the commit, so it does not know or care how deep the history is,
+      # how many times the repository has been recreated, or what the workflow
+      # is called. `main` is protected against non-fast-forward pushes and every
+      # GitHub merge method stamps the new commit with the time of the merge, so
+      # the value climbs on every push to main, forever, with no state kept
+      # anywhere.
+      #
+      # It also keeps the one property the count had that was worth keeping:
+      # two builds of the SAME commit produce the SAME number, rather than two
+      # different versions of identical bytes. A build-time `date` would not.
+      #
+      # MINUTES, NOT SECONDS. Seconds since the epoch is ~1.79e9 today against
+      # an int32 ceiling of 2147483647 - roughly a decade of headroom, and a
+      # versionCode that overflows is a fleet that cannot be updated. Minutes
+      # divide that by 60: ~2.98e7 now, growing 525960 a year, which is about
+      # four thousand years of headroom. The cost is that two commits landing on
+      # main inside the same minute would share a number; `concurrency` with
+      # cancel-in-progress makes that vanishingly unlikely, and the recovery is
+      # simply the next commit.
       - name: Stamp the version
         id: version
         run: |
           set -euo pipefail
-          CODE="$(git rev-list --count HEAD)"
-          # `-gt 1`, NOT `-gt 0`. A shallow checkout yields exactly 1 and that
-          # is indistinguishable from a real repository with one commit - but
-          # this one has hundreds, and a version that is always 1 is precisely
-          # the inert self-update this stamp exists to end. Guarding on 0 let
-          # that through once already.
-          [ "$CODE" -gt 1 ] || {
-            echo "::error::versionCode came out as $CODE - the checkout is shallow (needs fetch-depth: 0), so every build would be version 1 and muster could never replace its own agent"
+          # %ct is the COMMITTER date, not the author date. Author dates are
+          # preserved across rebases and cherry-picks and can therefore move
+          # backwards; the committer date is set when the commit object is
+          # written, which for a merge onto main is the moment of the merge.
+          CODE=$(( $(git log -1 --format=%ct HEAD) / 60 ))
+
+          # THE FLOOR IS A DATE, NOT `1`.
+          #
+          # This is the minute-of-epoch for 2026-06-20, shortly before this
+          # scheme was adopted. Anything at or below it is not a timestamp:
+          # a fallback to 1, a commit count, a clock sitting at the epoch, or a
+          # `git log` that returned nothing and left the arithmetic at 0. The
+          # previous guard tested `-gt 1`, which passed for every one of those
+          # except the exact value 1 - and a repository with a single commit
+          # returns exactly 1, which is how a clean-slate recreation turned a
+          # correct checkout into a red build blaming a shallow one.
+          #
+          # It doubles as the anti-downgrade assertion. The highest versionCode
+          # the legacy repository ever built was 87, so any value clearing this
+          # floor is ~341000x above every APK any enrolled device can be
+          # carrying, and Android's refusal to downgrade cannot bite.
+          MIN_CODE=29700000
+          [ "$CODE" -gt "$MIN_CODE" ] || {
+            echo "::error::versionCode came out as $CODE, which is at or below $MIN_CODE and therefore not a commit timestamp. Expected minutes since the epoch (~29800000 and rising). A value this low means the stamp fell back to a constant or a commit count, and an agent stamped with it could never replace one already installed."
             exit 1
           }
+
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           echo "MUSTER_VERSION_CODE=$CODE" >> "$GITHUB_ENV"
-          echo "::notice::agent versionCode $CODE"
+          echo "::notice::agent versionCode $CODE (minutes since the epoch, from the HEAD commit's committer date)"
 
       # THE BRIDGE THE CEREMONY DID NOT HAVE, AND WITHOUT IT THE CEREMONY IS
       # THEATRE.
