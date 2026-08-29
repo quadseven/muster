@@ -2477,3 +2477,57 @@ def test_a_version_file_that_is_not_a_number_is_not_reported(state, tmp_path, mo
     client = TestClient(create_app(state))
 
     assert "version_code" not in client.get("/agent.json").json()
+
+
+def test_a_kith_outage_does_not_500_the_device_config_route(state, tmp_path, monkeypatch):
+    """The route's own comment says a store outage means no role, not no
+    configuration - and the mechanism it names does not exist.
+
+    `api.py` reads `member = state.kith.member(proven)` under a comment
+    asserting "`member` answers None when the kith cannot be read", then falls
+    back to the kith scope. But `kith.py`'s `_read` raises `Unreachable` on an
+    unreadable store; it never returns None. Its own section header says so:
+    "reads: raise, never lie".
+
+    So the documented degradation is unreachable code. During a store outage
+    the exception escapes an endpoint that catches only `policy.Unreadable` and
+    `policy.NoSource`, and a device asking what it should be gets an unhandled
+    500 instead of either the intended kith-scope answer or the deliberate 503
+    that five other routes in this file already return via `_unreachable`.
+
+    A 500 also skips the `kith.read.refused` counter, so the outage is missing
+    from the metric the operator would look at.
+    """
+    import base64
+
+    from muster import kith as kith_store
+
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, _ = _enrolled(state)
+
+    def unreadable(_key_id):
+        raise kith_store.Unreachable("the kith store cannot be read")
+
+    monkeypatch.setattr(state.kith, "member", unreadable)
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    response = client.post("/v1/device/config", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    })
+
+    assert response.status_code == 503, (
+        f"expected a deliberate 503, got {response.status_code} - a kith outage "
+        "raised straight through the device-config route"
+    )
+    # 503 AND NOT A SMALLER ANSWER. Falling back to the shared scope would
+    # serve fewer files than this device's role earns, and the agent removes a
+    # file a successful fetch did not mention - so the "keep it configured"
+    # fallback would have withdrawn the very files it meant to protect.
+    assert "DISALLOW_SAFE_BOOT" not in response.text
+    assert response.headers["Cache-Control"] == "no-store"

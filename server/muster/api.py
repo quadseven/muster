@@ -854,12 +854,41 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         # including `app-config`, which carries write tokens - so a device that
         # could name its own role could ask for another role's credentials.
         #
-        # A STORE THAT IS DOWN MEANS NO ROLE, NOT NO CONFIGURATION. `member`
-        # answers None when the kith cannot be read, and falling back to the
-        # kith scope keeps a device configured through a database outage rather
-        # than stripping it - the same argument kith.py makes for why writing to
-        # the store can never fail a request.
-        member = state.kith.member(proven)
+        # A STORE THAT IS DOWN IS A 503, NOT A SMALLER ANSWER. This block used
+        # to say the opposite - that `member` answers None when the kith cannot
+        # be read, so the route could fall back to the kith scope and keep a
+        # device configured through a database outage. Both halves were wrong.
+        #
+        # `member` does NOT answer None. `kith.py`'s reads are filed under
+        # "reads: raise, never lie" and `_read` raises `Unreachable` on an
+        # unreadable store, so the fallback was unreachable code and an outage
+        # escaped an endpoint catching only `policy.Unreadable`/`NoSource` -
+        # an unhandled 500, and one that skipped `kith.read.refused` so the
+        # outage went missing from the metric an operator would look at.
+        #
+        # And the fallback would have been wrong even if it had run. Role
+        # selects the policy scope, so losing the role serves the SHARED scope
+        # instead of the device's - a strictly smaller set of files. Read this
+        # route's own docstring: the agent removes a file that a successful
+        # fetch did not mention, so a smaller answer is an authoritative
+        # instruction to WITHDRAW. "Keeps a device configured" would in fact
+        # have stripped exactly the role-scoped files it meant to protect, by
+        # the same argument that already makes an unreadable policy a 503.
+        try:
+            member = state.kith.member(proven)
+        except kith_store.Unreachable as unreachable:
+            state.telemetry.count("kith.read.refused")
+            telemetry.event(
+                "muster cannot say what role a device has",
+                key_id=proven, error=str(unreachable),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=f"{unreachable}. The device keeps the configuration it "
+                       "already has: muster refuses to answer rather than "
+                       "answering with a scope it cannot confirm.",
+                headers={"Cache-Control": "no-store"},
+            ) from unreachable
         role = member.device.role if member is not None else ""
         try:
             configuration = state.policies.for_device(proven, role=role)
