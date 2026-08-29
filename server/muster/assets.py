@@ -66,7 +66,7 @@ MAX_BYTES = 32 * 1024 * 1024
 # No leading dot, so an editor backup or a `..` cannot be addressed. No slash or
 # backslash, so nothing can leave the directory. No spaces, because a name that
 # needs quoting in a shell is a name that will be mistyped in a policy file.
-_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
+_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\Z")
 
 # What a device is told the bytes are. A CLOSED MAP with a boring default: an
 # extension-to-type guess out of the standard library would let a file name

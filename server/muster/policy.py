@@ -147,14 +147,14 @@ ROLE_FILES: tuple[str, ...] = MANAGED_FILES
 
 # Same shape as enroll._ROLE, and checked again here on purpose. By the time a
 # role reaches this module it is about to become half of a path.
-_ROLE = re.compile(r"^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$")
+_ROLE = re.compile(r"^[a-z]([a-z0-9-]{0,29}[a-z0-9])?\Z")
 
 # A key_id is `hashlib.sha256(...).hexdigest()` (muster/enroll.py), so nothing
 # that reaches this module can contain a path separator. Checked anyway, at this
 # module's own boundary rather than trusting the one caller it has today: the
 # difference between a lookup and an arbitrary read of the pod's filesystem is
 # not a property to leave resting on a function two files away.
-_KEY_ID = re.compile(r"^[0-9a-f]{64}$")
+_KEY_ID = re.compile(r"^[0-9a-f]{64}\Z")
 
 
 class Unreadable(Exception):

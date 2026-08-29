@@ -412,3 +412,32 @@ def test_the_two_role_patterns_cannot_drift(tmp_path):
     from muster import enroll
 
     assert policy._ROLE.pattern == enroll._ROLE.pattern
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["a" * 64 + "\n", "a" * 64 + "\r\n"],
+)
+def test_a_key_id_with_a_trailing_newline_is_refused(value):
+    """Python's `$` matches BEFORE a trailing newline, so `^[0-9a-f]{64}$`
+    accepted 64 hex characters plus "\\n" for as long as it existed.
+
+    This is not hypothetical tidiness. `_KEY_ID`'s own comment says the
+    difference between a lookup and an arbitrary read of the pod's filesystem
+    is not a property to leave resting on a function two files away - and it
+    was resting on `$`. A newline riding into a Kubernetes Secret key is a
+    failure mode this fleet has been bitten by before.
+
+    Deliberately asserts against a LITERAL, not against the sibling constant:
+    the existing guard compares the two copies of the regex to each other, so
+    it cannot see a defect that both copies share."""
+    assert policy._KEY_ID.match(value) is None
+
+
+@pytest.mark.parametrize("value", ["zippie\n", "zippie\r\n"])
+def test_a_role_with_a_trailing_newline_is_refused(value):
+    """Same `$`-vs-`\\Z` gap. A role becomes half of a Kubernetes Secret key
+    (`role-<name>.app-config`), and a Secret key may hold only
+    [-._a-zA-Z0-9] - so a newline that passes validation here is a write that
+    fails much later, somewhere with far less context."""
+    assert policy._ROLE.match(value) is None

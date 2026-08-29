@@ -117,7 +117,7 @@ SCANNED_CODE_BYTES = 24
 # Ends alphanumeric as well as starting so: `zippie-` is legal as a Secret key
 # and is almost always a typo, and the cost of a typo here is a policy scope
 # that exists, is served to nothing, and looks exactly like one that works.
-_ROLE = re.compile(r"^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$")
+_ROLE = re.compile(r"^[a-z]([a-z0-9-]{0,29}[a-z0-9])?\Z")
 
 MAX_CODE_LENGTH = 256
 
