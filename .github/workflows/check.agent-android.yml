@@ -570,7 +570,11 @@ jobs:
           rm -rf "$STAGE"; mkdir -p "$STAGE"
           cp "$MUSTER_APK" "$STAGE/"
           cp "$(dirname "$MUSTER_APK")/agent-version.txt" "$STAGE/"
-          ls -l "$STAGE"
+          # NOT plain `ls -l`: its owner column prints the self-hosted
+          # runner account name into a public Actions log, which no
+          # runner relocation can prevent. Permissions, size and name are
+          # what this line is for.
+          ls -l "$STAGE" | awk '{print $1, $5, $9}'
 
       - uses: actions/upload-artifact@v4
         with:
