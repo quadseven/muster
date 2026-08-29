@@ -29,7 +29,7 @@ class DeviceStatusTest {
         stance = stance,
         notAfter = 1_795_000_000L,
         renewAfter = 1_792_000_000L,
-        serverUrl = "https://enroll.muster.casa",
+        serverUrl = "https://enroll.muster.example",
         restrictions = restrictions,
         agentVersion = "0.1.0",
         lastCheckIn = lastCheckIn,
@@ -165,7 +165,7 @@ class DeviceStatusTest {
         for (owner in listOf(true, false)) {
             for (stance in stances) {
                 val view = DeviceStatus.render(facts(deviceOwner = owner, stance = stance))
-                // Prose only. A hostname is not prose: `enroll.muster.casa` is
+                // Prose only. A hostname is not prose: `enroll.muster.example` is
                 // lowercase because DNS is, and capitalising it would be wrong
                 // in a way a person would have to work around.
                 val shown = (listOf(view.headline, view.detail) + view.rows.map { it.value })

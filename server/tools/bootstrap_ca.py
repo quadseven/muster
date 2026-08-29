@@ -21,7 +21,7 @@ for name in (KEY_PARAM, CERT_PARAM):
     except ssm.exceptions.ParameterNotFound:
         pass
 
-authority = Authority.create("muster.casa root", valid_days=3650)
+authority = Authority.create("muster root", valid_days=3650)
 key_pem = authority._key.private_bytes(
     serialization.Encoding.PEM,
     serialization.PrivateFormat.PKCS8,

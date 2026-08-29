@@ -7,7 +7,7 @@ rediscover the hard way.
 
 ## What works, proven end to end
 
-Verified against `enroll.muster.casa`, not inferred from a green build:
+Verified against `enroll.muster.example`, not inferred from a green build:
 
     admin sign-in            200 with the token, 401 without
     mint a pairing code      6 digits, single use, expires in minutes
@@ -27,7 +27,7 @@ carries the same caveat.
 provisioning QR on the page, checked against `/agent.json` before it is drawn,
 and there is no pairing QR any more because nothing on a device could read it.
 That was driven in a browser against a local server; it has not yet been used
-against `enroll.muster.casa`, so it is deliberately not in the list above.
+against `enroll.muster.example`, so it is deliberately not in the list above.
 
 **And, later the same day, on hardware.** A wiped Pixel 6a - <device-serial>,
 Android 17 - scanned a provisioning QR and came up owned by muster, with no
@@ -61,7 +61,7 @@ quote them as one result:
   `device.crt`, parsed off the device:
 
         subject = CN=Pixel 6a
-        issuer  = CN=muster.casa root
+        issuer  = CN=<ca-subject>
         serial  = <device-cert-serial-hex>
         notAfter= Nov 17 15:30:14 2026 GMT
 

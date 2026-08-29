@@ -13,10 +13,15 @@ operator's own admin identity - that have no business in an open-source repo.
 It lives in a private operations repository, unmodified, comments and all;
 this doc describes the shape rather than the exact bytes.
 
-    zone        muster.casa                      Cloudflare, active
-    hostname    enroll.muster.casa               CNAME -> cfargotunnel, proxied
-    tunnel      a Cloudflare Tunnel, routing enroll.muster.casa to the cluster
-    route       enroll.muster.casa               -> http://muster.muster.svc.cluster.local:80
+`muster.example` below stands in for whatever zone an operator actually runs
+this on. It is RFC 2606 documentation space and will never resolve - substitute
+your own hostname, and set `MUSTER_BASE_URL` to it (the server refuses to start
+without it, deliberately: see `docs/administrator-sign-in.md`).
+
+    zone        muster.example                   Cloudflare, active
+    hostname    enroll.muster.example            CNAME -> cfargotunnel, proxied
+    tunnel      a Cloudflare Tunnel, routing enroll.muster.example to the cluster
+    route       enroll.muster.example            -> http://muster.muster.svc.cluster.local:80
     namespace   muster
     workload    Deployment muster, replicas 1    ghcr.io/quadseven/muster-server
                 THE DIGEST LIVES IN THE MANIFEST AND NOWHERE ELSE.
@@ -27,7 +32,7 @@ this doc describes the shape rather than the exact bytes.
                 into prose is a value that will disagree with the thing
                 that ships - which is why this doc no longer states it.
     service     muster                           :80 -> :8000
-    CA          SSM /infra/muster/ca/            CN=muster.casa root, expires 2036-08-16
+    CA          SSM /infra/muster/ca/            CN=<ca-subject>, expires 2036-08-16
     secrets     muster-ca, muster-sign-in, ghcr, muster-db
     kith store  Postgres, CloudNativePG on the LAN
                 postgres-rw.databases.svc.cluster.local:5432, database muster
@@ -81,7 +86,7 @@ checked into this repo (see "The live state" above).
 **5. The public route.**
 
 Point your ingress (a Cloudflare Tunnel, or whatever fronts your cluster) at
-`enroll.muster.casa -> http://muster.muster.svc.cluster.local:80`, then add
+`enroll.muster.example -> http://muster.muster.svc.cluster.local:80`, then add
 the DNS record for it.
 
 **6. Allowlist the domain in NextDNS**, or it is unreachable from the house.
@@ -227,7 +232,7 @@ house network, including the phones muster is for, gets the same answer.
 
 ```sh
 curl -X POST -H "X-Api-Key: $KEY" -H 'Content-Type: application/json' \
-  "https://api.nextdns.io/profiles/$CFG/allowlist" -d '{"id":"muster.casa","active":true}'
+  "https://api.nextdns.io/profiles/$CFG/allowlist" -d '{"id":"muster.example","active":true}'
 ```
 
 macOS then holds the old answer in its own resolver cache for a while after the

@@ -30,7 +30,7 @@ allowlist was the only control there was.
     pool         muster's own, admin-create only, MFA-capable
     app client   a confidential client, authorization-code flow
     hosted UI    a Cognito-hosted sign-in page, muster's own domain
-    callback     https://enroll.muster.casa/auth/callback
+    callback     https://enroll.muster.example/auth/callback
     admins       one Cognito `sub`, in MUSTER_ADMIN_SUBJECTS
 
 **No pool in this operator's estate had a hosted UI until muster needed one.**
@@ -74,8 +74,8 @@ muster is another client of the existing pool, not a second identity story.
 
     grant                 authorization code, with PKCE
     scopes                openid, email
-    callback URL          https://enroll.muster.casa/auth/callback
-    sign-out URL          https://enroll.muster.casa/
+    callback URL          https://enroll.muster.example/auth/callback
+    sign-out URL          https://enroll.muster.example/
 
 The callback URL must match **exactly**, including the scheme and no trailing
 slash. muster builds it from `MUSTER_BASE_URL` rather than from the request's
