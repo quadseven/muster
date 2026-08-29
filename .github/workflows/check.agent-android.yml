@@ -31,17 +31,37 @@ concurrency:
 jobs:
   assemble:
     name: assemble the DPC
-    # SELF-HOSTED, AND THIS JOB RUNS ON `pull_request` TOO - so it executes a
-    # PR author's own Gradle wrapper and build scripts on shared household
-    # hardware, before that PR has been reviewed. The release-signing secrets
-    # below are gated to push-on-main only (see the `Materialize the release
-    # keystore` step), which stops a PR reading the key during its own run but
-    # does not isolate the machine from one. That gap is an accepted residual
-    # risk, written up in full - including exactly when it must be revisited -
-    # in docs/signing-ceremony.md ("Residual risk, accepted 2026-08-23") and
-    # tracked as muster#89. Going public is the revisit trigger that doc names:
-    # re-read it before assuming this posture is still fine once outside
-    # contributors can open pull requests here.
+    # A FORK PULL REQUEST NEVER REACHES THIS RUNNER, AND THAT IS THE WHOLE
+    # REASON THIS CONDITION EXISTS.
+    #
+    # This job runs on hardware inside a home network and it executes the
+    # checked-out tree's own build logic - the Gradle wrapper JAR, the build
+    # scripts, every plugin they resolve. `pull_request` fires for forks, so
+    # without this guard a public repository means any stranger's first PR runs
+    # arbitrary code on that machine before a human has read a line of it.
+    #
+    # EVENT-GATING THE SECRETS WAS NEVER SUFFICIENT, and the distinction is the
+    # point. The `Materialize the release keystore` step below hands the signing
+    # key to a push-on-main build only, which stops a pull request reading the
+    # key DURING ITS OWN RUN - it does not isolate the machine. This is a
+    # PERSISTENT runner: candidate code can leave a Gradle init script in
+    # ~/.gradle, or replace a tool on PATH, and collect the key on a later main
+    # build. The certificate pin cannot see that, because a build signed with
+    # the genuinely stolen key matches the pin by definition.
+    #
+    # SAME-REPOSITORY BRANCHES ONLY, which is exactly the writer set. Only
+    # someone with write access can push a branch here, so this keeps the
+    # runner's trust boundary identical to the one it had while the repository
+    # was private. That is the precondition docs/signing-ceremony.md accepted
+    # its residual risk on ("Residual risk, accepted 2026-08-23"), and it is why
+    # going public no longer widens it - the acceptance now rests on a condition
+    # the workflow ENFORCES rather than on the repository being private.
+    #
+    # SKIPPED, NOT FAILED, for a fork: an outside contributor sees a skipped
+    # check rather than a red one they have no way to fix.
+    if: >-
+      github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, ARM64, mac-mini]
     timeout-minutes: 30
     defaults:
@@ -222,20 +242,22 @@ jobs:
           # bakes only `?branch=main&status=success` runs, so a PR artifact is
           # never published.
           #
-          # ACCEPTED RESIDUAL RISK, recorded deliberately - see muster#89.
-          # This is a persistent self-hosted runner, and it also executes
-          # pull-request code. Event-gating the secret stops a PR reading the
-          # key DURING ITS OWN RUN; it does not isolate the machine. A PR can
-          # leave a Gradle init script in ~/.gradle or replace SDK tooling and
-          # collect the key on a later main build, and the certificate pin
+          # ACCEPTED RESIDUAL RISK, recorded deliberately - see
+          # docs/signing-ceremony.md. This is a persistent self-hosted runner,
+          # so event-gating the secret stops a run reading the key DURING ITS
+          # OWN RUN but does not isolate the machine: code that executes here
+          # can leave a Gradle init script in ~/.gradle or replace SDK tooling
+          # and collect the key on a later main build, and the certificate pin
           # cannot detect that, because a build signed with the genuinely
           # stolen key matches the pin by definition.
           #
-          # Accepted because the writer set is the operator and agents under
-          # the operator's control, on a private repository with no external
-          # contributors. THIS STOPS BEING TRUE THE MOMENT ANYONE ELSE CAN OPEN
-          # A PULL REQUEST HERE, and at that point signing must move to a
-          # runner that never executes candidate code.
+          # Accepted because only the writer set executes here at all. The
+          # job-level condition above admits same-repository branches only, so
+          # the code that runs on this machine is the operator's and that of
+          # agents under the operator's control - the same set as when this
+          # repository was private, and unchanged by making it public. The
+          # acceptance rests on that condition; if it is ever relaxed, signing
+          # must move to a runner that never executes candidate code.
           KEYSTORE_BASE64: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && secrets.MUSTER_KEYSTORE_BASE64 || '' }}
           # THE PIN, and the switch that makes absence fatal. Set once, as the
           # last step of docs/signing-ceremony.md. While it is empty the estate
