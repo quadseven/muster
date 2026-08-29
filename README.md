@@ -18,6 +18,12 @@ either.
 Read [CONTEXT.md](CONTEXT.md) first - the same five nouns run through the server,
 the agents and the console, and they mean exactly one thing each.
 
+muster exists because of a decision made in
+[zippie](https://github.com/quadseven/zippie): a device should fetch its own
+identity over its own credential, rather than have a deploy pipeline splice a
+static secret into its config. Several decisions here started as incidents
+there.
+
 ## Why this exists
 
 Every product tried first said no to the same modest ask - push and pull

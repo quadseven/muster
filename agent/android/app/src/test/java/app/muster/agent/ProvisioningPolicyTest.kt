@@ -63,8 +63,8 @@ class ProvisioningPolicyTest {
     @Test
     fun aRealAddressSurvivesIntact() {
         assertEquals(
-            "https://enroll.muster.casa",
-            ProvisioningPolicy.serverUrl("https://enroll.muster.casa"),
+            "https://enroll.muster.example",
+            ProvisioningPolicy.serverUrl("https://enroll.muster.example"),
         )
     }
 
@@ -73,8 +73,8 @@ class ProvisioningPolicyTest {
         // The server states its own base URL without a trailing slash, so a
         // device that kept one would build every path with a doubled separator.
         assertEquals(
-            "https://enroll.muster.casa",
-            ProvisioningPolicy.serverUrl("  https://enroll.muster.casa/  "),
+            "https://enroll.muster.example",
+            ProvisioningPolicy.serverUrl("  https://enroll.muster.example/  "),
         )
     }
 
@@ -87,8 +87,8 @@ class ProvisioningPolicyTest {
 
     @Test
     fun somethingThatIsNotAnHttpUrlIsRefused() {
-        assertNull(ProvisioningPolicy.serverUrl("ftp://enroll.muster.casa"))
-        assertNull(ProvisioningPolicy.serverUrl("enroll.muster.casa"))
+        assertNull(ProvisioningPolicy.serverUrl("ftp://enroll.muster.example"))
+        assertNull(ProvisioningPolicy.serverUrl("enroll.muster.example"))
         assertNull(ProvisioningPolicy.serverUrl("javascript:alert(1)"))
     }
 

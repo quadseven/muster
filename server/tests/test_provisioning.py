@@ -135,7 +135,7 @@ def test_an_apk_with_no_v1_signature_raises_rather_than_guessing(tmp_path):
 def test_the_payload_carries_what_the_platform_reads(tmp_path):
     data = payload(
         component=COMPONENT,
-        download_url="https://enroll.muster.casa/agent.apk",
+        download_url="https://enroll.muster.example/agent.apk",
         checksum="abc",
     )
     assert data[provisioning.COMPONENT] == COMPONENT
@@ -156,9 +156,9 @@ def test_the_server_url_rides_in_the_admin_extras(tmp_path):
     knowing where to enroll, so nobody types a URL on a phone keyboard."""
     data = payload(
         component=COMPONENT, download_url="https://x/agent.apk", checksum="c",
-        server_url="https://enroll.muster.casa/",
+        server_url="https://enroll.muster.example/",
     )
-    assert data[provisioning.ADMIN_EXTRAS] == {"muster.server_url": "https://enroll.muster.casa"}
+    assert data[provisioning.ADMIN_EXTRAS] == {"muster.server_url": "https://enroll.muster.example"}
 
 
 def test_the_pairing_code_rides_beside_the_server_url_not_instead_of_it():
@@ -171,10 +171,10 @@ def test_the_pairing_code_rides_beside_the_server_url_not_instead_of_it():
     """
     data = payload(
         component=COMPONENT, download_url="https://x/agent.apk", checksum="c",
-        server_url="https://enroll.muster.casa/", pairing_code="a-scanned-code",
+        server_url="https://enroll.muster.example/", pairing_code="a-scanned-code",
     )
     assert data[provisioning.ADMIN_EXTRAS] == {
-        provisioning.EXTRA_SERVER_URL: "https://enroll.muster.casa",
+        provisioning.EXTRA_SERVER_URL: "https://enroll.muster.example",
         provisioning.EXTRA_PAIRING_CODE: "a-scanned-code",
     }
 
@@ -186,10 +186,10 @@ def test_a_payload_with_no_pairing_code_is_the_one_that_existed_before():
     device provisions, comes up owned, and waits to be enrolled by hand."""
     data = payload(
         component=COMPONENT, download_url="https://x/agent.apk", checksum="c",
-        server_url="https://enroll.muster.casa",
+        server_url="https://enroll.muster.example",
     )
     assert data[provisioning.ADMIN_EXTRAS] == {
-        provisioning.EXTRA_SERVER_URL: "https://enroll.muster.casa"
+        provisioning.EXTRA_SERVER_URL: "https://enroll.muster.example"
     }
     assert provisioning.EXTRA_PAIRING_CODE not in data[provisioning.ADMIN_EXTRAS]
 

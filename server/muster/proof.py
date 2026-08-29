@@ -3,7 +3,7 @@
 WHY THIS EXISTS INSTEAD OF mTLS (muster#1). Two independent walls:
 
   * Cloudflare only accepts a custom CA for client-certificate validation on
-    ENTERPRISE accounts. muster.casa is Free.
+    ENTERPRISE accounts. This deployment is on a Free plan.
   * Even on Enterprise it would not reach us. Cloudflare Tunnel opens a NEW
     connection to the origin, so a certificate presented at the edge never gets
     to the pod. The application would be trusting headers a proxy wrote, which

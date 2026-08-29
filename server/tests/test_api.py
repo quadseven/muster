@@ -729,7 +729,7 @@ def _published(state, tmp_path):
 
     apk, _cert = _fake_apk(tmp_path / "agent.apk")
     state.agent_apk = str(apk)
-    state.base_url = "https://enroll.muster.casa"
+    state.base_url = "https://enroll.muster.example"
     return TestClient(create_app(state)), apk
 
 
@@ -746,7 +746,7 @@ def _published_and_proving(state, tmp_path):
 
     apk, _cert = _fake_apk(tmp_path / "agent.apk")
     state.agent_apk = str(apk)
-    state.base_url = "https://enroll.muster.casa"
+    state.base_url = "https://enroll.muster.example"
     state.proofs = Proofs(
         clock=state.enrollment.clock,
         ca_certificate=_x509.load_pem_x509_certificate(state.authority.certificate_pem),
@@ -872,7 +872,7 @@ def test_the_provisioning_qr_omits_wifi_unless_asked(state, tmp_path):
     client, apk = _published(state, tmp_path)
     data = provisioning.payload(
         component=provisioning.ADMIN_COMPONENT_DEFAULT,
-        download_url="https://enroll.muster.casa/agent.apk",
+        download_url="https://enroll.muster.example/agent.apk",
         checksum=provisioning.signature_checksum(apk),
         server_url=state.base_url,
     )
@@ -893,8 +893,8 @@ def test_the_provisioning_qr_points_at_this_servers_own_apk(state, tmp_path):
         checksum=provisioning.signature_checksum(apk),
         server_url=state.base_url,
     )
-    assert data[provisioning.DOWNLOAD] == "https://enroll.muster.casa/agent.apk"
-    assert data[provisioning.ADMIN_EXTRAS]["muster.server_url"] == "https://enroll.muster.casa"
+    assert data[provisioning.DOWNLOAD] == "https://enroll.muster.example/agent.apk"
+    assert data[provisioning.ADMIN_EXTRAS]["muster.server_url"] == "https://enroll.muster.example"
 
     response = client.get("/v1/provision/qr.svg", cookies=ADMIN)
     assert response.status_code == 200
@@ -955,16 +955,16 @@ def test_the_text_beside_the_qr_describes_the_qr_that_was_drawn(state, tmp_path)
     client, apk = _published(state, tmp_path)
     described = client.post("/v1/provision/qr", json={}, cookies=ADMIN).json()
 
-    assert described["download_url"] == "https://enroll.muster.casa/agent.apk"
+    assert described["download_url"] == "https://enroll.muster.example/agent.apk"
     assert described["signature_checksum"] == provisioning.signature_checksum(apk)
-    assert described["server_url"] == "https://enroll.muster.casa"
+    assert described["server_url"] == "https://enroll.muster.example"
     assert described["component"] == provisioning.ADMIN_COMPONENT_DEFAULT
     assert described["wifi"] is None
     assert described["svg"].startswith("<?xml")
     # Handed over whole rather than field by field, so a key added to the bundle
     # - muster#48 may put enrollment in it - reaches the console without the
     # page or this endpoint being rewritten for it.
-    assert described["extras"] == {"muster.server_url": "https://enroll.muster.casa"}
+    assert described["extras"] == {"muster.server_url": "https://enroll.muster.example"}
 
 
 def test_the_description_agrees_with_what_this_server_publishes(state, tmp_path):
@@ -1155,7 +1155,7 @@ def test_the_pairing_code_goes_in_the_qr_and_nowhere_else(state, tmp_path):
     assert "muster.pairing_code" not in described["extras"]
     assert code not in response.text, "the code came back as text beside its own QR"
     # And the server address is still passed through generically beside it.
-    assert described["extras"] == {"muster.server_url": "https://enroll.muster.casa"}
+    assert described["extras"] == {"muster.server_url": "https://enroll.muster.example"}
 
 
 def test_a_qr_meant_to_be_printed_can_be_minted_without_a_code(state, tmp_path):
@@ -2089,7 +2089,7 @@ def _ca_on_disk(tmp_path, monkeypatch):
     cert.write_bytes(ca.certificate_pem)
     monkeypatch.setenv("MUSTER_CA_KEY", str(key))
     monkeypatch.setenv("MUSTER_CA_CERT", str(cert))
-    monkeypatch.setenv("MUSTER_BASE_URL", "https://enroll.muster.casa")
+    monkeypatch.setenv("MUSTER_BASE_URL", "https://enroll.muster.example")
 
 
 def _configure_sign_in(monkeypatch):

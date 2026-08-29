@@ -76,7 +76,7 @@ class ConfigurationClientTest {
     @Test
     fun aServerThatIsNotThereIsNeverAnEmptyConfiguration() {
         val client = ConfigurationClient(
-            FakeTransport(throwing = java.net.UnknownHostException("enroll.muster.casa")),
+            FakeTransport(throwing = java.net.UnknownHostException("enroll.muster.example")),
             FakeIdentity(),
         )
 
@@ -160,7 +160,7 @@ class ConfigurationClientTest {
         // test above passes with either branch broken, which is exactly the
         // hole mutation testing exists to find.
         val transport = FakeTransport(
-            throwing = java.net.UnknownHostException("enroll.muster.casa"),
+            throwing = java.net.UnknownHostException("enroll.muster.example"),
             throwingOn = ConfigurationClient.CHALLENGE_PATH,
         )
         val identity = FakeIdentity()
