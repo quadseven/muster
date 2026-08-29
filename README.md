@@ -18,6 +18,11 @@ either.
 Read [CONTEXT.md](CONTEXT.md) first - the same five nouns run through the server,
 the agents and the console, and they mean exactly one thing each.
 
+[ARCHITECTURE.md](ARCHITECTURE.md) is the tour: the trust model, the two shapes
+of pairing code, the certificate authority, and how a device gets from a factory
+reset to a managed endpoint. [DECISIONS.md](DECISIONS.md) records why it has
+that shape, each entry with the failure that caused it.
+
 muster exists because of a decision made in
 [zippie](https://github.com/quadseven/zippie): a device should fetch its own
 identity over its own credential, rather than have a deploy pipeline splice a
