@@ -462,6 +462,65 @@ device-protected directory, so everything the stewards do - reconciling both
 ways, refusing a name they do not know, reading the platform back, withholding a
 hide on a file they cannot read in full - keeps working unchanged.
 
+### Nothing in that exchange is Android-specific
+
+Written 2026-08-29, when a second kind of device came to the same door.
+
+Everything above this heading describes a handset, because a handset is what
+existed. The *protocol* never assumed one, and it is worth saying so out loud
+before somebody adds an assumption to a path that is now shared.
+
+`POST /v1/auth/challenge` and `POST /v1/device/config` take and return plain
+JSON. `api._proven_device` is the one place a device is authenticated and it
+knows nothing about platforms - it verifies an ECDSA-P256 signature against a
+certificate this CA issued. The Android Keystore is where *that* agent keeps its
+key; it is not where the scheme lives.
+
+The three things a second client actually needs, none of which is a code change
+here:
+
+- **A P-256 key and a CSR.** `openssl ecparam -genkey` and `openssl req -new`
+  are enough. `ca.py` refuses anything that is not an EC key, so an Ed25519
+  library - `libsodium`, `pynacl` - cannot be substituted, which is worth
+  knowing before planning around one that is already installed.
+- **A signature over the nonce's bytes with nothing appended.** `proof.verify`
+  calls `public_key.verify(sig, nonce.encode(), ECDSA(SHA256))`. Every naive
+  `echo "$nonce" | openssl dgst -sign` appends a newline, signs a different
+  message, and gets `BAD_SIGNATURE` - which reads exactly like the wrong key and
+  gets debugged as an enrollment problem.
+- **A `User-Agent` that is not the language runtime's default.** Measured
+  2026-08-29 from an OpenWrt router: `Python-urllib/3.9` is answered **403 by
+  Cloudflare** before the request reaches this server, while the identical
+  request with any other User-Agent is answered 201. muster's logs show nothing
+  either way, because muster never saw it.
+
+Not because it makes a client easy - because it is the reason `proof.py` exists.
+A scheme that depended on the transport would have had to be reimplemented for
+every kind of device; this one is the same three fields everywhere.
+
+### A device may decline to implement withdrawal, and one does
+
+`ConfigurationPolicy.kt` removes a managed file that a **successful** fetch did
+not mention, and that is right for a handset: policy that only ever adds is a
+ratchet, and the only way to undo a ratchet on a Device Owner is a factory reset.
+
+It is not right for every device, and the first one to say so is a travel router
+whose `app-config` carries the key to its only uplink. Obeying "withdraw" there
+would make this control plane able to island a device **by omission** - one
+mistyped Secret key, and the router cannot be reached to fix it. Its client
+reports an absent `app-config` and changes nothing.
+
+So the rule is not "the device deletes what muster stopped sending". It is:
+
+> muster's answer is complete and authoritative, and a device may refuse to act
+> on part of it in a direction it cannot recover from. What it may never do is
+> act on a **partial** answer - and it cannot be handed one, because muster
+> returns 503 rather than a shorter list.
+
+The asymmetry is deliberate and it is the whole reason the 503 above exists. A
+device that is wrong about "add" gets a wrong file; a device that is wrong about
+"remove" gets no way back.
+
 ### Where the policy is kept
 
 A flat directory, `MUSTER_POLICY_DIR`, mounted from the `muster-policy` Secret:
