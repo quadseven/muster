@@ -992,6 +992,31 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
 _APK_DESCRIPTIONS: dict[tuple[str, int, int], dict] = {}
 
 
+def _changed_or_refused(write, unreachable) -> None:
+    """One shape for every administrator write to a device row.
+
+    `set_role` and `set_revoked` had this three-line dance each, character for
+    character, and it is three lines where getting any of them wrong is silent:
+    a swallowed `Unreachable` reports done for a write that never happened, and
+    a dropped rowcount check reports done for a key_id that does not exist. An
+    administrator acts on both answers - they go and look at a handset, or they
+    stop looking for a device they believe is cut off - so "wrong but quiet" is
+    the whole failure mode.
+
+    AT MODULE LEVEL rather than nested in the registrar, which is not stylistic:
+    complexity is scored over a function's whole subtree, so a helper defined
+    inside `_register_kith_routes` would move these branches around without
+    removing them from its count. Out here it is also independently readable,
+    which is the actual point.
+    """
+    try:
+        changed = write()
+    except kith_store.Unreachable as exc:
+        raise unreachable(exc) from exc
+    if not changed:
+        raise HTTPException(status_code=404, detail="no such device")
+
+
 def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
     """Who muster has issued to. The first endpoints that can answer at all.
 
@@ -1162,14 +1187,11 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         served, INCLUDING `app-config`, which carries write tokens. A device
         that could set its own role could ask for another role's credentials.
         """
-        try:
-            changed = state.kith.set_role(key_id, _role_or_400(role))
-        except kith_store.Unreachable as exc:
-            # NOT a silent success. The operator is about to go and look at a
-            # handset expecting different policy.
-            raise _unreachable(exc) from exc
-        if not changed:
-            raise HTTPException(status_code=404, detail="no such device")
+        # NOT a silent success on either failure. The operator is about to go
+        # and look at a handset expecting different policy.
+        _changed_or_refused(
+            lambda: state.kith.set_role(key_id, _role_or_400(role)), _unreachable
+        )
         telemetry.event("device role changed", key_id=key_id, role=role or "(none)")
         state.telemetry.count("kith.role.changed")
         return {"key_id": key_id, "role": role}
@@ -1200,15 +1222,10 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         alternative to a way back is wiping a device to re-enroll it. It is the
         same argument the empty role makes next door.
         """
-        try:
-            changed = state.kith.set_revoked(key_id, revoked)
-        except kith_store.Unreachable as exc:
-            # NOT a silent success, and here that matters more than anywhere
-            # else in this file: an administrator who believes a stolen device
-            # is cut off stops looking for it.
-            raise _unreachable(exc) from exc
-        if not changed:
-            raise HTTPException(status_code=404, detail="no such device")
+        # NOT a silent success, and here that matters more than anywhere else in
+        # this file: an administrator who believes a stolen device is cut off
+        # stops looking for it.
+        _changed_or_refused(lambda: state.kith.set_revoked(key_id, revoked), _unreachable)
         telemetry.event(
             "device revoked" if revoked else "device readmitted", key_id=key_id
         )
