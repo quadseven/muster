@@ -438,6 +438,15 @@ def _proven_device(
                    "confirmed as still enrolled. Retry.",
             headers=uncached,
         ) from unreachable
+    # A MISSING ROW IS NOT A REFUSAL, and that is required rather than lenient.
+    # `record_issuance` is DEFERRED like every other kith write, so between
+    # muster signing a certificate and the backlog draining there is a device
+    # holding a valid identity with no row yet. Refusing on `member is None`
+    # would turn every issuance into a race, and a store outage during
+    # enrollment into a handset that must be factory reset. The authority for
+    # "did we sign this" is the CA and the proof, which have already answered
+    # above; the kith answers only the narrower question of whether somebody has
+    # since said stop.
     if member is not None and member.device.revoked_at is not None:
         # COUNTED AND NAMED. A revoked device that keeps calling is either a
         # machine nobody switched off or a machine somebody took, and the two

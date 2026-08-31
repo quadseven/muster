@@ -2787,3 +2787,24 @@ def test_the_device_view_shows_that_it_is_revoked(state, tmp_path):
     client, _key, _identity, key_id = _revoked_device(state, tmp_path)
     body = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()
     assert body["device"]["revoked_at"] is not None
+
+
+def test_a_device_with_no_kith_row_yet_is_still_answered(state, tmp_path):
+    """THE DEFERRED-WRITE WINDOW, pinned so nobody closes it.
+
+    `record_issuance` is deferred like every other kith write, so between muster
+    signing a certificate and the backlog draining there is a real device
+    holding a real identity with no row. Refusing on `member is None` reads as
+    the safer choice and is not: it makes every issuance a race, and a store
+    outage during enrollment a handset that has to be factory reset.
+
+    `_enrolled` builds exactly that device - a certificate straight off the
+    authority, no kith row - which is why the revocation tests above could not
+    use it and why it is the right helper here.
+    """
+    state.assets = _asset_store(tmp_path)
+    client = _proof_client(state)
+    key, identity, key_id = _enrolled(state)
+
+    assert state.kith.member(key_id) is None, "this test needs a device with no row"
+    assert _fetch_asset(client, key, identity, "wall.png").status_code == 200
