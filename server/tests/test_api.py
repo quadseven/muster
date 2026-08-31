@@ -1913,6 +1913,10 @@ DEVICE_PROVEN = {
     # about to live; not administrator-only, because a phone in a cupboard has
     # to be able to fetch its own wallpaper.
     ("POST", "/v1/device/asset"),
+    # muster#10: a fresh certificate over the identity the device already holds.
+    # Device-proven and NOT open, because possession of the enrolled key is what
+    # stands in for the pairing code - it is the whole authorization.
+    ("POST", "/v1/device/renew"),
 }
 
 ADMINISTRATOR_ONLY = {
@@ -2808,3 +2812,220 @@ def test_a_device_with_no_kith_row_yet_is_still_answered(state, tmp_path):
 
     assert state.kith.member(key_id) is None, "this test needs a device with no row"
     assert _fetch_asset(client, key, identity, "wall.png").status_code == 200
+
+
+# ---- renewal (muster#10) ------------------------------------------------
+#
+# The whole point: a device replaces its own certificate over the identity it
+# already holds, with nobody present. Everything here is about the ways that
+# must NOT work.
+
+
+def _renew(client, key, identity, csr_key=None):
+    """The exchange a device makes to renew: challenge, sign, present a CSR.
+
+    `csr_key` defaults to the device's own key, which is renewal. Passing a
+    different one is ROTATION, and the route must refuse it.
+    """
+    import base64
+
+    signing = csr_key if csr_key is not None else key
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "whatever")]))
+        .sign(signing, hashes.SHA256())
+    )
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    return client.post("/v1/device/renew", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+        "csr_pem": csr.public_bytes(serialization.Encoding.PEM).decode(),
+    })
+
+
+def _past_renew_after(state, monkeypatch, identity):
+    """Move muster's clock to the day this certificate may be renewed.
+
+    THE CLOCK MOVES, NOT THE CERTIFICATE. Issuing a deliberately short-lived one
+    would put the test at the mercy of how long it takes to run, and a renewal
+    window that is seconds wide is a flaky test pretending to be a fixture.
+    """
+    from muster.ca import RENEW_AFTER_FRACTION
+
+    # OFF THE CERTIFICATE, NOT OFF THE Identity. `_collect_identity` fills
+    # not_before and not_after with `now` as placeholders, because the handset
+    # path it models does not need them - so trusting them here computes a
+    # zero-length life and a renewal window in the past, and the test fails
+    # against a route that is working correctly. The route reads the real dates
+    # out of the presented PEM, so the test has to as well.
+    real = x509.load_pem_x509_certificate(identity.certificate_pem)
+    life = real.not_valid_after_utc - real.not_valid_before_utc
+    when = (
+        real.not_valid_before_utc
+        + life * RENEW_AFTER_FRACTION
+        + dt.timedelta(minutes=1)
+    )
+    monkeypatch.setattr(state.kith, "now", lambda: when)
+    return when
+
+
+def test_a_device_renews_itself_with_nobody_present(state, monkeypatch):
+    """THE POINT OF muster#10.
+
+    No pairing code, no administrator, no console. The device signs a nonce with
+    the key muster already vouched for and gets its next certificate - which is
+    the property `key_id` was chosen for and, until this route, could never be
+    used.
+    """
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state)
+    _past_renew_after(state, monkeypatch, identity)
+
+    response = _renew(client, key, identity)
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["certificate_pem"].startswith("-----BEGIN CERTIFICATE-----")
+    assert body["certificate_pem"] != identity.certificate_pem.decode()
+    assert body["not_after"] and body["renew_after"]
+
+
+def test_the_renewed_certificate_actually_works(state, tmp_path, monkeypatch):
+    """A certificate that comes back and cannot be used is worse than none: the
+    device discards a working identity for it. So the test does not stop at 201
+    - it proves the new bytes authenticate."""
+    from muster.ca import Identity
+
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state)
+    _past_renew_after(state, monkeypatch, identity)
+
+    renewed = _renew(client, key, identity).json()
+    monkeypatch.undo()  # back to real time, where the new certificate is current
+
+    fresh = Identity(
+        certificate_pem=renewed["certificate_pem"].encode(),
+        not_before=dt.datetime.now(dt.timezone.utc),
+        not_after=dt.datetime.now(dt.timezone.utc),
+        serial=0,
+    )
+    assert _fetch_config(client, key, fresh).status_code == 200
+
+
+def test_renewal_will_not_swap_the_key(state, monkeypatch):
+    """RENEWAL, NOT ROTATION, and this is the check that keeps them apart.
+
+    A new key is a new key_id, and key_id is what every policy scope, role and
+    kith row is filed under. A device that could swap its key here would
+    silently become a DIFFERENT device carrying another device's policy, with
+    nobody having vouched for the new key. CONTEXT.md states the rule this
+    enforces: a device presenting a new key is a new device.
+    """
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state)
+    _past_renew_after(state, monkeypatch, identity)
+
+    other = ec.generate_private_key(ec.SECP256R1())
+    response = _renew(client, key, identity, csr_key=other)
+
+    assert response.status_code == 403, response.text
+    assert "different public key" in response.json()["detail"]
+
+
+def test_a_device_cannot_renew_before_muster_said_it_may(state):
+    """`renew_after` was advisory - a number handed to devices with nothing
+    enforcing it. Enforced here it bounds kith_certificate against a client
+    looping, and keeps "when may a device renew" in one place: ca.Identity."""
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state)   # issued just now, so far too early
+
+    response = _renew(client, key, identity)
+
+    assert response.status_code == 409, response.text
+    assert "too early" in response.json()["detail"]
+
+
+def test_a_revoked_device_cannot_renew_itself_back_to_life(state, tmp_path, monkeypatch):
+    """THE ORDERING THAT MADE muster#11 A PREREQUISITE.
+
+    If renewal ran before the revocation check, a revoked device would extend
+    its own certificate for another ninety days and keep doing so forever, and
+    lapse - muster's original revocation mechanism - cannot catch a device that
+    never lapses. The parametrized audience test above covers this route too;
+    this one exists because the CLAIM is about ordering and deserves to fail by
+    name if the check ever moves below the body.
+    """
+    client, key, identity, _key_id = _revoked_device(state, tmp_path)
+    _past_renew_after(state, monkeypatch, identity)
+
+    response = _renew(client, key, identity)
+
+    assert response.status_code == 403
+    assert "revoked" in response.json()["detail"]
+
+
+def test_renewal_keeps_the_device_and_its_role_rather_than_making_a_new_one(
+    state, tmp_path, monkeypatch
+):
+    """ONE DEVICE, TWO CERTIFICATES - the shape kith_device's own comment argues
+    for at length ("a table keyed on the certificate would grow a second device
+    every renewal cycle"). Nothing had ever renewed, so nothing had tested it.
+
+    The role has to survive too, and it does so by NOT being written: an empty
+    incoming role never overwrites a set one, which `record_issuance` does
+    deliberately so a re-enrolment cannot strip a handset.
+    """
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, key = _enrolled_device(client, state, tmp_path, role="zippie")
+    identity = _collect_identity(client, state)
+    _past_renew_after(state, monkeypatch, identity)
+
+    assert _renew(client, key, identity).status_code == 201
+    monkeypatch.undo()
+
+    roll = client.get("/v1/kith", cookies=ADMIN).json()["devices"]
+    assert len(roll) == 1, "renewal created a second device"
+    assert roll[0]["key_id"] == key_id
+    assert roll[0]["role"] == "zippie", "renewal stripped the device's role"
+    assert client.get(
+        f"/v1/kith/{key_id}", cookies=ADMIN
+    ).json()["device"]["certificates"] == 2
+
+
+def test_renewal_needs_a_csr_but_asks_for_the_proof_first(state):
+    """A required Body field is answered by FastAPI's own validation BEFORE the
+    endpoint runs, so a caller with no identity would learn the shape of this
+    request without ever proving anything - and a revoked device would be told
+    its CSR was missing rather than that it is revoked. `device_asset` documents
+    the same trap for `name`; the parametrized audience test caught this route
+    falling into it."""
+    client = _proof_client(state)
+    # The proof fields are present and WRONG, and csr_pem is simply absent. If
+    # csr_pem were a required Body field this is a 422 from FastAPI; because it
+    # is defaulted, the request reaches the endpoint and the proof is judged.
+    # Posting an empty body instead would prove nothing - that is a 422 on every
+    # device route, from the proof fields, which are required on purpose.
+    response = client.post("/v1/device/renew", json={
+        "nonce": "n" * 43,
+        "signature_b64": "AAAA",
+        "certificate_pem": "-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----\n",
+    })
+    assert response.status_code != 422, (
+        "csr_pem is a required Body field again - FastAPI answered before the "
+        "endpoint ran, so an unidentified caller learned the request shape "
+        "without proving anything"
+    )
+    # THE PROOF LAYER ANSWERED, and that is the property. Which verdict it
+    # reaches is not this test's business - a stale nonce and a bad signature
+    # are different numbers and both mean "you were asked to prove yourself".
+    # Pinning one of them here would make this test fail the day an unrelated
+    # verdict is re-mapped, for a reason that has nothing to do with what it
+    # guards. What must never appear is a complaint about the CSR.
+    assert "csr" not in response.text.lower(), (
+        f"the CSR was judged before the identity was: {response.text}"
+    )

@@ -100,7 +100,8 @@ actually do and a certificate cannot.
     vouch     an administrator authorizes ONE enrollment - at mint on the
               scanned path, and as a separate fingerprint check on the typed one
     issue     muster signs, and the device has an identity
-    renew     the device replaces its certificate before it expires
+    renew     the device replaces its certificate before it expires, over the
+              identity it already holds and with nobody present
     lapse     an identity expires and is not renewed
     revoke    an administrator says a device is no longer ours, and muster
               stops answering it from that moment
@@ -122,8 +123,19 @@ Lapse was the whole mechanism for as long as renewal needed a human. Declining
 to renew WAS declining to trust, so the two were the same act and the vocabulary
 above said so in as many words. Automatic renewal (muster#10) breaks that
 identity: a device that renews itself never lapses, so a design with only lapse
-in it would be a fleet that can never be cut off. Revocation is what has to
-exist first.
+in it would be a fleet that can never be cut off. Revocation had to exist first,
+and does.
+
+**A device renews with the key it already holds, and that is the whole
+authorization.** A pairing code answers "should this stranger get a
+certificate". A device signing a nonce with a key muster has already vouched for
+is not a stranger - so demanding it enroll again is asking for a weaker proof
+than the one it is holding. `POST /v1/device/renew`.
+
+**Renewing is not rotating.** The CSR must carry the SAME public key; a new key
+is a new `key_id`, and `key_id` is what every policy scope, role and kith row is
+filed under. That is the rule above read forwards: a device presenting a new key
+is a new device and has to be vouched for again.
 
 **Neither reaches a device that is switched off.** That is not a flaw in either
 one - nothing sent to a handset in a drawer arrives - and it is why muster

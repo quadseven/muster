@@ -341,8 +341,10 @@ the revocation mechanism (D6) and a mechanism enforced nowhere is not one.
 
 It is no longer the only one. `_proven_device` also refuses a device an
 administrator has revoked (muster#11), which had to arrive before automatic
-renewal (muster#10): a device that renews itself never lapses, so lapse alone
-would have left a fleet nothing could cut off. The check is in the same function
+renewal (muster#10, now shipped): a device that renews itself never lapses, so
+lapse alone would have left a fleet nothing could cut off. `POST
+/v1/device/renew` calls the same function, so it inherits the refusal rather
+than restating it. The check is in the same function
 for the same reason everything else about a device is - and it FAILS CLOSED, 503
 rather than an allow, because a revocation you can defeat by making the database
 unreachable is not one.

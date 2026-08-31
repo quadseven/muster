@@ -90,6 +90,7 @@ from muster.enroll import (
     Refused,
     Shape,
     clean_device_name,
+    fingerprint,
     key_id,
 )
 from muster import telemetry
@@ -982,6 +983,191 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
             "key_id": configuration.key_id,
             "revision": configuration.revision,
             "files": configuration.files,
+        }
+
+    @app.post("/v1/device/renew", status_code=201)
+    def device_renew(
+        response: Response,
+        nonce: str = Body(..., embed=True),
+        signature_b64: str = Body(..., embed=True),
+        certificate_pem: str = Body(..., embed=True),
+        # DEFAULTED RATHER THAN REQUIRED, so that PROOF IS ALWAYS CHECKED FIRST -
+        # the same reasoning `device_asset` gives for `name`, and the parametrized
+        # audience tests caught this route getting it wrong. A required field
+        # makes FastAPI answer 422 from its own validation BEFORE the endpoint
+        # body runs, so a caller with no identity at all learns the shape of the
+        # request without ever being asked to prove anything, and a revoked
+        # device is told its CSR is missing rather than that it is revoked.
+        csr_pem: str = Body("", embed=True),
+    ):
+        """A fresh certificate, for the device that signed this nonce.
+
+        WHY THIS EXISTS (muster#10). Until now the only route to a certificate
+        was `POST /v1/enroll/requests`, which needs a pairing code an
+        administrator minted. So a device holding a valid, unexpired certificate
+        could not obtain its next one, and `renew_after` - which muster computes
+        and hands to every device - told it to start doing something it had no
+        way to do. Every enrolled device therefore had a standing quarterly
+        appointment with a human, or it fell off this channel silently.
+
+        POSSESSION OF THE ENROLLED KEY IS THE VOUCH, and that is the whole
+        argument. A pairing code exists to answer "should this stranger get a
+        certificate". A device signing a nonce with a key muster has already
+        vouched for is not a stranger - it is the same device, answering with
+        the credential muster itself issued. Requiring it to enroll again from
+        scratch is demanding a WEAKER proof than the one it is already holding.
+
+        It is also the property `key_id` was chosen for. `_proven_device` returns
+        a key id rather than a certificate serial precisely so that identity
+        survives renewal ("a certificate serial changes every ninety days; the
+        key does not") - and until this route existed, nothing could renew, so
+        that property had never once been redeemable.
+
+        RENEWAL, NOT ROTATION, and the check below is what keeps them apart. The
+        CSR must carry the SAME public key as the certificate presented with it.
+        A new key is a new `key_id`, and `key_id` is what every policy scope,
+        every role and every kith row is filed under - so a device that could
+        swap its key here would silently become a different device with another
+        device's policy, without anybody vouching for the new key. CONTEXT.md
+        already states the rule this enforces: "a device presenting a NEW key is
+        a NEW device and has to be vouched for again".
+
+        A REVOKED DEVICE CANNOT RENEW because `_proven_device` refuses it before
+        this body runs (muster#11). That ordering is the entire reason
+        revocation had to land first: automatic renewal without it would be a
+        fleet that renews itself forever with nothing able to say stop, because
+        lapse - muster's original revocation mechanism - only ever worked while
+        renewal needed a human.
+
+        AN EXPIRED CERTIFICATE CANNOT RENEW EITHER, and that falls out of the
+        proof rather than being decided here: `proofs.verify` answers
+        CERT_EXPIRED and `_proven_device` turns it into a 409. A device that let
+        its identity lapse has no possession proof left to offer, so it goes back
+        to a pairing code and a person. That is the same line `api.py` has always
+        drawn and this route does not move it.
+        """
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+
+        response.headers["Cache-Control"] = "no-store"
+        proven = _proven_device(state, nonce, signature_b64, certificate_pem)
+
+        # CHECKED HERE, AFTER THE PROOF, for the reason the parameter's own
+        # comment gives: the emptiness of this field must never be answerable
+        # without an identity.
+        if not csr_pem:
+            raise HTTPException(status_code=400, detail="no CSR in this request")
+        try:
+            csr = x509.load_pem_x509_csr(csr_pem.encode())
+        except Exception as exc:  # noqa: BLE001 - every parse failure is one answer
+            raise HTTPException(
+                status_code=400, detail=f"unreadable CSR: {exc}"
+            ) from exc
+
+        offered = key_id(_spki_der(csr.public_key()))
+        if offered != proven:
+            # 403 AND NOT 400. The request is well formed; the device is asking
+            # for something it is not allowed to have. Naming both key ids would
+            # help nobody and hand a prober a comparison oracle, so the detail
+            # says what the rule is instead.
+            state.telemetry.count("device.renew.refused", tags=["reason:different-key"])
+            telemetry.event("renewal offered a different key", key_id=proven)
+            raise HTTPException(
+                status_code=403,
+                detail="the CSR carries a different public key. Renewal keeps "
+                       "the enrolled key; a new key is a new device and needs a "
+                       "pairing code and an administrator.",
+            )
+
+        # THE NAME COMES FROM THE CERTIFICATE muster ITSELF SIGNED, not from the
+        # CSR and not from the kith. `ca.py` is emphatic that nothing in a CSR is
+        # trusted except the public key, so the CSR's subject cannot be used. The
+        # kith row would be the obvious other source and is the wrong one: it is
+        # written by a DEFERRED write, so a device renewing inside the window
+        # after an issuance - or during a store outage - would find no row and be
+        # refused for a bookkeeping reason. The presented certificate is muster's
+        # own signed assertion of this device's name, it has just been verified,
+        # and it is always there.
+        current = x509.load_pem_x509_certificate(certificate_pem.encode())
+        common = current.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+        if not common:
+            raise HTTPException(
+                status_code=422,
+                detail="the presented certificate has no common name, so muster "
+                       "cannot tell what to name the renewal",
+            )
+        device_name = str(common[0].value)
+
+        # NOT BEFORE muster SAID SO. `renew_after` has been advisory until now -
+        # a number handed to devices with nothing enforcing it. Enforcing it here
+        # does two jobs: it makes a buggy or hostile client unable to mint a
+        # certificate a second and fill `kith_certificate`, and it keeps the
+        # answer to "when may a device renew" in ONE place, which is
+        # `ca.Identity.renew_after` and not a second copy of that arithmetic.
+        earliest = Identity(
+            certificate_pem=certificate_pem.encode(),
+            not_before=current.not_valid_before_utc,
+            not_after=current.not_valid_after_utc,
+            serial=current.serial_number,
+        ).renew_after()
+        if state.kith.now() < earliest:
+            state.telemetry.count("device.renew.refused", tags=["reason:too-early"])
+            raise HTTPException(
+                status_code=409,
+                detail=f"too early; this certificate may be renewed from "
+                       f"{earliest.isoformat()}",
+            )
+
+        try:
+            with state.telemetry.timed("ca.issue.duration"):
+                identity = state.authority.issue(
+                    csr.public_bytes(serialization.Encoding.DER), device_name
+                )
+        except Untrusted as bad:
+            state.telemetry.count("ca.issue.refused", tags=["reason:untrusted-csr"])
+            raise HTTPException(status_code=422, detail=str(bad)) from bad
+
+        # HANDED BACK HERE, NOT LEFT TO BE COLLECTED. Enrollment issues into
+        # `state.issued` and makes the device poll, because there a human has to
+        # vouch in between. Here the proof already happened in this request, so a
+        # collection step would only add a second round trip and a request id
+        # that has to travel.
+        now = state.kith.now()
+        state.kith.issued(
+            kith_store.Device(
+                key_id=proven,
+                fingerprint=fingerprint(_spki_der(csr.public_key())),
+                name=device_name,
+                first_seen=now,
+                last_seen=now,
+                # EMPTY, WHICH PRESERVES. `record_issuance` refuses to let an
+                # empty role overwrite a set one - written for exactly this, so a
+                # re-enrolment cannot silently strip a device. Reading the role
+                # out of the kith to write it back would turn every renewal into
+                # a store read that could fail, to achieve what leaving it blank
+                # already achieves.
+                role="",
+            ),
+            kith_store.Certificate(
+                serial=f"{identity.serial:X}",
+                request_id=f"renew-{identity.serial:X}",
+                not_before=identity.not_before,
+                not_after=identity.not_after,
+                issued_at=now,
+                certificate_pem=identity.certificate_pem.decode(),
+                # COLLECTED AT ONCE, because it was: the bytes are in this
+                # response. Leaving it NULL would make every renewed certificate
+                # look like one a device never picked up.
+                collected_at=now,
+            ),
+        )
+        telemetry.event("device renewed", key_id=proven, device_name=device_name)
+        state.telemetry.count("device.renew.issued")
+        return {
+            "certificate_pem": identity.certificate_pem.decode(),
+            "ca_pem": state.authority.certificate_pem.decode(),
+            "not_after": identity.not_after.isoformat(),
+            "renew_after": identity.renew_after().isoformat(),
         }
 
 
