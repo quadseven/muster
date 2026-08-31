@@ -101,7 +101,9 @@ actually do and a certificate cannot.
               scanned path, and as a separate fingerprint check on the typed one
     issue     muster signs, and the device has an identity
     renew     the device replaces its certificate before it expires
-    lapse     an identity expires and is not renewed - this is how revocation works
+    lapse     an identity expires and is not renewed
+    revoke    an administrator says a device is no longer ours, and muster
+              stops answering it from that moment
 
 **Scan replaces the typing AND the second click.** A device that scanned arrives
 already knowing where to enroll and with what, presents itself, and is issued an
@@ -111,11 +113,28 @@ device that did not scan - one provisioned earlier, or re-enrolling after a
 lapse - is typed at and vouched for separately, and that path is unchanged and
 still needed.
 
-**Lapse is the revocation mechanism and it is deliberate.** There is no CRL and
-no push. A device that must not be trusted is simply not renewed, and it falls
-out of the kith when its certificate expires. This is the only revocation that
-reaches a device which has been switched off in a drawer, or in a hotel with no
-internet, for a week.
+**Lapse and revoke are different acts, and until muster#11 there was only one
+of them.** Lapse is passive: an identity expires, nobody renews it, and the
+device falls out of the kith by itself. Revoke is an administrator saying so, at
+a moment they choose.
+
+Lapse was the whole mechanism for as long as renewal needed a human. Declining
+to renew WAS declining to trust, so the two were the same act and the vocabulary
+above said so in as many words. Automatic renewal (muster#10) breaks that
+identity: a device that renews itself never lapses, so a design with only lapse
+in it would be a fleet that can never be cut off. Revocation is what has to
+exist first.
+
+**Neither reaches a device that is switched off.** That is not a flaw in either
+one - nothing sent to a handset in a drawer arrives - and it is why muster
+enforces at the point a device ASKS rather than by pushing anything at it.
+Revoke takes effect on the revoked device's next request and not before, and the
+credentials it already holds are still in its hands. Cutting those off is a
+rotation at the other end, which is a second act and a deliberate one.
+
+**Still no CRL, and that is a decision.** A revocation list exists so a third
+party can check without asking the issuer. muster has no third party: it is the
+only issuer and the only verifier, and the check is one row in the kith.
 
 ## Two rules that shape everything
 

@@ -172,6 +172,11 @@ class Device:
     # else. It is on the DEVICE rather than the certificate because it survives
     # renewal - a device does not stop being a zippie android in ninety days.
     role: str = ""
+    # When an administrator said this device is no longer ours. None means it
+    # still is. On the DEVICE for the same reason `role` is: revocation is a
+    # statement about the KEY, and the key is what was vouched for. Revoking a
+    # certificate would leave the device free to renew into a new one.
+    revoked_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +221,8 @@ class Records(Protocol):
     def record_seen(self, key_id: str, at: dt.datetime) -> None: ...
 
     def record_role(self, key_id: str, role: str) -> bool: ...
+
+    def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool: ...
 
     def record_collected(self, request_id: str, at: dt.datetime) -> None: ...
 
@@ -335,6 +342,16 @@ class MemoryRecords:
         # never overwrites, so a re-enrolment cannot silently strip a handset;
         # here an operator is saying so deliberately and needs a way back.
         self._devices[key_id] = replace(device, role=role)
+        return True
+
+    def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool:
+        device = self._devices.get(key_id)
+        if device is None:
+            return False
+        # BOTH DIRECTIONS THROUGH ONE METHOD, `at=None` being readmission. A
+        # separate un-revoke would be a second write path to the same column,
+        # and the one used less often is the one that would rot.
+        self._devices[key_id] = replace(device, revoked_at=at)
         return True
 
     def record_collected(self, request_id: str, at: dt.datetime) -> None:
@@ -683,6 +700,26 @@ class PostgresRecords:
 
         return bool(self._run(work))
 
+    def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool:
+        def work(cursor):
+            # ONE STATEMENT BOTH WAYS. `at=None` writes NULL, which is
+            # readmission. A separate un-revoke would be a second write path to
+            # one column, and the one used less often is the one that rots.
+            #
+            # NOT TOUCHED BY THE ISSUANCE UPSERT, and that omission is
+            # load-bearing rather than an oversight: `record_issuance`'s
+            # DO UPDATE SET list has no `revoked_at`, so a renewal or a replayed
+            # deferred write cannot readmit a device an administrator revoked.
+            # Adding it there would also reintroduce the ordering hazard the
+            # `name` and `role` clauses guard against, with a worse consequence.
+            cursor.execute(
+                "UPDATE kith_device SET revoked_at = %s WHERE key_id = %s",
+                (at, key_id),
+            )
+            return cursor.rowcount
+
+        return bool(self._run(work))
+
     def record_collected(self, request_id: str, at: dt.datetime) -> None:
         def work(cursor):
             cursor.execute(
@@ -718,7 +755,8 @@ class PostgresRecords:
         "          ORDER BY n.issued_at DESC, n.serial DESC LIMIT 1),"
         # LAST in the list, deliberately: `_member_from_row` reads by position,
         # so appending leaves every existing index meaning what it meant.
-        "       d.role"
+        "       d.role,"
+        "       d.revoked_at"
         "  FROM kith_device d"
         "  LEFT JOIN kith_certificate c ON c.key_id = d.key_id"
     )
@@ -777,6 +815,12 @@ def _member_from_row(row) -> Member:
             first_seen=row[3],
             last_seen=row[4],
             role=row[8] if len(row) > 8 else "",
+            # SAME LENGTH GUARD AS `role`, and for the same reason: a row can
+            # arrive from an older query shape during a rolling read, and
+            # `None` here means "not revoked", which is the safe reading of a
+            # column that is not there. Defaulting the other way would strand a
+            # fleet on a column-ordering mistake.
+            revoked_at=row[9] if len(row) > 9 else None,
         ),
         certificates=row[5],
         current_serial=row[6],
@@ -924,6 +968,27 @@ class Kith:
         from "done".
         """
         return bool(self._write_now(lambda records: records.record_role(key_id, role)))
+
+    def set_revoked(self, key_id: str, revoked: bool) -> bool:
+        """Say this device is no longer ours, or that it is again.
+
+        SYNCHRONOUS, for the reason `set_role` above gives at length and one
+        more that is specific to this: a revocation that quietly joined a
+        backlog would tell an administrator a stolen device was cut off while it
+        was still being answered. Of every write in this class, this is the one
+        where "reported done, actually queued" is worst.
+
+        Returns whether a device was actually changed. False means the kith has
+        never heard of that key - which an administrator typing a key_id by hand
+        needs to be able to tell apart from success.
+        """
+        return bool(
+            self._write_now(
+                lambda records: records.record_revocation(
+                    key_id, self._clock() if revoked else None
+                )
+            )
+        )
 
     def collected(self, request_id: str) -> None:
         self._defer(_Collected(request_id=request_id, at=self._clock()), "collected")
