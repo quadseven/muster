@@ -72,7 +72,9 @@ Automatic renewal (muster#10) breaks that. A device that renews itself never
 lapses, so a design with only lapse in it is a fleet nothing can cut off. That
 is why `revoked_at` and `POST /v1/kith/{key_id}/revoke` exist (muster#11), and
 why the check lives in `_proven_device` rather than on whichever route somebody
-remembered.
+remembered - so `POST /v1/device/renew` inherits it and a revoked device cannot
+renew its way back. That ordering is the point; do not move the check into the
+routes.
 
 If you are reading an older comment that says lapse is how revocation works,
 it is describing the design before this. Revocation is now a thing an
