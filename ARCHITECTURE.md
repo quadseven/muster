@@ -292,6 +292,11 @@ Lapse is close to irreversible: a lapsed device cannot renew its way back, it
 has to enroll again from a fresh pairing code with a human holding the handset.
 Trading the second failure for the first is not a close call.
 
+Revocation is the deliberate version of the same outcome and IS reversible -
+`POST /v1/kith/{key_id}/revoke` with `revoked: false` readmits, because an
+administrator can revoke the wrong key_id and the alternative to a way back is
+wiping a device.
+
 So:
 
 - **Every write is deferred, never refused.** What happened is appended to a

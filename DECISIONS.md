@@ -336,8 +336,16 @@ checker caught that the hand-rolled first version would have thrown on a
 certificate with no signature hash algorithm, which is exactly the input
 designed to be hostile.
 
-A lapsed certificate is refused at the point of use, because not renewing **is**
+A lapsed certificate is refused at the point of use, because not renewing **was**
 the revocation mechanism (D6) and a mechanism enforced nowhere is not one.
+
+It is no longer the only one. `_proven_device` also refuses a device an
+administrator has revoked (muster#11), which had to arrive before automatic
+renewal (muster#10): a device that renews itself never lapses, so lapse alone
+would have left a fleet nothing could cut off. The check is in the same function
+for the same reason everything else about a device is - and it FAILS CLOSED, 503
+rather than an allow, because a revocation you can defeat by making the database
+unreachable is not one.
 
 **One function, shared by every device-facing route.** A second authentication
 scheme for the second thing a device asks for is a second chance to get it

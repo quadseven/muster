@@ -407,6 +407,59 @@ def _proven_device(
         )
 
     state.telemetry.count("proof.verified", tags=["verdict:ok"])
+    proven = _key_id_of(certificate_pem.encode())
+
+    # STILL OURS? A valid signature over a valid certificate proves the device
+    # is who it says. It does not prove anybody still wants to hear from it, and
+    # those are different questions - which is why this check is HERE and not in
+    # `proofs.verify`. The proof layer answers "is this the key we issued to";
+    # the kith answers "is this key still one of ours".
+    #
+    # IT LIVES IN THE ONE PLACE A DEVICE IS AUTHENTICATED, per this function's
+    # own docstring. A revocation enforced on the config route and not on the
+    # renewal route would be a revoked device that cannot be configured and can
+    # still extend its own certificate for another ninety days, forever. Every
+    # route a device reaches calls this; that is the whole reason it exists.
+    #
+    # 503 ON AN UNREACHABLE STORE, NOT AN ALLOW. This module's read contract is
+    # "reads raise, never lie" (kith.py), and a revocation check that fails open
+    # is a revocation an attacker can defeat by making the database unreachable.
+    # The cost is real and bounded: while the store is down, devices cannot
+    # refresh or renew. They keep working on what they have cached, and muster
+    # issues at a third of certificate life, so a device has sixty days of slack
+    # before an outage could cost it anything at all.
+    try:
+        member = state.kith.member(proven)
+    except kith_store.Unreachable as unreachable:
+        state.telemetry.count("proof.revocation.unreachable")
+        raise HTTPException(
+            status_code=503,
+            detail="the kith store is unreachable, so this device cannot be "
+                   "confirmed as still enrolled. Retry.",
+            headers=uncached,
+        ) from unreachable
+    # A MISSING ROW IS NOT A REFUSAL, and that is required rather than lenient.
+    # `record_issuance` is DEFERRED like every other kith write, so between
+    # muster signing a certificate and the backlog draining there is a device
+    # holding a valid identity with no row yet. Refusing on `member is None`
+    # would turn every issuance into a race, and a store outage during
+    # enrollment into a handset that must be factory reset. The authority for
+    # "did we sign this" is the CA and the proof, which have already answered
+    # above; the kith answers only the narrower question of whether somebody has
+    # since said stop.
+    if member is not None and member.device.revoked_at is not None:
+        # COUNTED AND NAMED. A revoked device that keeps calling is either a
+        # machine nobody switched off or a machine somebody took, and the two
+        # look identical from here - so it is worth being able to see that it is
+        # still trying rather than only that it is being refused.
+        telemetry.event("revoked device refused", key_id=proven)
+        state.telemetry.count("proof.refused", tags=["verdict:revoked"])
+        raise HTTPException(
+            status_code=403,
+            detail="this device has been revoked",
+            headers=uncached,
+        )
+
     # LAST SEEN, and this is the only place that can honestly set it. A proof is
     # the one moment muster knows a specific device was reachable and still
     # holds its key - an unauthenticated request proves only that somebody sent
@@ -416,7 +469,6 @@ def _proven_device(
     # Only after Verdict.OK, so a failed proof cannot be used to keep a device
     # looking alive; and deferred like every other write, so a store outage
     # cannot turn a good proof into a 500.
-    proven = _key_id_of(certificate_pem.encode())
     state.kith.seen(proven)
     return proven
 
@@ -940,6 +992,31 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
 _APK_DESCRIPTIONS: dict[tuple[str, int, int], dict] = {}
 
 
+def _changed_or_refused(write, unreachable) -> None:
+    """One shape for every administrator write to a device row.
+
+    `set_role` and `set_revoked` had this three-line dance each, character for
+    character, and it is three lines where getting any of them wrong is silent:
+    a swallowed `Unreachable` reports done for a write that never happened, and
+    a dropped rowcount check reports done for a key_id that does not exist. An
+    administrator acts on both answers - they go and look at a handset, or they
+    stop looking for a device they believe is cut off - so "wrong but quiet" is
+    the whole failure mode.
+
+    AT MODULE LEVEL rather than nested in the registrar, which is not stylistic:
+    complexity is scored over a function's whole subtree, so a helper defined
+    inside `_register_kith_routes` would move these branches around without
+    removing them from its count. Out here it is also independently readable,
+    which is the actual point.
+    """
+    try:
+        changed = write()
+    except kith_store.Unreachable as exc:
+        raise unreachable(exc) from exc
+    if not changed:
+        raise HTTPException(status_code=404, detail="no such device")
+
+
 def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
     """Who muster has issued to. The first endpoints that can answer at all.
 
@@ -1110,17 +1187,52 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         served, INCLUDING `app-config`, which carries write tokens. A device
         that could set its own role could ask for another role's credentials.
         """
-        try:
-            changed = state.kith.set_role(key_id, _role_or_400(role))
-        except kith_store.Unreachable as exc:
-            # NOT a silent success. The operator is about to go and look at a
-            # handset expecting different policy.
-            raise _unreachable(exc) from exc
-        if not changed:
-            raise HTTPException(status_code=404, detail="no such device")
+        # NOT a silent success on either failure. The operator is about to go
+        # and look at a handset expecting different policy.
+        _changed_or_refused(
+            lambda: state.kith.set_role(key_id, _role_or_400(role)), _unreachable
+        )
         telemetry.event("device role changed", key_id=key_id, role=role or "(none)")
         state.telemetry.count("kith.role.changed")
         return {"key_id": key_id, "role": role}
+
+    @app.post("/v1/kith/{key_id}/revoke", dependencies=[admin])
+    def set_device_revoked(key_id: str, revoked: bool = Body(default=True, embed=True)):
+        """This device is no longer ours - or, with `revoked: false`, it is again.
+
+        WHAT THIS DOES: muster stops answering the device. Every route a device
+        can reach goes through `_proven_device`, which refuses a revoked key
+        before anything is served, so configuration, assets and renewal all stop
+        together and stay stopped.
+
+        WHAT IT DOES NOT DO, and an administrator revoking a stolen device needs
+        to know this in the same breath: it cannot reach into a device that has
+        already cached a credential. A router that fetched its datapath key
+        yesterday still holds it. Revocation stops the NEXT delivery; it does
+        not retract the last one. Cutting a stolen device off from what it
+        already has means rotating the credential at the other end too, and
+        those are two actions rather than one.
+
+        NOT A CRL, and that is a decision rather than a gap - see the column's
+        comment in `sql/0001_kith.sql`. A revocation list exists so a third
+        party can check without asking the issuer. muster has no third party: it
+        is the only issuer and the only verifier, and the check is one row.
+
+        REVERSIBLE, because an administrator can revoke the wrong key_id and the
+        alternative to a way back is wiping a device to re-enroll it. It is the
+        same argument the empty role makes next door.
+        """
+        # NOT a silent success, and here that matters more than anywhere else in
+        # this file: an administrator who believes a stolen device is cut off
+        # stops looking for it.
+        _changed_or_refused(lambda: state.kith.set_revoked(key_id, revoked), _unreachable)
+        telemetry.event(
+            "device revoked" if revoked else "device readmitted", key_id=key_id
+        )
+        state.telemetry.count(
+            "kith.revocation.changed", tags=[f"revoked:{str(revoked).lower()}"]
+        )
+        return {"key_id": key_id, "revoked": revoked}
 
     @app.get("/v1/kith/{key_id}", dependencies=[admin])
     def device(key_id: str):
@@ -1193,6 +1305,16 @@ def _member(member: kith_store.Member) -> dict:
         # and the answer is the difference between a handset that carries a
         # write token and one that does not.
         "role": member.device.role,
+        # WHETHER IT IS STILL OURS. null is the ordinary case. On the roll as
+        # well as the single-device view, because the question a console is most
+        # often opened to answer during an incident is "is that thing cut off",
+        # and an answer only reachable one device at a time is one an operator
+        # checks for the device they suspect and no other.
+        "revoked_at": (
+            member.device.revoked_at.isoformat()
+            if member.device.revoked_at is not None
+            else None
+        ),
         "first_seen": member.device.first_seen.isoformat(),
         "last_seen": member.device.last_seen.isoformat(),
         "certificates": member.certificates,

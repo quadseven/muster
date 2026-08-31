@@ -52,9 +52,12 @@
   last section of docs/brand.md warns about.
 
   WHAT IS NOT HERE, AND WHY, also from docs/brand.md: no total/online/offline
-  counts, because muster has no concept of a device being online - lapse is the
-  revocation mechanism BECAUSE devices sit unreachable for days, so "12 Offline"
-  in red would report a healthy estate as broken. No platform breakdown, because
+  counts, because muster has no concept of a device being online - and it does
+  not need one, because nothing is ever pushed at a device. Enforcement happens
+  when a device ASKS, whether that is a lapsed certificate refused or a
+  revocation (muster#11) answered with a 403, so a handset in a drawer for a
+  week is not a problem to solve. "12 Offline" in red would report a healthy
+  estate as broken. No platform breakdown, because
   muster manages Android. No posture or compliance, because no such data is
   collected. An empty section that says what will be there beats a number that
   is always wrong.
@@ -474,12 +477,16 @@
           <li>The name the device was vouched for under</li>
           <li>Its key fingerprint, as read off both screens at enrollment</li>
           <li>When its certificate was issued, and when it expires</li>
+          <li>Whether it has been revoked, and a way to revoke it from here</li>
         </ul>
         <p class="breath">
           What will not be on it is a count of devices online. Muster has no
           idea whether a device is reachable and does not need one: an identity
-          that is not renewed lapses, which is how a device in a drawer stops
-          being a member. Nor will an empty list stand in for an unreachable
+          that is not renewed lapses, and one an administrator revokes is
+          refused the next time it asks. Neither needs the device to be
+          listening. Until this page is drawn, revoking is an API call - which
+          is a real gap, because an administrator cutting off a device they
+          have just lost is the worst moment to be reaching for a terminal. Nor will an empty list stand in for an unreachable
           store - the API answers 503 for that on purpose, because "no devices"
           and "the database is gone" send an operator looking in opposite
           directions.

@@ -10,7 +10,7 @@ not. Then `ARCHITECTURE.md` for the tour, and `DECISIONS.md` when you want to
 know why something has the shape it has. Every entry there names the failure
 that caused it.
 
-## Five things that will bite you
+## Six things that will bite you
 
 **1. muster does not use mTLS. Do not "fix" that.**
 
@@ -60,7 +60,31 @@ everyone. Per-device and per-role scopes exist for this. A role means "these
 devices are interchangeable" - so anything pairwise (a key that identifies one
 endpoint to one peer) belongs at device scope, not role scope.
 
-**5. The device channel is not Android-only.**
+**5. "Lapse is the revocation mechanism" is no longer true, and half the repo
+still says it is.**
+
+It WAS true, and for a good reason: renewal needed a human, so declining to
+renew was declining to trust, and the two were one act. `CONTEXT.md` defined the
+verb that way, `DECISIONS.md` argued it, and `console.html` designed a page
+around it.
+
+Automatic renewal (muster#10) breaks that. A device that renews itself never
+lapses, so a design with only lapse in it is a fleet nothing can cut off. That
+is why `revoked_at` and `POST /v1/kith/{key_id}/revoke` exist (muster#11), and
+why the check lives in `_proven_device` rather than on whichever route somebody
+remembered.
+
+If you are reading an older comment that says lapse is how revocation works,
+it is describing the design before this. Revocation is now a thing an
+administrator does; lapse is still what happens to a device nobody renews.
+
+Two properties worth keeping when you touch it: it FAILS CLOSED (an unreadable
+kith is a 503, never an allow - a revocation you can defeat by taking the
+database down is not one), and `record_issuance` deliberately leaves
+`revoked_at` out of its `DO UPDATE SET`, so a renewal cannot readmit a revoked
+device. Both have tests that die if you change them.
+
+**6. The device channel is not Android-only.**
 
 The agent implementation is Android. The wire protocol is not: enrollment,
 proof and configuration are ordinary HTTPS with a signature, reachable by

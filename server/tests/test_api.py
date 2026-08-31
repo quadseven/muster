@@ -1933,6 +1933,7 @@ ADMINISTRATOR_ONLY = {
     # device-proven, because a role selects which policy scope is served -
     # including app-config, which carries write tokens.
     ("POST", "/v1/kith/{key_id}/role"),
+    ("POST", "/v1/kith/{key_id}/revoke"),
 }
 
 
@@ -2531,3 +2532,279 @@ def test_a_kith_outage_does_not_500_the_device_config_route(state, tmp_path, mon
     # fallback would have withdrawn the very files it meant to protect.
     assert "DISALLOW_SAFE_BOOT" not in response.text
     assert response.headers["Cache-Control"] == "no-store"
+
+
+# ---- revocation ---------------------------------------------------------
+#
+# WHY THIS EXISTS. muster is about to grow unattended renewal (muster#10), and a
+# device that can renew itself forever with no way to stop it is not a control
+# plane, it is a hole with a schedule. Revocation is the half that has to land
+# first: the point of automatic renewal is that nobody has to say yes each time,
+# which is only safe if somebody can still say no once.
+
+
+def _revoked_device(state, tmp_path):
+    """A really-enrolled device, then revoked. Returns (client, key, identity, key_id).
+
+    THROUGH THE WHOLE CEREMONY, not `_enrolled` beside it. That helper mints a
+    certificate straight off the authority and never writes a kith row, so a
+    device built with it is not revocable and never was - the revoke route would
+    answer 404 and a careless test would "fix" that by writing the column
+    directly, proving nothing about the route an administrator uses.
+    """
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, key = _enrolled_device(client, state, tmp_path)
+    identity = _collect_identity(client, state)
+    # Through the ROUTE, not by reaching into the store: the route is what an
+    # administrator uses, and a test that writes the column directly would pass
+    # against a revocation endpoint that did nothing at all.
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
+    ).status_code == 200
+    return client, key, identity, key_id
+
+
+@pytest.mark.parametrize("method,path", sorted(DEVICE_PROVEN))
+def test_a_revoked_device_is_refused_on_every_route_it_can_reach(
+    state, tmp_path, method, path
+):
+    """THE PROPERTY, and it is deliberately parametrized over the whole set.
+
+    A revocation enforced on the routes somebody remembered is a revocation with
+    a hole in it, and the hole would be whichever route was added last. Because
+    the check lives in `_proven_device` - the one place a device is
+    authenticated - this test grows by itself when a route is added to
+    DEVICE_PROVEN, which is the same list the audience tests above already
+    require every new route to join.
+    """
+    import base64
+
+    client, key, identity, _key_id = _revoked_device(state, tmp_path)
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    response = client.request(method, path, json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    })
+
+    assert response.status_code == 403, (
+        f"{method} {path} answered {response.status_code} to a revoked device"
+    )
+    assert "revoked" in response.json()["detail"]
+
+
+def test_a_revoked_device_holds_a_certificate_that_is_still_perfectly_valid(
+    state, tmp_path
+):
+    """The distinction the whole design rests on, pinned.
+
+    Revocation does not and cannot invalidate a signature. The certificate stays
+    exactly as valid as it was - `proofs.verify` still says OK - and the device
+    is refused anyway, because "is this the key we issued to" and "is this key
+    still one of ours" are different questions with different answers. If this
+    test ever fails it means revocation was implemented in the proof layer,
+    where it would be indistinguishable from a broken CA.
+    """
+    from muster.proof import Verdict
+
+    client, key, identity, _key_id = _revoked_device(state, tmp_path)
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    signature = key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+    assert state.proofs.verify(
+        nonce, signature, identity.certificate_pem
+    ) is Verdict.OK
+
+
+def test_an_unreachable_store_refuses_a_device_rather_than_admitting_it(
+    state, tmp_path, monkeypatch
+):
+    """FAIL CLOSED, and this is the test that says so out loud.
+
+    A revocation check that answers "not revoked" when it cannot read the store
+    is a revocation any attacker can defeat by making the database unreachable -
+    and the database is the one dependency a stolen device's holder might
+    plausibly be able to disturb. So an unreadable kith is a 503, not an allow.
+
+    ON THE ASSET ROUTE, AND THAT IS THE WHOLE POINT OF THE TEST. Written against
+    /v1/device/config it passes whether the check fails open or closed, because
+    that route makes its OWN `state.kith.member` call for the policy scope and
+    answers 503 on its own account - so the assertion would be satisfied by a
+    mechanism this change did not add. Measured: with the check deleted
+    entirely, the config version of this test still passed. /v1/device/asset
+    touches the kith ONLY through `_proven_device`, so with an asset present a
+    fail-open answers 200 and there is nowhere for a false pass to come from.
+
+    The cost of failing closed is stated rather than hidden: while the store is
+    down NO device can refresh or renew. That is survivable precisely because
+    muster issues at a third of certificate life, so a device has sixty days of
+    slack before an outage could cost it anything - and `musterwrt.py` on the
+    router treats this channel as a refresher and never as a precondition.
+    """
+    from muster import kith as kith_store
+
+    state.assets = _asset_store(tmp_path)
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state)
+
+    # It works before the outage, so a 503 after it cannot be the setup.
+    assert _fetch_asset(client, key, identity, "wall.png").status_code == 200
+
+    def unreadable(_key_id):
+        raise kith_store.Unreachable("the kith store cannot be read")
+
+    monkeypatch.setattr(state.kith, "member", unreadable)
+
+    response = _fetch_asset(client, key, identity, "wall.png")
+    assert response.status_code == 503, (
+        f"got {response.status_code} - an unreadable kith was treated as "
+        "'this device was not revoked' and the asset was served anyway"
+    )
+    assert "still enrolled" in response.json()["detail"]
+
+
+def test_a_readmitted_device_is_answered_again(state, tmp_path):
+    """Reversible, because an administrator can revoke the wrong key_id.
+
+    Without a way back the remedy for a typo is wiping a device and enrolling it
+    again with a person present - which is the exact cost this whole channel
+    exists to remove. Same argument the empty role makes.
+    """
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client, key, identity, key_id = _revoked_device(state, tmp_path)
+
+    assert _fetch_config(client, key, identity).status_code == 403
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": False}, cookies=ADMIN
+    ).status_code == 200
+    assert _fetch_config(client, key, identity).status_code == 200
+
+
+def test_a_new_certificate_does_not_readmit_a_revoked_device(state, tmp_path):
+    """The load-bearing OMISSION, tested because omissions are invisible.
+
+    `record_issuance`'s ON CONFLICT DO UPDATE SET list has no `revoked_at`, so
+    issuing again - a renewal, or a deferred write replaying after an outage -
+    leaves the revocation standing. Nothing in the code says that out loud at
+    the point where it matters, and the obvious "tidy up" is to add the column
+    to that list. This test is what makes that tidy-up fail.
+    """
+    client, key, identity, key_id = _revoked_device(state, tmp_path)
+
+    # Same key, a second certificate - which is exactly what renewal will be.
+    from muster import kith as kith_store
+    from muster.enroll import key_id as _key_id_of_der
+
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "pixel")]))
+        .sign(key, hashes.SHA256())
+    )
+    fresh = state.authority.issue(csr.public_bytes(serialization.Encoding.DER), "pixel")
+    state.kith.issued(
+        kith_store.Device(
+            key_id=key_id,
+            fingerprint="ff",
+            name="pixel",
+            first_seen=state.kith.now(),
+            last_seen=state.kith.now(),
+        ),
+        kith_store.Certificate(
+            serial=str(fresh.serial),
+            request_id="r2",
+            not_before=fresh.not_before,
+            not_after=fresh.not_after,
+            issued_at=state.kith.now(),
+            certificate_pem=fresh.certificate_pem.decode(),
+        ),
+    )
+    assert _key_id_of_der  # the import documents that the key is unchanged
+
+    assert _fetch_config(client, key, identity).status_code == 403, (
+        "a new certificate readmitted a revoked device - check that "
+        "record_issuance still leaves revoked_at out of its DO UPDATE SET"
+    )
+
+
+def test_revoking_a_key_the_kith_never_heard_of_is_a_404(state):
+    """An administrator typing a key_id by hand needs "no such device" to be
+    distinguishable from "done". Reporting success for a key that does not exist
+    is how somebody believes a stolen handset is cut off."""
+    client = _proof_client(state)
+    assert client.post(
+        "/v1/kith/deadbeef/revoke", json={"revoked": True}, cookies=ADMIN
+    ).status_code == 404
+
+
+def test_revoking_needs_an_administrator(state):
+    """A device that could revoke another device could island the estate; a
+    device that could readmit ITSELF would make the whole mechanism decorative."""
+    client = _proof_client(state)
+    _key, _identity, key_id = _enrolled(state)
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}
+    ).status_code == 401
+
+
+def test_an_unreachable_store_never_reports_a_revocation_as_done(
+    state, monkeypatch
+):
+    """SYNCHRONOUS, NOT DEFERRED, and of every write in `Kith` this is the one
+    where the difference is worst.
+
+    `seen` and `collected` are deliberately queued: losing one costs a
+    timestamp. A revocation that quietly joined the same backlog would return
+    200 to an administrator who is standing there deciding whether to also go
+    and rotate a key at the other end - and the device would still be answered.
+    """
+    from muster import kith as kith_store
+
+    client = _proof_client(state)
+    _key, _identity, key_id = _enrolled(state)
+
+    def unwritable(_records):
+        raise kith_store.Unreachable("the kith store cannot be written")
+
+    monkeypatch.setattr(state.kith, "_write_now", unwritable)
+
+    response = client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
+    )
+    assert response.status_code == 503, (
+        f"got {response.status_code} - a revocation that could not be written "
+        "reported success"
+    )
+
+
+def test_the_device_view_shows_that_it_is_revoked(state, tmp_path):
+    """An administrator looking at a device has to be able to see this. A
+    revocation nothing displays is one somebody undoes by re-enrolling, having
+    concluded the device is broken."""
+    client, _key, _identity, key_id = _revoked_device(state, tmp_path)
+    body = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()
+    assert body["device"]["revoked_at"] is not None
+
+
+def test_a_device_with_no_kith_row_yet_is_still_answered(state, tmp_path):
+    """THE DEFERRED-WRITE WINDOW, pinned so nobody closes it.
+
+    `record_issuance` is deferred like every other kith write, so between muster
+    signing a certificate and the backlog draining there is a real device
+    holding a real identity with no row. Refusing on `member is None` reads as
+    the safer choice and is not: it makes every issuance a race, and a store
+    outage during enrollment a handset that has to be factory reset.
+
+    `_enrolled` builds exactly that device - a certificate straight off the
+    authority, no kith row - which is why the revocation tests above could not
+    use it and why it is the right helper here.
+    """
+    state.assets = _asset_store(tmp_path)
+    client = _proof_client(state)
+    key, identity, key_id = _enrolled(state)
+
+    assert state.kith.member(key_id) is None, "this test needs a device with no row"
+    assert _fetch_asset(client, key, identity, "wall.png").status_code == 200

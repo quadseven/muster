@@ -97,3 +97,35 @@ CREATE INDEX IF NOT EXISTS kith_certificate_request_id_idx
 -- spellings of it is how a `WHERE role = ''` quietly misses half the fleet.
 ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS role text NOT NULL DEFAULT '';
+
+-- WHEN AN ADMINISTRATOR SAID THIS DEVICE IS NO LONGER OURS. NULL is the
+-- ordinary case and means "still ours".
+--
+-- THIS IS NOT A CRL, deliberately, and the difference is worth stating because
+-- a certificate authority without a revocation list looks like an oversight. A
+-- CRL exists so that a THIRD PARTY can check revocation without asking the
+-- issuer. muster has no third party: it is the only issuer and the only
+-- verifier, and every device request already goes through `_proven_device`,
+-- which is one function with a database behind it. Publishing a signed list for
+-- nobody to fetch, and building the distribution and freshness problems that
+-- come with one, would be answering a question this deployment does not ask.
+--
+-- NULLABLE RATHER THAN NOT NULL DEFAULT, unlike `role` above. A timestamp has
+-- no honest zero value: `'epoch'` would mean "revoked in 1970" to every query
+-- that did not know better, and the whole point of a nullable column is that
+-- "never" and "at some time" are different shapes. It also keeps the ALTER
+-- trivially safe - a nullable column with no default touches no existing row.
+--
+-- WHAT REVOKING DOES NOT DO, so nobody discovers it during an incident: it
+-- stops muster answering this device. It cannot reach into a device that has
+-- already cached a credential. A stolen router keeps the datapath key it holds
+-- until the FAR END rotates, which is why revocation is only half of the
+-- action and `docs/` pairs it with a rotation.
+ALTER TABLE kith_device
+    ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
+
+-- The roll is read most often to answer "what is still ours". Without this it
+-- is a sequential scan over every device that has ever enrolled, including the
+-- revoked ones the query exists to exclude.
+CREATE INDEX IF NOT EXISTS kith_device_revoked_at_idx
+    ON kith_device (revoked_at);
