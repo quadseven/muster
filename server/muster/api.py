@@ -1,4 +1,4 @@
-"""The HTTP surface: three audiences, one of them the open internet.
+"""The HTTP surface: four audiences, two of them the open internet.
 
 WHO CAN REACH WHAT, because this is the part that gets it wrong:
 
@@ -15,6 +15,18 @@ WHO CAN REACH WHAT, because this is the part that gets it wrong:
                                POST /v1/provision/qr
                                GET  /v1/kith
                                GET  /v1/kith/{key_id}
+    public, on their own       GET  https://<MUSTER_CRL_URL>
+       hostnames               POST https://<MUSTER_OCSP_URL>
+
+THE FOURTH AUDIENCE IS MOUNTED ON HOSTNAMES, NOT PATHS (muster#17). Both
+standards conventionally live at `/`, which the console already serves, so
+the CRL and the OCSP responder are Starlette Host routes: the hostname from
+MUSTER_CRL_URL / MUSTER_OCSP_URL decides which surface answers, and a
+request to any other hostname falls through to the console. The URLs are
+also stamped into every issued certificate - the CRL distribution point and
+the OCSP AIA extension - which is why app_from_env refuses to start without
+them: a default there would mint certificates pointing at one hostname while
+this pod answers on another, and nothing inside muster would ever notice.
 
 THE MIDDLE AUDIENCE IS A DEVICE THAT HAS ENROLLED (muster#46), and it is the one
 that has to be got right next, because everything a device will ever say to
@@ -2071,6 +2083,29 @@ def app_from_env() -> FastAPI:
             "anyone who can set a header point a device somewhere else."
         )
 
+    # The revocation URLs go INTO every certificate muster issues - the CRL
+    # distribution point and the OCSP entry of the authority information
+    # access extension - and each hostname is the one the matching public
+    # endpoint below answers on. Read from the environment rather than
+    # defaulted, for the same reason MUSTER_BASE_URL is: nothing inside
+    # muster ever follows either URL, so a default that ships is a silent
+    # one. A pod that comes up half-configured here would mint certificates
+    # pointing at an unreachable example URI, and listen for revocation
+    # checks on a hostname no request ever arrives with.
+    crl_url = os.environ.get("MUSTER_CRL_URL", "")
+    ocsp_url = os.environ.get("MUSTER_OCSP_URL", "")
+    if not crl_url or not ocsp_url:
+        raise RuntimeError(
+            "MUSTER_CRL_URL and MUSTER_OCSP_URL must both be set. Each is "
+            "stamped into every certificate muster issues - the CRL "
+            "distribution point and the OCSP entry of the authority "
+            "information access extension - and each hostname is the one "
+            "the matching public endpoint answers on. Defaulting them would "
+            "mint certificates pointing at an unreachable example URI and "
+            "listen for revocation checks on a hostname no request arrives "
+            "with, and neither failure is visible from inside muster."
+        )
+
     # Logging configured HERE, at the one place that wires from the
     # environment, so importing muster.api never reconfigures a host
     # application's logging as a side effect of an import.
@@ -2087,10 +2122,14 @@ def app_from_env() -> FastAPI:
         dd_agent_host_set=bool(os.environ.get("DD_AGENT_HOST")),
         agent_apk_published=bool(agent_apk),
         base_url=base_url,
+        crl_url=crl_url,
+        ocsp_url=ocsp_url,
         administrators=len(subjects),
     )
 
-    authority = Authority.load(key_path, cert_path)
+    authority = Authority.load(
+        key_path, cert_path, crl_url=crl_url, ocsp_url=ocsp_url
+    )
     clock = lambda: dt.datetime.now(dt.timezone.utc).timestamp()  # noqa: E731
 
     sign_in = None
