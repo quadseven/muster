@@ -53,6 +53,12 @@ object BootPlan {
         // nothing reconciled. Waiting for a human is what the provisioning
         // screen is for; this one advances by a move and leaves.
         "enroll" to { context: Context -> enroll(context) },
+        // BEFORE CONFIGURATION, so the rest of this check-in proves with the
+        // certificate just written rather than spending one final request on
+        // the old one. This is driven by the same fifteen-minute reconcile as
+        // every other step: adding a renewal scheduler would create another
+        // clock and another path BootPlan cannot prove is wired.
+        "renew" to { context: Context -> RenewalSteward(context).reconcile() },
         // Then the fetch, and the order is the point here too. Every step after
         // this one is a reconciler over files in the agent's own directory, so
         // fetching before them means ONE boot both collects a policy change and

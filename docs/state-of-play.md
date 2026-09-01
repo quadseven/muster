@@ -17,6 +17,24 @@ Verified against `enroll.muster.example`, not inferred from a green build:
 
 The enrollment ceremony and the identity machinery are the finished part.
 
+## Automatic renewal is wired, not measured
+
+Written 2026-09-01 with no handset attached. The agent now puts renewal in
+`BootPlan.STEPS`, so the existing fifteen-minute check-in acts on
+`IdentityLifecycle.Stance.ShouldRenew`; the request proves possession with the
+same nonce, signature and certificate as configuration fetches, and its CSR is
+made from the existing keystore key. JVM tests prove that request shape, that
+the CSR carries the existing public key, and that all four returned identity
+fields, including `renew_after`, reach the identity store. The server suite
+proves that the same key remains one device with two certificates.
+
+That is not the acceptance measurement. No test without a handset proves that
+Android Keystore signs both the proof and CSR in direct-boot conditions, that
+the periodic job reaches the route on a real network, or that the replacement
+certificate authenticates the next check-in. Date-mark this measured only after
+a device past `renew_after` has done those things with no person present and
+`GET /v1/kith/{key_id}` reports one device with two certificates.
+
 **That first line is the deployed pod, not the code.** Since #36 an administrator
 signs in at the estate's identity provider, but nothing is applied: it needs an
 application client and a secret, which are a human's job.
