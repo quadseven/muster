@@ -73,6 +73,13 @@ quoted; a green suite never gets a thing past the second bucket.
          do anything but sit in `wipe_pending_at`. Muster does not record
          which agent build a device runs, so the only place to read that is
          the handset itself.
+      -> read off the handsets, evening of 2026-09-01 (EDT), over adb:
+         `dumpsys package app.muster.agent | grep versionCode` on both
+         reachable Pixels says `versionCode=84`. Neither runs 29804718,
+         so the inference above is now a measurement. The third Pixel
+         (the revoked, stale one) was not reachable to read. The one to
+         bring forward first is the disposable handset, which the
+         operator has named; it is not named here.
       -> after revision 43 the CRL is served over plain http with no
          redirect, content-type application/pkix-crl, nextUpdate five
          minutes after lastUpdate (D28); the OCSP hostname answers
