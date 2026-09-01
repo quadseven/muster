@@ -1917,6 +1917,10 @@ DEVICE_PROVEN = {
     # Device-proven and NOT open, because possession of the enrolled key is what
     # stands in for the pairing code - it is the whole authorization.
     ("POST", "/v1/device/renew"),
+    # muster#15: a wipe-pending device acknowledges that it received the
+    # instruction before it erases itself. Device-proven for the same reason
+    # every other device action is: the proof is the authorization.
+    ("POST", "/v1/device/wipe"),
 }
 
 ADMINISTRATOR_ONLY = {
@@ -1938,6 +1942,10 @@ ADMINISTRATOR_ONLY = {
     # including app-config, which carries write tokens.
     ("POST", "/v1/kith/{key_id}/role"),
     ("POST", "/v1/kith/{key_id}/revoke"),
+    # muster#15: the separate state that must come BEFORE revocation, so the
+    # wipe instruction can still travel to the device that will be refused
+    # after it acknowledges.
+    ("POST", "/v1/kith/{key_id}/wipe"),
 }
 
 
@@ -2566,6 +2574,124 @@ def _revoked_device(state, tmp_path):
         f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
     ).status_code == 200
     return client, key, identity, key_id
+
+
+def _wipe_pending_device(state, tmp_path):
+    """A really-enrolled device, then told to wipe itself. Returns the same
+    shape as `_revoked_device` so the ordering tests can use either state."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, key = _enrolled_device(client, state, tmp_path)
+    identity = _collect_identity(client, state)
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": True}, cookies=ADMIN
+    ).status_code == 200
+    return client, key, identity, key_id
+
+
+def _fetch_config(client, key, identity):
+    """One proven /v1/device/config fetch. Returns the raw response."""
+    import base64
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    return client.post("/v1/device/config", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    })
+
+
+def test_a_wipe_pending_device_is_served_the_wipe_rather_than_refused(
+    state, tmp_path
+):
+    """THE ORDERING, AND IT IS THE WHOLE DESIGN.
+
+    `_proven_device` refuses a revoked key BEFORE anything is served, so
+    revocation removes the only channel a wipe could travel down. That is why
+    wipe is a second state rather than a flag on the first: `wipe_pending_at`
+    is deliberately NOT refused, so the device is still served and the
+    instruction reaches it.
+    """
+    from muster import policy
+
+    client, key, identity, _key_id = _wipe_pending_device(state, tmp_path)
+
+    response = _fetch_config(client, key, identity)
+
+    assert response.status_code == 200, (
+        f"a wipe-pending device was answered {response.status_code} - it can no "
+        "longer be reached, so the wipe can never arrive"
+    )
+    assert policy.WIPE_FILE in response.json()["files"], (
+        "the device was served, but not the wipe instruction"
+    )
+
+
+def test_revoking_before_the_wipe_lands_means_the_wipe_never_arrives(
+    state, tmp_path
+):
+    """THE WRONG ORDER, WRITTEN DOWN SO IT CANNOT BE REINTRODUCED QUIETLY.
+
+    This is the failure the two-state design exists to prevent, and it is not
+    hypothetical - it is what a single call setting both columns would do. Once
+    `revoked_at` is set, `_proven_device` refuses the key before the policy
+    layer is ever consulted, so a wipe queued behind it is unreachable forever.
+
+    The device in this test is BOTH wipe-pending and revoked, which is exactly
+    the state an administrator produces by reaching for revoke first.
+    """
+    client, key, identity, key_id = _wipe_pending_device(state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
+    ).status_code == 200
+
+    response = _fetch_config(client, key, identity)
+
+    assert response.status_code == 403, (
+        f"got {response.status_code} - revocation stopped refusing the device"
+    )
+    assert "revoked" in response.json()["detail"]
+
+
+def test_the_wipe_route_is_administrator_only(state, tmp_path):
+    """A device that could ask for its own wipe state is a device that could
+    ask about another one's. Same argument as the role route next door."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": True}
+    ).status_code == 401
+
+
+def test_a_wipe_can_be_called_off_before_the_device_comes_back(state, tmp_path):
+    """REVERSIBLE, because an administrator can name the wrong key_id and the
+    alternative to a way back is a factory reset somebody did not intend. Same
+    argument revoke makes.
+
+    A REAL POLICY DIRECTORY, deliberately. Once the wipe is called off the
+    device falls back to an ordinary policy read, and with no source that is a
+    503 - which would pass this test for the wrong reason, by proving only that
+    muster stopped answering rather than that it stopped saying "wipe".
+    """
+    from muster import policy
+
+    root = tmp_path / "policy-called-off"
+    root.mkdir()
+    (root / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    state.policies = policy.Policies(root=root)
+    client, key, identity, key_id = _wipe_pending_device(state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": False}, cookies=ADMIN
+    ).status_code == 200
+
+    response = _fetch_config(client, key, identity)
+
+    assert response.status_code == 200
+    assert policy.WIPE_FILE not in response.json()["files"], (
+        "the wipe was called off and the device was still told to wipe"
+    )
 
 
 @pytest.mark.parametrize("method,path", sorted(DEVICE_PROVEN))

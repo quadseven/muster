@@ -90,6 +90,19 @@ class BootPlanTest {
     }
 
     @Test
+    fun theWipeStewardRunsAfterConfigurationAndBeforeTheOtherStewards() {
+        // THE ORDER IS THE WHOLE OF muster#15. The wipe instruction arrives
+        // as a managed file in the configuration step, so WipeSteward must run
+        // after it. It must run before restrictions and app policy because a
+        // wipe is terminal: queuing less destructive work in front of it would
+        // spend the device's remaining time reconciling things that are about
+        // to be erased.
+        assertTrue("wipe must be part of the shared reconcile", names.contains("wipe"))
+        assertTrue(names.indexOf("configuration") < names.indexOf("wipe"))
+        assertTrue(names.indexOf("wipe") < names.indexOf("restrictions"))
+    }
+
+    @Test
     fun appConfigurationIsReconciledAtBoot() {
         // The whole point of managed app configuration is that nobody has to
         // touch the phone. A steward that is written and never run leaves the

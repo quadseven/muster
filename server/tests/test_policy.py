@@ -81,6 +81,56 @@ def test_a_file_that_cannot_be_read_refuses_the_whole_answer(root):
         policy.Policies(root=root).for_device(A)
 
 
+def test_a_wipe_pending_device_gets_the_wipe_file_even_with_no_policy_source(root):
+    """The instruction that must reach a device before it is refused.
+
+    Wipe-pending is the one state that deliberately does not depend on the
+    policy directory. If it did, an absent Secret - the exact failure that is a
+    503 everywhere else - would leave an administrator's erase request
+    undelivered, while `_proven_device` continued to let the device in.
+    """
+    served = policy.Policies(root=None).for_device(A, wipe_pending=True)
+    assert served.files == {policy.WIPE_FILE: policy.WIPE_COMMAND}
+
+
+def test_a_wipe_file_is_never_read_from_the_shared_scope(root):
+    """A wipe under `kith` scope is a fleet-wide factory reset one typo away."""
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _shared(root, policy.WIPE_FILE).write_text(policy.WIPE_COMMAND)
+
+    served = policy.Policies(root=root).for_device(A)
+
+    assert policy.WIPE_FILE not in served.files
+    assert policy.WIPE_COMMAND not in served.files.values()
+
+
+def test_a_wipe_file_is_never_read_from_a_role_scope(tmp_path):
+    """A role says these devices are interchangeable, which is the wrong scope
+    for an instruction that erases ONE device."""
+    _shared(tmp_path, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _role(tmp_path, "zippie", policy.WIPE_FILE).write_text(policy.WIPE_COMMAND)
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie")
+
+    assert policy.WIPE_FILE not in served.files
+
+
+def test_a_device_scoped_wipe_file_is_ignored_unless_the_kith_marks_wipe_pending(root):
+    """The source of truth is membership, not a Secret filename."""
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _own(root, A, policy.WIPE_FILE).write_text(policy.WIPE_COMMAND)
+
+    served = policy.Policies(root=root).for_device(A)
+
+    assert policy.WIPE_FILE not in served.files
+
+
+def test_a_wipe_pending_device_does_not_wait_for_a_policy_directory(tmp_path):
+    """A broken policy source must not make an erase request impossible."""
+    served = policy.Policies(root=tmp_path).for_device(A, wipe_pending=True)
+    assert served.files == {policy.WIPE_FILE: policy.WIPE_COMMAND}
+
+
 # ---- what is served, and from where --------------------------------------
 
 

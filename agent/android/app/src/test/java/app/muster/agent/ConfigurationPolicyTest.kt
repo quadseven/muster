@@ -219,7 +219,15 @@ class ConfigurationPolicyTest {
             // wallpaper     -> WallpaperSteward.configFile()
             // install-apps -> AppInstallSteward.configFile(), read by BOTH the
             //                 install-apps and install-self steps (muster#81)
-            setOf("restrictions", "visible-apps", "app-config", "wallpaper", "install-apps"),
+            // wipe         -> WipeSteward.configFile()
+            setOf(
+                "restrictions",
+                "visible-apps",
+                "app-config",
+                "wallpaper",
+                "install-apps",
+                "wipe",
+            ),
             ConfigurationPolicy.MANAGED,
         )
     }

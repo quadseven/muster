@@ -124,8 +124,30 @@ ALTER TABLE kith_device
 ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS revoked_at timestamptz;
 
+-- WHEN AN ADMINISTRATOR ASKED FOR THIS DEVICE TO BE ERASED. NULL means no
+-- wipe is waiting.
+--
+-- THIS IS THE STATE THAT MUST COME BEFORE `revoked_at` (muster#15).
+-- `_proven_device` refuses a revoked key before serving anything, so a wipe
+-- that was recorded as a revocation would remove the only channel the wipe
+-- instruction could travel down. Wipe-pending therefore clears `revoked_at`
+-- when it is set; only the device's own acknowledgement moves it back to
+-- `revoked_at`.
+--
+-- NULLABLE for the same reason `revoked_at` is: a timestamp has no honest
+-- zero value, and "never asked" and "asked at this time" must be different
+-- shapes.
+ALTER TABLE kith_device
+    ADD COLUMN IF NOT EXISTS wipe_pending_at timestamptz;
+
 -- The roll is read most often to answer "what is still ours". Without this it
 -- is a sequential scan over every device that has ever enrolled, including the
 -- revoked ones the query exists to exclude.
 CREATE INDEX IF NOT EXISTS kith_device_revoked_at_idx
     ON kith_device (revoked_at);
+
+-- A console listing devices during a wipe request needs this for the same
+-- reason: without it, "what is still waiting to erase itself" is a sequential
+-- scan behind the same question for revocation.
+CREATE INDEX IF NOT EXISTS kith_device_wipe_pending_at_idx
+    ON kith_device (wipe_pending_at);

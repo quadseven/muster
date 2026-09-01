@@ -177,6 +177,14 @@ class Device:
     # statement about the KEY, and the key is what was vouched for. Revoking a
     # certificate would leave the device free to renew into a new one.
     revoked_at: dt.datetime | None = None
+    # When an administrator asked for the device to be erased first, BEFORE the
+    # refusal above. The two must be different states rather than one action:
+    # `_proven_device` refuses `revoked_at`, so a wipe that also revokes in the
+    # same step would remove the only channel the wipe instruction could travel
+    # down. This state still serves configuration and specifically serves the
+    # wipe file; it becomes `revoked_at` only after the device acknowledges the
+    # instruction (muster#15).
+    wipe_pending_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +231,10 @@ class Records(Protocol):
     def record_role(self, key_id: str, role: str) -> bool: ...
 
     def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool: ...
+
+    def record_wipe_pending(self, key_id: str, at: dt.datetime | None) -> bool: ...
+
+    def record_wipe_acknowledged(self, key_id: str, at: dt.datetime) -> bool: ...
 
     def record_collected(self, request_id: str, at: dt.datetime) -> None: ...
 
@@ -351,7 +363,36 @@ class MemoryRecords:
         # BOTH DIRECTIONS THROUGH ONE METHOD, `at=None` being readmission. A
         # separate un-revoke would be a second write path to the same column,
         # and the one used less often is the one that would rot.
-        self._devices[key_id] = replace(device, revoked_at=at)
+        #
+        # A REVOCATION OR A READMISSION ALSO CLEARS WIPE-PENDING. Revoking and
+        # wiping are two states, not one; an administrator choosing the second
+        # state directly is saying the first no longer applies, and readmitting
+        # a device that was waiting to be erased would otherwise be readmitted
+        # into a wipe it did not ask for.
+        self._devices[key_id] = replace(device, revoked_at=at, wipe_pending_at=None)
+        return True
+
+    def record_wipe_pending(self, key_id: str, at: dt.datetime | None) -> bool:
+        device = self._devices.get(key_id)
+        if device is None:
+            return False
+        # SETTING WIPE-PENDING CLEARS REVOCATION, and that ordering is the
+        # whole of muster#15: `_proven_device` refuses a revoked key before it
+        # serves anything, so a wipe requested on a revoked device would never
+        # travel. The state that serves the wipe must therefore be the state
+        # that removes the refusal.
+        self._devices[key_id] = replace(device, revoked_at=None, wipe_pending_at=at)
+        return True
+
+    def record_wipe_acknowledged(self, key_id: str, at: dt.datetime) -> bool:
+        device = self._devices.get(key_id)
+        if device is None or device.wipe_pending_at is None:
+            return False
+        # THE DEVICE SAID IT IS ABOUT TO WIPE, so now - and only now - the
+        # wipe-pending state becomes the refusal. Doing this in the same admin
+        # call that set wipe-pending would starve the instruction; doing it
+        # never would leave a wiped device readmitted as soon as it renewed.
+        self._devices[key_id] = replace(device, revoked_at=at, wipe_pending_at=None)
         return True
 
     def record_collected(self, request_id: str, at: dt.datetime) -> None:
@@ -712,8 +753,46 @@ class PostgresRecords:
             # deferred write cannot readmit a device an administrator revoked.
             # Adding it there would also reintroduce the ordering hazard the
             # `name` and `role` clauses guard against, with a worse consequence.
+            #
+            # A REVOCATION OR A READMISSION ALSO CLEARS WIPE-PENDING, for the
+            # reason `MemoryRecords` states: the two states are alternatives,
+            # and a readmitted wipe-pending device must not walk back into a
+            # wipe it did not ask for.
             cursor.execute(
-                "UPDATE kith_device SET revoked_at = %s WHERE key_id = %s",
+                "UPDATE kith_device SET revoked_at = %s, wipe_pending_at = NULL"
+                " WHERE key_id = %s",
+                (at, key_id),
+            )
+            return cursor.rowcount
+
+        return bool(self._run(work))
+
+    def record_wipe_pending(self, key_id: str, at: dt.datetime | None) -> bool:
+        def work(cursor):
+            # SETTING WIPE-PENDING CLEARS REVOCATION. This is the ordering that
+            # must not be got backwards: `_proven_device` refuses `revoked_at`
+            # before any route serves anything, so a wipe-pending device that
+            # stayed revoked would never receive the wipe file.
+            cursor.execute(
+                "UPDATE kith_device SET revoked_at = NULL, wipe_pending_at = %s"
+                " WHERE key_id = %s",
+                (at, key_id),
+            )
+            return cursor.rowcount
+
+        return bool(self._run(work))
+
+    def record_wipe_acknowledged(self, key_id: str, at: dt.datetime) -> bool:
+        def work(cursor):
+            # ONLY FROM WIPE-PENDING, and only once. The device has received the
+            # instruction and is about to erase itself, so the serving state
+            # becomes the refusing state at the moment the channel has done its
+            # one job. Repeating the acknowledgement is refused rather than
+            # making a second revocation row.
+            cursor.execute(
+                "UPDATE kith_device"
+                "   SET revoked_at = %s, wipe_pending_at = NULL"
+                " WHERE key_id = %s AND wipe_pending_at IS NOT NULL",
                 (at, key_id),
             )
             return cursor.rowcount
@@ -756,7 +835,10 @@ class PostgresRecords:
         # LAST in the list, deliberately: `_member_from_row` reads by position,
         # so appending leaves every existing index meaning what it meant.
         "       d.role,"
-        "       d.revoked_at"
+        "       d.revoked_at,"
+        # LAST, after revoked_at: `_member_from_row` reads by position, so
+        # appending leaves every existing index meaning what it meant.
+        "       d.wipe_pending_at"
         "  FROM kith_device d"
         "  LEFT JOIN kith_certificate c ON c.key_id = d.key_id"
     )
@@ -821,6 +903,7 @@ def _member_from_row(row) -> Member:
             # column that is not there. Defaulting the other way would strand a
             # fleet on a column-ordering mistake.
             revoked_at=row[9] if len(row) > 9 else None,
+            wipe_pending_at=row[10] if len(row) > 10 else None,
         ),
         certificates=row[5],
         current_serial=row[6],
@@ -987,6 +1070,42 @@ class Kith:
                 lambda records: records.record_revocation(
                     key_id, self._clock() if revoked else None
                 )
+            )
+        )
+
+    def set_wipe_pending(self, key_id: str, wipe: bool) -> bool:
+        """Ask for the device to be erased, without refusing it first.
+
+        SYNCHRONOUS FOR THE SAME REASON AS `set_revoked`. An operator standing
+        at the console needs to know whether the wipe-pending state was written,
+        because the next thing they expect is the handset erasing itself - and a
+        queued write would report that expectation as fact.
+
+        Returns whether a device was actually changed. False means the kith has
+        never heard of that key.
+        """
+        return bool(
+            self._write_now(
+                lambda records: records.record_wipe_pending(
+                    key_id, self._clock() if wipe else None
+                )
+            )
+        )
+
+    def acknowledged_wipe(self, key_id: str) -> bool:
+        """The wipe-pending device has received the instruction and is acting on it.
+
+        SYNCHRONOUS, not deferred: this is the transition that turns the serving
+        state into the refusing state, and losing it in a backlog would leave a
+        device that has just wiped itself able to renew back into the kith.
+
+        Returns whether a wipe-pending device was found and moved to revoked.
+        False means there was no such device, or it was not wipe-pending - which
+        a caller must be able to tell apart from success.
+        """
+        return bool(
+            self._write_now(
+                lambda records: records.record_wipe_acknowledged(key_id, self._clock())
             )
         )
 
