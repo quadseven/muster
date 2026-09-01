@@ -70,6 +70,18 @@ class BootPlanTest {
     }
 
     @Test
+    fun renewalIsAttemptedFromTheExistingCheckInBeforeConfiguration() {
+        // THE GAP IN muster#13 was a correct ShouldRenew decision whose only
+        // production consumer rendered text. This assertion is the difference
+        // between a renewal client that exists and a device that calls it.
+        assertTrue("renewal must be part of the shared reconcile", names.contains("renew"))
+        assertTrue(
+            "configuration should prove with the certificate renewal just stored",
+            names.indexOf("renew") < names.indexOf("configuration"),
+        )
+    }
+
+    @Test
     fun restrictionsAreReconciledAtBoot() {
         assertTrue(
             "restrictions must be run at boot, not merely implemented",
