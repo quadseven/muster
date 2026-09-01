@@ -651,6 +651,31 @@ def test_the_devices_section_can_queue_and_cancel_a_named_wipe(client):
     assert "device-action-name" in body
 
 
+def test_a_revoked_device_can_be_readmitted_from_the_same_row(client):
+    """Revocation is reversible by design (muster#11, D27), and the console was
+    the one place where it was not: a revoked row showed a disabled button
+    reading "Revoked" with no way back. The API accepted `revoked: false` the
+    whole time, so the undo was a terminal command - and a person who has just
+    revoked the wrong device is not the person you want reaching for one.
+
+    The same caveat as the wipe test above applies word for word: these are
+    string assertions over the served page, nothing here runs the JavaScript,
+    and a browser is what turns this from shipped into measured.
+    """
+    body = client.get("/").text
+
+    assert "'Readmit' : 'Revoke'" in body
+    assert "readmit: {" in body
+    assert "body: { revoked: false }" in body
+    assert "Readmit device" in body
+    # The old dead-end control is gone: a revoked row is never a disabled
+    # button with nothing behind it.
+    assert "? 'Revoked' : 'Revoke'" not in body
+    # The ordering guard from D29 is unchanged: neither direction is offered
+    # while an erase is pending.
+    assert "revoke.disabled = Boolean(device.wipe_pending_at)" in body
+
+
 def test_the_product_is_capitalized_wherever_a_person_reads_it(client):
     """The Android agent already has this guard (#32). The console is the other
     surface a person reads, and it was the one still saying it in lower case."""

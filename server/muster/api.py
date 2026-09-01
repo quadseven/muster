@@ -1640,10 +1640,11 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         already has means rotating the credential at the other end too, and
         those are two actions rather than one.
 
-        NOT A CRL, and that is a decision rather than a gap - see the column's
-        comment in `sql/0001_kith.sql`. A revocation list exists so a third
-        party can check without asking the issuer. muster has no third party: it
-        is the only issuer and the only verifier, and the check is one row.
+        THE ROW IS THE RECORD; THE CRL AND OCSP RESPONDER ARE VIEWS OF IT.
+        muster's own routes never consult either - `_proven_device` reads the
+        row, so there is no staleness for a device asking muster. The artifacts
+        (`revocation.py`, muster#23) exist for a relying party that is not
+        muster, and lag this row by at most `FRESHNESS` (D28).
 
         REVERSIBLE, because an administrator can revoke the wrong key_id and the
         alternative to a way back is wiping a device to re-enroll it. It is the

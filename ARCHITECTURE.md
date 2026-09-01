@@ -212,17 +212,36 @@ The authority never creates a CA as a side effect of failing to find one. One
 that mints itself a key silently invalidates every device it has issued to, at
 the moment somebody mounts the wrong volume.
 
-### Lapse is the revocation mechanism
+### Lapse, revoke, and what neither can do
 
-There is no revocation list and no push. A device that must not be trusted is
-simply not renewed, and it falls out of the kith when its certificate expires.
-A revocation list has to *reach* the verifier; this is the only revocation that
-reaches a device switched off in a drawer or sitting in a hotel with no
-internet.
+Until edd1119 (muster#11) this section was titled "Lapse is the revocation
+mechanism" and said "there is no revocation list and no push", and until
+824f912 (muster#23) the first half was still true. Neither is now, and the
+reasoning that produced them is worth keeping because it still shapes the
+design.
 
-That is also why a device's membership **is** its certificate and there is no
-separate enabled flag. A flag can disagree with what a device can actually do.
-A certificate cannot.
+**Lapse** is passive: a device that is not renewed falls out of the kith when
+its certificate expires. It was the only mechanism for as long as renewal
+needed a human, because declining to renew *was* declining to trust. Automatic
+renewal (muster#12) broke that identity - a device that renews itself never
+lapses - so **revoke** had to exist first: an administrator sets `revoked_at`
+on the device's kith row and `_proven_device` refuses that key on its next
+request. That row IS the separate flag this section once said there would
+never be. The argument against one - that a flag can disagree with what a
+device can actually do - is answered by where the check sits: every device
+route goes through the one function that reads it, so there is no second
+place for it to disagree with.
+
+**The CRL and OCSP responder** (`revocation.py`) are views of that same row for
+a relying party that is not muster. muster's own routes never consult them.
+
+**What is still true** is the sentence that mattered: a revocation has to
+*reach* the verifier, and nothing reaches a device switched off in a drawer.
+So muster enforces at the moment a device ASKS, and never by pushing at it.
+Revocation takes effect on the device's next request, and the credentials it
+already fetched are still in its hands until the far end rotates them
+(D27). A device's membership is still its certificate; revocation is muster
+declining to answer that certificate, not the certificate ceasing to exist.
 
 ## 4. Proving possession afterward
 
@@ -589,10 +608,10 @@ agent *inside the built image*.
 ## 12. What this deliberately does not do
 
 - **Report whether a device is online.** muster has no such concept, and adding
-  one would be an accident of dashboard design. Lapse is the revocation
-  mechanism precisely *because* devices are expected to be unreachable for days,
-  so a red "offline" count would report the normal state of a working estate as
-  a fault.
+  one would be an accident of dashboard design. Revocation is enforced when a
+  device ASKS, never pushed, precisely *because* devices are expected to be
+  unreachable for days, so a red "offline" count would report the normal state
+  of a working estate as a fault.
 - **Manage anything but Android, today.** The identity plane is
   platform-neutral by construction - a key, a request, a certificate - and the
   agent is where the platform lives.

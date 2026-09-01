@@ -799,16 +799,19 @@
     wipe.onclick = () => openDeviceAction(device, device.wipe_pending_at ? 'cancel-wipe' : 'wipe');
     actions.append(wipe);
 
+    // ONE BUTTON, TWO DIRECTIONS. The API has always accepted `revoked: false`
+    // (muster#11 argued that a revoke with no way back is a wipe with extra
+    // steps), but until this control existed the way back was a terminal. A
+    // revoked device shows Readmit here, so the person who revoked the wrong
+    // row can undo it from the same place they did it.
     const revoke = document.createElement('button');
     revoke.className = 'action';
-    revoke.textContent = device.revoked_at ? 'Revoked' : 'Revoke';
-    revoke.disabled = Boolean(device.revoked_at || device.wipe_pending_at);
+    revoke.textContent = device.revoked_at ? 'Readmit' : 'Revoke';
+    revoke.disabled = Boolean(device.wipe_pending_at);
     revoke.title = device.wipe_pending_at
       ? 'Wait for the erase to land before revoking'
       : '';
-    if (!device.revoked_at) {
-      revoke.onclick = () => openDeviceAction(device, 'revoke');
-    }
+    revoke.onclick = () => openDeviceAction(device, device.revoked_at ? 'readmit' : 'revoke');
     actions.append(revoke);
     row.append(left, actions);
     return row;
@@ -900,6 +903,13 @@
       confirm: 'Revoke device',
       path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/revoke',
       body: { revoked: true },
+    },
+    readmit: {
+      question: 'Readmit this device?',
+      lede: 'muster starts answering this device again at its next request. Nothing it held was taken away by the revocation, so nothing is given back here.',
+      confirm: 'Readmit device',
+      path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/revoke',
+      body: { revoked: false },
     },
   };
 
