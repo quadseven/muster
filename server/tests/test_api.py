@@ -3255,17 +3255,19 @@ def test_the_public_crl_does_not_leak_the_stores_error_to_the_internet(monkeypat
     state = _revocation_state()
     client = TestClient(create_app(state))
 
-    secret = "postgres-rw.internal.example:5432 dbname=muster user=muster"
+    store_detail = "postgres-rw.internal.example:5432 dbname=muster user=muster"
 
     def unreachable(*_args, **_kwargs):
-        raise kith_store.Unreachable(f"connection failed: {secret}")
+        raise kith_store.Unreachable(f"connection failed: {store_detail}")
 
     monkeypatch.setattr(state.kith, "unexpired_revocations", unreachable)
 
     response = _fetch_crl(client, state)
     assert response.status_code == 503
     body = response.text
-    assert secret not in body, f"the store's error reached a stranger: {body!r}"
+    assert store_detail not in body, (
+        f"the store's error reached a stranger: {body!r}"
+    )
     for fragment in ("postgres", "5432", "dbname", "user="):
         assert fragment not in body, (
             f"{fragment!r} leaked to an unauthenticated caller: {body!r}"
