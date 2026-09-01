@@ -8,7 +8,7 @@ and what the next person should not rediscover the hard way.
 
 ## Revocation and wipe, in four buckets
 
-Re-read 2026-09-01 22:40Z off `main` at a97d796 and the live pod, which since
+Re-read 2026-09-01 22:45Z off `main` at 6c9ea94 (docs-only after a97d796) and the live pod, which since
 22:32Z runs image `sha-a97d79629acb` (= a97d796, muster#34; digest
 `c5b098cc...`). Deployment revision 43, deployed by hand under muster#24 with a
 timed rollback armed that stood down on its own. The buckets are this repo's
@@ -39,18 +39,40 @@ quoted; a green suite never gets a thing past the second bucket.
       directory, as `revocation-travel-router.log` and
       `revocation-travel-router-PROVEN-2026-09-01.md`.
 
-    DEPLOYED, NEVER EXERCISED
-      readmit recovers the device                     on the live pod
+      readmit recovers the device
       -> 22:27:46Z the operator clicked Readmit; pod log `device readmitted`,
-         row `revoked_at` back to NULL. The router's next check-in is at
-         23:23Z; until that request is answered `certificate good` this
-         half is one measurement short and stays here.
+         row `revoked_at` back to NULL.
+      -> 22:41:40Z the router's check-in (the same hourly script, run by
+         hand rather than waiting for the :23 cron) was served again. Router
+         log: `unchanged (revision 1bcfc463785c7035dcaf85f0a73f2ce9, current
+         4a7b33d01b5d)`, exit 0. Pod log: `device configuration served` for
+         key 5d6780f4.... Row: `revoked_at NULL`, `last_seen 22:41:40Z`.
+         Eighteen minutes earlier the same script and the same key were
+         refused, so this is the round trip revoke -> refused -> readmit ->
+         served, on one device, with nothing touched on the device.
+
+    DEPLOYED, NEVER EXERCISED
       console Queue erase control                     on the live pod (#28, #30)
       wipe_pending_at, POST /v1/kith/{key_id}/wipe,
       POST /v1/device/wipe, the synthesized `wipe` file  (#25)
       CRL at http://crl.<zone>/ and OCSP at http://ocsp.<zone>/     (#23, #33)
       -> no wipe has ever been issued against this control plane; all
-         four live rows have wipe_pending_at NULL.
+         four live rows have wipe_pending_at NULL. The operator revoked the
+         stale Pixel `91d5feae...` at 22:27:56Z (pod log `device revoked`);
+         it has not checked in since 2026-08-23, so that refusal is not
+         measurable until it does, and Queue erase is disabled on a revoked
+         row by design (the wipe instruction travels on the channel
+         revocation closes).
+      -> WHY WIPE CANNOT BE EXERCISED YET, read off the kith: the three
+         Pixels have first_seen 2026-08-20, 08-23 and 08-23. The agent that
+         acts on the `wipe` file (#25) merged 2026-09-01 16:24Z and the
+         agent does not update itself, so no enrolled handset runs it. The
+         served `/agent.json` says `version_code 29804718`; a handset has to
+         be brought to that build (re-provisioned from the console QR, or the
+         served APK installed over the old one) before a queued erase can
+         do anything but sit in `wipe_pending_at`. Muster does not record
+         which agent build a device runs, so the only place to read that is
+         the handset itself.
       -> after revision 43 the CRL is served over plain http with no
          redirect, content-type application/pkix-crl, nextUpdate five
          minutes after lastUpdate (D28); the OCSP hostname answers
@@ -94,11 +116,14 @@ pod ran `sha-e3544d25d832`, "five merges behind main", and that the console,
 wipe and CRL/OCSP were MERGED, NOT DEPLOYED; revision 39 made each of those
 false.
 
-**What still has to be measured**, and both are a human's browser session
-because administration is OIDC-only by decision (D23): the readmitted router
-answering `certificate good` at 23:23Z, and a wipe ordered from Devices
-reaching a handset that then erases itself - the second half of the goal,
-untouched.
+**What still has to be measured**: a wipe ordered from Devices reaching a
+handset that then erases itself - the second half of the goal. It needs one
+Pixel on agent build 29804718 first (above), then the operator's click on
+Queue erase (OIDC-only, D23), then the handset's next 15-minute check-in. The
+expected trace, in order: pod `device configuration served` with `wipe` in
+`file_names`; pod `device wipe acknowledged`; the row's `wipe_pending_at` NULL
+and `revoked_at` set; the handset factory-resetting. Undo before the check-in
+lands: the same button reads `Call off erase`.
 
 ## What works, proven end to end
 

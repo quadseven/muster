@@ -156,7 +156,9 @@ Revoke takes effect on the revoked device's next request and not before, and the
 credentials it already holds are still in its hands. That sentence was a design
 statement until 2026-09-01 22:23:03Z, when it was measured: a router revoked at
 22:11:56Z read its own cached certificate as `good for 88d` at 22:23:01Z, asked
-muster two seconds later and was refused, and kept the datapath key it holds. Cutting those off is a
+muster two seconds later and was refused, and kept the datapath key it holds;
+readmitted at 22:27:46Z, it was served again at 22:41:40Z with nothing
+changed on the device. Cutting those off is a
 rotation at the other end, which is a second act and a deliberate one.
 
 **A CRL and an OCSP responder exist since muster#23, and muster's own routes
