@@ -3243,6 +3243,35 @@ def test_a_kith_outage_is_503_for_the_crl_not_an_empty_list(monkeypatch):
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_the_public_crl_does_not_leak_the_stores_error_to_the_internet(monkeypatch):
+    """THE REASON GOES TO THE LOG, NOT DOWN THE WIRE.
+
+    Every other route that puts `str(unreachable)` in its detail sits behind an
+    administrator session or a device proof. This one is open to the internet,
+    and `Unreachable` wraps the driver's error - which carries the DSN host,
+    port and database name. Flagged by CodeQL as information exposure through
+    an exception, and it was right.
+    """
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    secret = "postgres-rw.internal.example:5432 dbname=muster user=muster"
+
+    def unreachable(*_args, **_kwargs):
+        raise kith_store.Unreachable(f"connection failed: {secret}")
+
+    monkeypatch.setattr(state.kith, "unexpired_revocations", unreachable)
+
+    response = _fetch_crl(client, state)
+    assert response.status_code == 503
+    body = response.text
+    assert secret not in body, f"the store's error reached a stranger: {body!r}"
+    for fragment in ("postgres", "5432", "dbname", "user="):
+        assert fragment not in body, (
+            f"{fragment!r} leaked to an unauthenticated caller: {body!r}"
+        )
+
+
 def test_ocsp_is_trylater_during_a_kith_outage_rather_than_good(monkeypatch):
     """RFC 6960 has a signed answer for exactly this condition, and anything
     else is a lie: 'unknown' says the serial was never issued, and 'good'

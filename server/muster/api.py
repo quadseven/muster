@@ -528,8 +528,20 @@ def _register_revocation_routes(app: FastAPI, state: State) -> None:
             # AN EMPTY CRL IS AN AUTHORITATIVE LIE. During a store outage the
             # only safe answer is no artifact, so a cache cannot replace a
             # previously complete list with a freshly signed empty one.
+            #
+            # THE REASON GOES TO THE LOG, NOT DOWN THE WIRE, and this endpoint
+            # is the reason the distinction matters. Every OTHER route that
+            # returns `str(unreachable)` in its detail is behind an
+            # administrator session or a device proof; this one is open to the
+            # internet. `Unreachable` wraps the driver's error, which carries
+            # the DSN host, port and database name - so the helpful detail that
+            # is right for an operator is internal topology for a stranger.
+            telemetry.event(
+                "the CRL could not be built", error=str(exc), surface="crl"
+            )
+            state.telemetry.count("revocation.crl.unreachable")
             return Response(
-                content=str(exc),
+                content="the revocation list is temporarily unavailable\n",
                 status_code=503,
                 media_type="text/plain",
                 headers={"Cache-Control": "no-store"},
