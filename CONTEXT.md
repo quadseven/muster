@@ -153,7 +153,10 @@ is a new device and has to be vouched for again.
 one - nothing sent to a handset in a drawer arrives - and it is why muster
 enforces at the point a device ASKS rather than by pushing anything at it.
 Revoke takes effect on the revoked device's next request and not before, and the
-credentials it already holds are still in its hands. Cutting those off is a
+credentials it already holds are still in its hands. That sentence was a design
+statement until 2026-09-01 22:23:03Z, when it was measured: a router revoked at
+22:11:56Z read its own cached certificate as `good for 88d` at 22:23:01Z, asked
+muster two seconds later and was refused, and kept the datapath key it holds. Cutting those off is a
 rotation at the other end, which is a second act and a deliberate one.
 
 **A CRL and an OCSP responder exist since muster#23, and muster's own routes
@@ -164,7 +167,12 @@ muster itself: `_proven_device` refuses a revoked device on its very next
 request, from the row, with no staleness. The artifacts exist for the relying
 party that is NOT muster - a VPN concentrator, a compliance control that asks
 for one - and they are served on their own hostnames, cacheable for five minutes
-(D28). Both are built and neither is yet deployed (muster#24).
+(D28), over plain http and never https, because a relying party fetching
+revocation data over TLS would first have to verify the CRL host's own
+certificate (muster#33). Until 2026-09-01 this paragraph ended "Both are built
+and neither is yet deployed (muster#24)"; revision 43 of the live Deployment
+serves both, and `docs/state-of-play.md` records what has and has not been
+measured against them.
 
 ## Two rules that shape everything
 

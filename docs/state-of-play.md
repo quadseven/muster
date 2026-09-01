@@ -8,35 +8,58 @@ and what the next person should not rediscover the hard way.
 
 ## Revocation and wipe, in four buckets
 
-Re-read 2026-09-01 22:05Z off `main` at 818a957 and the live pod, which since
-22:01Z runs image `sha-0b67b2389203` (= 0b67b23, muster#30; #31 is docs only
-and built no image). Deployment revision 39, deployed by hand under muster#24
-with a timed rollback armed that stood down on its own. The buckets are this
-repo's standard: PROVEN means measured on the real target with the measurement
+Re-read 2026-09-01 22:40Z off `main` at a97d796 and the live pod, which since
+22:32Z runs image `sha-a97d79629acb` (= a97d796, muster#34; digest
+`c5b098cc...`). Deployment revision 43, deployed by hand under muster#24 with a
+timed rollback armed that stood down on its own. The buckets are this repo's
+standard: PROVEN means measured on the real target with the measurement
 quoted; a green suite never gets a thing past the second bucket.
 
     PROVEN
-      nothing in this goal
+      an administrator revokes one enrolled device and that device is
+      refused on its next check-in
+      -> 22:11:56Z the operator clicked Revoke on `travel-router` in the
+         live console. Pod log: `device revoked` for key 5d6780f4...,
+         with the administrator action logged beside it.
+      -> 22:23:03Z the router's hourly refresh (`/etc/zippie/muster-refresh.sh`,
+         cron at :23) was refused on BOTH sides of the boundary. Pod log:
+         `{"key_id":"5d6780f4e55b...","message":"revoked device refused"}`.
+         Router log: `REFUSED: muster refuses this device ({"detail":"this
+         device has been revoked"}). An administrator has revoked it.
+         Nothing on this router has been changed - the cached datapath key`
+         (it kept the key it holds, which is the documented half that
+         revocation cannot reach; see 0001_kith.sql).
+      -> the `certificate good for 88d` lines at 21:23:00Z and 22:23:01Z
+         are the router reading its OWN cached certificate, offline
+         (`musterwrt.enrollment_verdict` on device.crt), not muster's
+         answer. That is the point of the sentence in CONTEXT.md: the
+         certificate in its hands still says good; muster says no. The
+         refusal is a 403 body from muster, so the check-in did reach it.
+      Evidence files live outside this repo, in the operator's evidence
+      directory, as `revocation-travel-router.log` and
+      `revocation-travel-router-PROVEN-2026-09-01.md`.
 
     DEPLOYED, NEVER EXERCISED
-      POST /v1/kith/{key_id}/revoke and readmit      on the live pod
-      _proven_device refuses revoked_at != NULL      on the live pod
-      console Revoke / Readmit / Queue erase controls on the live pod (#28, #30)
+      readmit recovers the device                     on the live pod
+      -> 22:27:46Z the operator clicked Readmit; pod log `device readmitted`,
+         row `revoked_at` back to NULL. The router's next check-in is at
+         23:23Z; until that request is answered `certificate good` this
+         half is one measurement short and stays here.
+      console Queue erase control                     on the live pod (#28, #30)
       wipe_pending_at, POST /v1/kith/{key_id}/wipe,
       POST /v1/device/wipe, the synthesized `wipe` file  (#25)
-      CRL at http://crl.<zone>/ and OCSP at http://ocsp.<zone>/     (#23)
-      -> all four live rows have revoked_at NULL and wipe_pending_at NULL;
-         no revocation and no wipe has ever been issued against this
-         control plane.
-      -> the CRL served at 22:01:29Z had zero serials and nextUpdate five
+      CRL at http://crl.<zone>/ and OCSP at http://ocsp.<zone>/     (#23, #33)
+      -> no wipe has ever been issued against this control plane; all
+         four live rows have wipe_pending_at NULL.
+      -> after revision 43 the CRL is served over plain http with no
+         redirect, content-type application/pkix-crl, nextUpdate five
          minutes after lastUpdate (D28); the OCSP hostname answers
-         application/ocsp-response. Both hostnames were proved to reach the
-         pod BEFORE the roll, by fetching them against the old image and
-         getting muster's own answer rather than a Cloudflare error.
+         application/ocsp-response. Nothing in muster follows either URL,
+         so this is a fact about relying parties, not about refusal - the
+         refusal above happened through `_proven_device`, not the CRL.
       -> certificates issued before 22:01Z carry no CRL distribution point
          and no AIA; they gain them at their next renewal, at the pace the
-         device chooses. Nothing in muster follows either URL, so this is
-         a fact about relying parties, not about refusal.
+         device chooses.
 
     MERGED, NOT DEPLOYED
       agent: Fetched.Revoked, WipePolicy/WipeSteward      (#21, #25)
@@ -46,7 +69,12 @@ quoted; a green suite never gets a thing past the second bucket.
          handset reports.
 
     NOT BUILT
-      nothing in this goal
+      forgetting a device. Three enrolled handsets share the name
+      `Pixel 6a` (#29); one of them (`91d5feae...`) last checked in
+      2026-08-23 and holds a certificate valid to mid-November. Muster has
+      no delete or forget: the only lever is Revoke, which keeps the row
+      and refuses the key. That is the right lever for a lost handset and
+      the wrong noun for a stale one, and nothing has been filed yet.
 
 **Scheme correction, 2026-09-01 22:15Z.** The live env was first set to
 `https://` URLs, and the line above said so. That was wrong: relying parties
@@ -54,21 +82,23 @@ fetch CRLs and OCSP over plain http, because fetching them over TLS would need
 the CRL host's own certificate verified first. The code at the time REQUIRED
 https; switching the live env to http crashed the pod at start and cost a
 2m37s outage (22:15:00Z to 22:17:37Z, rolled back to the https revision).
-The rule is inverted in code by the fix that carries this paragraph, and the
-live env moves to http when that image deploys. No certificate was issued
-while the https URLs were live, so none carries them.
+muster#33 inverted the rule in code, and revision 43 (22:32Z) carries that
+image with the http env. No certificate was issued while the https URLs were
+live, so none carries them.
 
-Until this re-read the section above said the live pod ran `sha-e3544d25d832`,
-"five merges behind main", that "main's image CANNOT be deployed as-is", and
-that the console, wipe and CRL/OCSP were MERGED, NOT DEPLOYED. Revision 39
-made each of those false; what still holds is that nothing has been exercised.
+Until the 22:40Z re-read the PROVEN bucket above read "nothing in this goal"
+and the section closed with "the measurement is pre-staged and waiting on the
+click". The click happened at 22:11:56Z and the refusal at 22:23:03Z; that is
+what moved the first line. Before that, at 22:05Z, the section said the live
+pod ran `sha-e3544d25d832`, "five merges behind main", and that the console,
+wipe and CRL/OCSP were MERGED, NOT DEPLOYED; revision 39 made each of those
+false.
 
-**The one measurement that moves revocation to PROVEN**, and it is a human's
-browser session because administration is OIDC-only by decision (D23): sign
-in, open Devices, revoke `travel-router` (the only uniquely named device), watch
-its next hourly request answer 403 and the pod log `revoked device refused`,
-readmit it, watch it recover. The button exists on the live console as of
-revision 39; the measurement is pre-staged and waiting on the click.
+**What still has to be measured**, and both are a human's browser session
+because administration is OIDC-only by decision (D23): the readmitted router
+answering `certificate good` at 23:23Z, and a wipe ordered from Devices
+reaching a handset that then erases itself - the second half of the goal,
+untouched.
 
 ## What works, proven end to end
 
