@@ -193,6 +193,20 @@ class Certificate:
 
 
 @dataclass(frozen=True)
+class CertificateStatus:
+    """One issued certificate and the device-level revocation that governs it.
+
+    PKI status is asked by serial, but muster revokes the stable device key. The
+    join between those two identities belongs in the store rather than in a
+    caller walking the roll: doing it here gives Postgres one authoritative
+    query and keeps renewal visible as every certificate issued to that key.
+    """
+
+    certificate: Certificate
+    revoked_at: dt.datetime | None
+
+
+@dataclass(frozen=True)
 class Member:
     """A device on the roll, with the shape of its certificate history.
 
@@ -231,6 +245,10 @@ class Records(Protocol):
     def member(self, key_id: str) -> Member | None: ...
 
     def history(self, key_id: str) -> list[Certificate]: ...
+
+    def certificate_status(self, serial: str) -> CertificateStatus | None: ...
+
+    def unexpired_revocations(self, at: dt.datetime) -> list[CertificateStatus]: ...
 
     def awaiting_collection(self, request_id: str) -> Certificate | None: ...
 
@@ -397,6 +415,26 @@ class MemoryRecords:
         return sorted(
             self._certificates.get(key_id, []), key=lambda c: (c.issued_at, c.serial)
         )
+
+    def certificate_status(self, serial: str) -> CertificateStatus | None:
+        for key_id, held in self._certificates.items():
+            for certificate in held:
+                if certificate.serial == serial:
+                    return CertificateStatus(
+                        certificate=certificate,
+                        revoked_at=self._devices[key_id].revoked_at,
+                    )
+        return None
+
+    def unexpired_revocations(self, at: dt.datetime) -> list[CertificateStatus]:
+        statuses = [
+            CertificateStatus(certificate=certificate, revoked_at=device.revoked_at)
+            for key_id, device in self._devices.items()
+            if device.revoked_at is not None
+            for certificate in self._certificates.get(key_id, [])
+            if certificate.not_after > at
+        ]
+        return sorted(statuses, key=lambda status: status.certificate.serial)
 
     def awaiting_collection(self, request_id: str) -> Certificate | None:
         for held in self._certificates.values():
@@ -790,6 +828,38 @@ class PostgresRecords:
 
         return [_certificate_from_row(row) for row in self._run(work)]
 
+    def certificate_status(self, serial: str) -> CertificateStatus | None:
+        def work(cursor):
+            cursor.execute(
+                "SELECT c.serial, c.request_id, c.not_before, c.not_after,"
+                "       c.issued_at, c.certificate_pem, c.collected_at,"
+                "       d.revoked_at"
+                "  FROM kith_certificate c"
+                "  JOIN kith_device d ON d.key_id = c.key_id"
+                " WHERE c.serial = %s",
+                (serial,),
+            )
+            return cursor.fetchone()
+
+        row = self._run(work)
+        return _certificate_status_from_row(row) if row is not None else None
+
+    def unexpired_revocations(self, at: dt.datetime) -> list[CertificateStatus]:
+        def work(cursor):
+            cursor.execute(
+                "SELECT c.serial, c.request_id, c.not_before, c.not_after,"
+                "       c.issued_at, c.certificate_pem, c.collected_at,"
+                "       d.revoked_at"
+                "  FROM kith_certificate c"
+                "  JOIN kith_device d ON d.key_id = c.key_id"
+                " WHERE d.revoked_at IS NOT NULL AND c.not_after > %s"
+                " ORDER BY c.serial",
+                (at,),
+            )
+            return cursor.fetchall()
+
+        return [_certificate_status_from_row(row) for row in self._run(work)]
+
     def awaiting_collection(self, request_id: str) -> Certificate | None:
         def work(cursor):
             cursor.execute(
@@ -837,6 +907,13 @@ def _certificate_from_row(row) -> Certificate:
         issued_at=row[4],
         certificate_pem=row[5],
         collected_at=row[6],
+    )
+
+
+def _certificate_status_from_row(row) -> CertificateStatus:
+    return CertificateStatus(
+        certificate=_certificate_from_row(row),
+        revoked_at=row[7],
     )
 
 
@@ -1099,6 +1176,12 @@ class Kith:
 
     def history(self, key_id: str) -> list[Certificate]:
         return self._read(lambda records: records.history(key_id))
+
+    def certificate_status(self, serial: str) -> CertificateStatus | None:
+        return self._read(lambda records: records.certificate_status(serial))
+
+    def unexpired_revocations(self, at: dt.datetime) -> list[CertificateStatus]:
+        return self._read(lambda records: records.unexpired_revocations(at))
 
     def awaiting_collection(self, request_id: str) -> Certificate | None:
         return self._read(lambda records: records.awaiting_collection(request_id))

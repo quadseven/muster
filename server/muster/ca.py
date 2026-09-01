@@ -13,14 +13,11 @@ and builds the subject itself, from the name the administrator vouched for.
 Everything else in the request is discarded, deliberately and by construction
 rather than by validation - there is no list of fields to remember to strip.
 
-WHY SHORT-LIVED, AND WHY LAPSE IS THE REVOCATION. There is no CRL and no OCSP
-here on purpose. A revocation list has to REACH the verifier, and this estate's
-devices are routers in hotels and phones in drawers - offline for days at a
-time is the normal case, not the failure case. An identity that simply stops
-being renewed needs to reach nobody: the device's certificate expires on its
-own clock and it falls out of the kith. That only works if lifetimes are short
-enough for expiry to be a timely answer, so the default is deliberately not a
-year.
+WHY SHORT-LIVED STILL MATTERS AFTER REVOCATION GREW STANDARD ANSWERS. A CRL and
+OCSP now let a connected relying party learn that an administrator revoked a
+device. They cannot reach a router in a hotel or a phone in a drawer, where
+offline for days is ordinary. Expiry remains the answer that needs no delivery,
+so certificate lifetimes stay deliberately shorter than a year.
 """
 from __future__ import annotations
 
@@ -31,7 +28,8 @@ from pathlib import Path
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
+from cryptography.x509 import ocsp
+from cryptography.x509.oid import AuthorityInformationAccessOID, NameOID
 
 # 90 days, as specified. Long enough that renewal is not constant chatter, short
 # enough that "stop renewing" is a revocation an operator can live with - a
@@ -49,6 +47,9 @@ RENEW_AFTER_FRACTION = 1 / 3
 # from a broken one, and the device cannot fix its own clock without the network
 # the certificate is for.
 BACKDATE = dt.timedelta(hours=12)
+
+DEFAULT_CRL_URL = "https://crl.muster.example/"
+DEFAULT_OCSP_URL = "https://ocsp.muster.example/"
 
 
 class Untrusted(Exception):
@@ -77,15 +78,33 @@ class Authority:
     somebody mounts the wrong volume.
     """
 
-    def __init__(self, key, certificate, clock=None) -> None:
+    def __init__(
+        self,
+        key,
+        certificate,
+        clock=None,
+        *,
+        crl_url: str = DEFAULT_CRL_URL,
+        ocsp_url: str = DEFAULT_OCSP_URL,
+    ) -> None:
         self._key = key
         self._cert = certificate
         self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+        self.crl_url = crl_url
+        self.ocsp_url = ocsp_url
 
     # ---- construction ----------------------------------------------------
 
     @classmethod
-    def create(cls, common_name: str, *, clock=None, valid_days: int = 3650):
+    def create(
+        cls,
+        common_name: str,
+        *,
+        clock=None,
+        valid_days: int = 3650,
+        crl_url: str = DEFAULT_CRL_URL,
+        ocsp_url: str = DEFAULT_OCSP_URL,
+    ):
         """A fresh CA. For a first run and for tests; not for reload."""
         now = (clock or (lambda: dt.datetime.now(dt.timezone.utc)))()
         key = ec.generate_private_key(ec.SECP256R1())
@@ -110,21 +129,110 @@ class Authority:
             )
             .sign(key, hashes.SHA256())
         )
-        return cls(key, cert, clock=clock)
+        return cls(key, cert, clock=clock, crl_url=crl_url, ocsp_url=ocsp_url)
 
     @classmethod
-    def load(cls, key_path: Path, cert_path: Path, *, password: bytes | None = None,
-             clock=None):
+    def load(
+        cls,
+        key_path: Path,
+        cert_path: Path,
+        *,
+        password: bytes | None = None,
+        clock=None,
+        crl_url: str = DEFAULT_CRL_URL,
+        ocsp_url: str = DEFAULT_OCSP_URL,
+    ):
         key = serialization.load_pem_private_key(
             Path(key_path).read_bytes(), password=password
         )
         cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
-        return cls(key, cert, clock=clock)
+        return cls(key, cert, clock=clock, crl_url=crl_url, ocsp_url=ocsp_url)
 
     @property
     def certificate_pem(self) -> bytes:
         """What devices pin. Public, and safe to ship anywhere."""
         return self._cert.public_bytes(serialization.Encoding.PEM)
+
+    def crl(
+        self,
+        revoked: list[tuple[int, dt.datetime]],
+        *,
+        this_update: dt.datetime,
+        next_update: dt.datetime,
+    ) -> bytes:
+        """Sign the current serial-based view of device revocations.
+
+        DIRECTLY WITH THE CA KEY, DELIBERATELY. A delegated responder protects
+        the CA only when it runs outside the CA's trust boundary. This process
+        already mounts the CA key for issuance, so adding a delegated key here
+        would add another certificate to renew without isolating the root key
+        from a compromised responder.
+        """
+        builder = (
+            x509.CertificateRevocationListBuilder()
+            .issuer_name(self._cert.subject)
+            .last_update(this_update)
+            .next_update(next_update)
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                    self._cert.public_key()
+                ),
+                critical=False,
+            )
+        )
+        for serial, revoked_at in revoked:
+            builder = builder.add_revoked_certificate(
+                x509.RevokedCertificateBuilder()
+                .serial_number(serial)
+                .revocation_date(revoked_at)
+                .build()
+            )
+        return builder.sign(self._key, hashes.SHA256()).public_bytes(
+            serialization.Encoding.DER
+        )
+
+    def ocsp_request(self, request_der: bytes) -> ocsp.OCSPRequest:
+        """Parse one request and prove it names certificates issued by this CA."""
+        request = ocsp.load_der_ocsp_request(request_der)
+        expected = (
+            ocsp.OCSPRequestBuilder()
+            .add_certificate(self._cert, self._cert, request.hash_algorithm)
+            .build()
+        )
+        if (
+            request.issuer_name_hash != expected.issuer_name_hash
+            or request.issuer_key_hash != expected.issuer_key_hash
+        ):
+            raise Untrusted("the OCSP request names a different issuer")
+        return request
+
+    def ocsp_response(
+        self,
+        request: ocsp.OCSPRequest,
+        status: ocsp.OCSPCertStatus,
+        *,
+        this_update: dt.datetime,
+        next_update: dt.datetime,
+        revoked_at: dt.datetime | None = None,
+    ) -> bytes:
+        """Sign one RFC 6960 status answer with the CA certificate itself."""
+        response = (
+            ocsp.OCSPResponseBuilder()
+            .add_response_by_hash(
+                request.issuer_name_hash,
+                request.issuer_key_hash,
+                request.serial_number,
+                request.hash_algorithm,
+                status,
+                this_update,
+                next_update,
+                revoked_at,
+                None,
+            )
+            .responder_id(ocsp.OCSPResponderEncoding.HASH, self._cert)
+            .sign(self._key, hashes.SHA256())
+        )
+        return response.public_bytes(serialization.Encoding.DER)
 
     # ---- issuance --------------------------------------------------------
 
@@ -200,6 +308,30 @@ class Authority:
                     encipher_only=False, decipher_only=False,
                 ),
                 critical=True,
+            )
+            .add_extension(
+                x509.CRLDistributionPoints(
+                    [
+                        x509.DistributionPoint(
+                            full_name=[x509.UniformResourceIdentifier(self.crl_url)],
+                            relative_name=None,
+                            reasons=None,
+                            crl_issuer=None,
+                        )
+                    ]
+                ),
+                critical=False,
+            )
+            .add_extension(
+                x509.AuthorityInformationAccess(
+                    [
+                        x509.AccessDescription(
+                            AuthorityInformationAccessOID.OCSP,
+                            x509.UniformResourceIdentifier(self.ocsp_url),
+                        )
+                    ]
+                ),
+                critical=False,
             )
             .sign(self._key, hashes.SHA256())
         )

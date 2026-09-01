@@ -71,16 +71,19 @@ import hashlib
 import io
 import os
 import pathlib
+import urllib.parse
 from dataclasses import dataclass, field
+from email.utils import format_datetime
 
 from cryptography.hazmat.primitives import serialization
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
+from starlette.routing import Host, Route, Router
 
 from muster.ca import Authority, Identity, Untrusted
 from muster.proof import Proofs, Verdict
-from muster import administrator, console, policy, provisioning
+from muster import administrator, console, policy, provisioning, revocation
 from muster import assets as asset_store
 from muster import kith as kith_store
 from muster.enroll import (
@@ -474,6 +477,125 @@ def _proven_device(
     return proven
 
 
+def _cache_headers(artifact: revocation.Artifact) -> dict[str, str]:
+    """Make HTTP freshness end at the signed artifact's nextUpdate.
+
+    THE HEADER AND THE SIGNED TIME ARE ONE CONTRACT. Letting a proxy cache past
+    nextUpdate would extend the revocation window beyond the value a relying
+    party can see and verify. Making max-age shorter would multiply store reads
+    without improving the signed answer. Unsuccessful OCSP responses have no
+    nextUpdate and are never cached.
+    """
+    if artifact.next_update is None or artifact.this_update is None:
+        return {"Cache-Control": "no-store"}
+    max_age = int((artifact.next_update - artifact.this_update).total_seconds())
+    return {
+        "Cache-Control": f"public, max-age={max_age}, must-revalidate",
+        "Expires": format_datetime(artifact.next_update, usegmt=True),
+    }
+
+
+def _register_revocation_routes(app: FastAPI, state: State) -> None:
+    """The fourth audience: public, unauthenticated, and cacheable.
+
+    HOST ROUTES, NOT ORDINARY PATH ROUTES. All three public names reach one pod
+    and both standards conventionally use `/`. Registering plain GET and POST
+    handlers there would serve a CRL from the console hostname and make the
+    route-audience table unable to say which surface it described. The Host
+    route keeps identical paths separate and is inserted ahead of FastAPI's
+    console `/` route so the intended hostname wins.
+    """
+    responder = revocation.Responder(
+        state.authority, state.kith, clock=state.kith.now
+    )
+
+    async def crl(_request: Request) -> Response:
+        try:
+            artifact = responder.crl()
+        except kith_store.Unreachable as exc:
+            # AN EMPTY CRL IS AN AUTHORITATIVE LIE. During a store outage the
+            # only safe answer is no artifact, so a cache cannot replace a
+            # previously complete list with a freshly signed empty one.
+            return Response(
+                content=str(exc),
+                status_code=503,
+                media_type="text/plain",
+                headers={"Cache-Control": "no-store"},
+            )
+        return Response(
+            content=artifact.content,
+            media_type="application/pkix-crl",
+            headers={
+                **_cache_headers(artifact),
+                "Content-Disposition": 'attachment; filename="muster.crl"',
+            },
+        )
+
+    async def ocsp_post(request: Request) -> Response:
+        return await _ocsp_response(request, responder, await request.body())
+
+    async def ocsp_get(request: Request) -> Response:
+        # RFC 5019 puts the RFC 4648 base64 request in the final path segment.
+        # It is percent-decoded before base64, because `/`, `+` and `=` all have
+        # meanings in a URL and a client is required to escape them.
+        encoded = urllib.parse.unquote(request.path_params["request_b64"])
+        try:
+            request_der = base64.b64decode(encoded, validate=True)
+        except ValueError:
+            request_der = b""
+        return await _ocsp_response(request, responder, request_der)
+
+    crl_url = urllib.parse.urlsplit(state.authority.crl_url)
+    ocsp_url = urllib.parse.urlsplit(state.authority.ocsp_url)
+    for label, configured in (("CRL", crl_url), ("OCSP", ocsp_url)):
+        if configured.scheme != "https" or not configured.hostname:
+            raise ValueError(
+                f"{label} URL must be an absolute https URL, got "
+                f"{configured.geturl()!r}"
+            )
+
+    crl_router = Router(
+        routes=[Route(crl_url.path or "/", crl, methods=["GET"])]
+    )
+    ocsp_router = Router(
+        routes=[
+            Route(ocsp_url.path or "/", ocsp_post, methods=["POST"]),
+            Route(
+                (ocsp_url.path.rstrip("/") or "") + "/{request_b64:path}",
+                ocsp_get,
+                methods=["GET"],
+            ),
+        ]
+    )
+    app.router.routes[0:0] = [
+        Host(crl_url.hostname, crl_router, name="public-crl"),
+        Host(ocsp_url.hostname, ocsp_router, name="public-ocsp"),
+    ]
+
+
+async def _ocsp_response(
+    _request: Request,
+    responder: revocation.Responder,
+    request_der: bytes,
+) -> Response:
+    # A normal request is under 100 bytes. The bound is not a parsing policy;
+    # it keeps an unauthenticated endpoint from handing an arbitrary body to a
+    # DER parser in the process that holds the CA key.
+    if len(request_der) > 16 * 1024:
+        request_der = b""
+    try:
+        artifact = responder.ocsp(request_der)
+    except kith_store.Unreachable:
+        # RFC 6960 has a signed-protocol answer for this exact condition. It is
+        # deliberately not cached: the store may recover before the next poll.
+        artifact = revocation.try_later()
+    return Response(
+        content=artifact.content,
+        media_type="application/ocsp-response",
+        headers=_cache_headers(artifact),
+    )
+
+
 def create_app(state: State) -> FastAPI:
     # NO INTERACTIVE API BROWSER, and this is a security decision rather than a
     # tidying one. FastAPI's /docs and /redoc pages load their JavaScript from a
@@ -503,6 +625,7 @@ def create_app(state: State) -> FastAPI:
         title="muster", version="0.1.0", lifespan=lifespan,
         docs_url=None, redoc_url=None,
     )
+    _register_revocation_routes(app, state)
     # Before any route is registered, and in an order this asserts: who is
     # acting has to be established before anything writes down what they did.
     console.install_middleware(app, state)
