@@ -729,3 +729,17 @@ def test_the_console_never_prints_a_pairing_code_beside_its_own_qr():
     adding the second must not have loosened the first."""
     html = _console_html()
     assert "pairing.code" not in html
+
+
+def test_the_bar_is_two_rows_on_a_phone():
+    """On a narrow screen the sections are one slidable row under the wordmark.
+
+    Before this the bar was a single flex row that wrapped, and on a phone the
+    five section buttons folded into a column beside the wordmark; the Devices
+    heading started a full screen down. The rule that makes the nav take its
+    own row is the one pinned here.
+    """
+    body = _console_html()
+    phone = body[body.index("@media (max-width: 46rem)"):]
+    assert "nav { order: 3; flex: 1 0 100%;" in phone
+    assert ".bar { flex-wrap: wrap;" in phone
