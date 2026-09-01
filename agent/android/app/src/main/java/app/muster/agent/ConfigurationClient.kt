@@ -30,12 +30,14 @@ import org.json.JSONObject
  *
  * NOTHING RETRIES A FAILED FETCH, and that is worth knowing rather than
  * assuming. `IdentityLifecycle.backoffSeconds` is enrollment's, and no caller
- * here uses it: `ConfigurationSteward` runs from `BootPlan.STEPS`, which runs at
- * boot and when somebody presses sync on the status screen. So a device whose
- * network is not up yet at LOCKED_BOOT_COMPLETED keeps its existing
- * configuration - correct, and the whole point - but does not pick up a policy
- * change until it next boots. A periodic fetch needs a scheduler component and
- * a handset to prove its direct-boot behavior on; see docs/policy.md.
+ * here uses it. `ConfigurationSteward` runs from `BootPlan.STEPS`, which runs
+ * at boot, when somebody presses sync on the status screen, and from the
+ * periodic `CheckInJob`. The job is declared in the manifest and scheduled by
+ * `MusterDeviceAdminReceiver`; it runs the same steps rather than inventing a
+ * second fetch path. So a device whose network is not up yet at
+ * LOCKED_BOOT_COMPLETED keeps its existing configuration - correct, and the
+ * whole point - and the next periodic check-in can pick up a policy change.
+ * See docs/policy.md for the direct-boot behavior.
  */
 class ConfigurationClient(
     private val transport: EnrollmentClient.Transport,

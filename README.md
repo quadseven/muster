@@ -6,8 +6,9 @@ muster is a device enrollment and identity plane for one household's endpoints -
 phones, routers, laptops, IoT. A device generates its own key, presents a CSR
 with a short-lived pairing code, an administrator **vouches** for it, and muster
 issues a short-lived client certificate. That certificate is the device's
-identity and its membership; it renews itself, and revocation is simply not
-renewing.
+identity and its membership; it renews itself when due. Lapse and revoke are
+different acts: lapse is an identity that expires without renewal, while revoke
+is an administrator saying the device is no longer ours.
 
 The pairing code is either typed on the device by a person comparing a key
 fingerprint on two screens, or carried in the provisioning QR so nobody touches
