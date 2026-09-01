@@ -620,6 +620,25 @@ def test_the_console_shows_no_number_that_is_always_wrong(client):
         assert invention not in visible, f"the console invented {invention}"
 
 
+def test_the_devices_section_can_queue_and_cancel_a_named_wipe(client):
+    """The destructive device action belongs on the device row, not in a
+    terminal, and every confirmation has to identify the device it will erase.
+
+    The revoke control is disabled while an erase is pending: D29 says that
+    revoking first removes the only channel the erase can travel down.
+    """
+    body = client.get("/").text
+
+    assert "refreshDevices" in body
+    assert "/v1/kith/" in body and "/wipe" in body
+    assert "Queue erase" in body
+    assert "Call off erase" in body
+    assert "Erase queued - waiting for check-in" in body
+    assert "revoke.disabled" in body
+    assert "Do not revoke it first" in body
+    assert "device-action-name" in body
+
+
 def test_the_product_is_capitalized_wherever_a_person_reads_it(client):
     """The Android agent already has this guard (#32). The console is the other
     surface a person reads, and it was the one still saying it in lower case."""
