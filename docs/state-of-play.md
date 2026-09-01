@@ -24,7 +24,7 @@ quoted; a green suite never gets a thing past the second bucket.
       console Revoke / Readmit / Queue erase controls on the live pod (#28, #30)
       wipe_pending_at, POST /v1/kith/{key_id}/wipe,
       POST /v1/device/wipe, the synthesized `wipe` file  (#25)
-      CRL at https://crl.<zone>/ and OCSP at https://ocsp.<zone>/   (#23)
+      CRL at http://crl.<zone>/ and OCSP at http://ocsp.<zone>/     (#23)
       -> all four live rows have revoked_at NULL and wipe_pending_at NULL;
          no revocation and no wipe has ever been issued against this
          control plane.
@@ -47,6 +47,16 @@ quoted; a green suite never gets a thing past the second bucket.
 
     NOT BUILT
       nothing in this goal
+
+**Scheme correction, 2026-09-01 22:15Z.** The live env was first set to
+`https://` URLs, and the line above said so. That was wrong: relying parties
+fetch CRLs and OCSP over plain http, because fetching them over TLS would need
+the CRL host's own certificate verified first. The code at the time REQUIRED
+https; switching the live env to http crashed the pod at start and cost a
+2m37s outage (22:15:00Z to 22:17:37Z, rolled back to the https revision).
+The rule is inverted in code by the fix that carries this paragraph, and the
+live env moves to http when that image deploys. No certificate was issued
+while the https URLs were live, so none carries them.
 
 Until this re-read the section above said the live pod ran `sha-e3544d25d832`,
 "five merges behind main", that "main's image CANNOT be deployed as-is", and

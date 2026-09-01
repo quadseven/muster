@@ -2162,8 +2162,8 @@ def _ca_on_disk(tmp_path, monkeypatch):
     monkeypatch.setenv("MUSTER_CA_KEY", str(key))
     monkeypatch.setenv("MUSTER_CA_CERT", str(cert))
     monkeypatch.setenv("MUSTER_BASE_URL", "https://enroll.muster.example")
-    monkeypatch.setenv("MUSTER_CRL_URL", "https://crl.muster.example/")
-    monkeypatch.setenv("MUSTER_OCSP_URL", "https://ocsp.muster.example/")
+    monkeypatch.setenv("MUSTER_CRL_URL", "http://crl.muster.example/")
+    monkeypatch.setenv("MUSTER_OCSP_URL", "http://ocsp.muster.example/")
 
 
 def _configure_sign_in(monkeypatch):
@@ -3046,8 +3046,54 @@ def test_a_device_with_no_kith_row_yet_is_still_answered(state, tmp_path):
 # app_from_env now refuses to start about. The URLs are the contract under
 # test: the certificate extensions, the Host routers and the cache headers
 # all have to agree with them.
-REVOCATION_CRL_URL = "https://crl.muster.example.test/"
-REVOCATION_OCSP_URL = "https://ocsp.muster.example.test/"
+#
+# PLAIN HTTP, and that is the contract too. A verifier checking a certificate
+# cannot fetch its CRL over TLS without first verifying the CRL host's own
+# certificate, so the standards put these URIs on http and the verifiers that
+# follow them only follow http. See the comment on the scheme check in
+# api._register_revocation_routes.
+REVOCATION_CRL_URL = "http://crl.muster.example.test/"
+REVOCATION_OCSP_URL = "http://ocsp.muster.example.test/"
+
+
+@pytest.mark.parametrize(
+    ("crl", "ocsp"),
+    [
+        ("https://crl.muster.example.test/", REVOCATION_OCSP_URL),
+        (REVOCATION_CRL_URL, "https://ocsp.muster.example.test/"),
+        ("crl.muster.example.test/", REVOCATION_OCSP_URL),
+        (REVOCATION_CRL_URL, "http:///"),
+    ],
+    ids=["https crl", "https ocsp", "no scheme", "no host"],
+)
+def test_revocation_urls_must_be_plain_http_with_a_host(crl, ocsp):
+    """Anything but http:// with a hostname refuses to build the app.
+
+    On 2026-09-01 the live deployment was given https:// URLs and the pod
+    crashed on start, which was the right outcome for the wrong rule: the
+    check then insisted on https, the scheme no CRL or OCSP client will
+    follow. This pins the rule the other way round, and pins that the
+    refusal happens at startup rather than in a certificate nobody reads.
+    """
+    state = State(
+        enrollment=Enrollment(clock=Clock()),
+        authority=Authority.create(
+            "muster test CA",
+            clock=lambda: dt.datetime(2026, 8, 18, tzinfo=dt.timezone.utc),
+            crl_url=crl,
+            ocsp_url=ocsp,
+        ),
+        sign_in=_ADMIN_PROVIDER.sign_in(),
+        kith=kith_store.Kith(kith_store.MemoryRecords()),
+    )
+    with pytest.raises(ValueError, match="plain http"):
+        create_app(state)
+
+
+def test_revocation_urls_over_plain_http_build_the_app():
+    """The accepted shape, so the refusal above cannot quietly widen."""
+    state = _revocation_state()
+    assert TestClient(create_app(state)).get("/readyz").status_code == 200
 
 
 def _revocation_state(clock_=None):

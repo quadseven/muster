@@ -48,8 +48,12 @@ RENEW_AFTER_FRACTION = 1 / 3
 # the certificate is for.
 BACKDATE = dt.timedelta(hours=12)
 
-DEFAULT_CRL_URL = "https://crl.muster.example/"
-DEFAULT_OCSP_URL = "https://ocsp.muster.example/"
+# Plain http on purpose: see the scheme check in api._register_revocation_routes.
+# A CRL fetched over TLS would need the CRL host's certificate verified first,
+# so verifiers only follow http distribution points, and the artifact is safe
+# on http because the issuer signs it.
+DEFAULT_CRL_URL = "http://crl.muster.example/"
+DEFAULT_OCSP_URL = "http://ocsp.muster.example/"
 
 
 class Untrusted(Exception):
