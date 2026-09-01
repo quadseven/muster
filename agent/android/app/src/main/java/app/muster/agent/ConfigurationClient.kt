@@ -73,6 +73,9 @@ class ConfigurationClient(
         /** muster does not recognize this identity. Enrollment, not a retry. */
         object Unrecognized : Fetched
 
+        /** muster verified this device and says an administrator revoked it. */
+        object Revoked : Fetched
+
         /** Network, DNS, TLS. KEEP WHAT IS ON THE DEVICE. */
         data class Unreachable(val detail: String) : Fetched
 
@@ -125,6 +128,11 @@ class ConfigurationClient(
             // issue, or a signature that does not match one it did. Retrying
             // cannot fix either.
             401 -> Fetched.Unrecognized
+            // This status is assigned by `_proven_device` only after the proof
+            // succeeds and the kith says an administrator revoked this key.
+            // It is an answer the status screen can act on, not a network
+            // failure to hide behind another retry.
+            403 -> Fetched.Revoked
             else -> Fetched.Refused(reply.status, reply.body.take(REFUSAL_DETAIL_CHARS))
         }
     }

@@ -96,6 +96,7 @@ object ConfigurationPolicy {
         is ConfigurationClient.Fetched.Configuration -> fetched
         is ConfigurationClient.Fetched.NotEnrolled -> null
         is ConfigurationClient.Fetched.Unrecognized -> null
+        is ConfigurationClient.Fetched.Revoked -> null
         is ConfigurationClient.Fetched.Unreachable -> null
         is ConfigurationClient.Fetched.Refused -> null
         is ConfigurationClient.Fetched.DeviceCannotAsk -> null

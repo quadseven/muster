@@ -49,6 +49,7 @@ object DeviceStatus {
     data class Facts(
         val deviceOwner: Boolean,
         val stance: IdentityLifecycle.Stance,
+        val revoked: Boolean,
         val notAfter: Long?,
         val renewAfter: Long?,
         val serverUrl: String?,
@@ -69,6 +70,12 @@ object DeviceStatus {
                 headline = "Not managed"
                 detail = "Muster does not own this device, so no policy applies. " +
                     "Device Owner is taken once, on a factory-reset device."
+            }
+            facts.revoked -> {
+                headline = "Device revoked"
+                detail = "An administrator revoked this device. It keeps enforcing its " +
+                    "last known configuration, but Muster will not answer it until an " +
+                    "administrator readmits it."
             }
             facts.stance is IdentityLifecycle.Stance.Unenrolled -> {
                 headline = "Not enrolled"
@@ -124,8 +131,9 @@ object DeviceStatus {
             rows = rows,
             // Offered only when there is genuinely nothing to enroll with.
             // Showing it beside a valid identity is what this screen replaced.
-            canEnroll = facts.stance is IdentityLifecycle.Stance.Unenrolled ||
-                facts.stance is IdentityLifecycle.Stance.Lapsed,
+            canEnroll = !facts.revoked &&
+                (facts.stance is IdentityLifecycle.Stance.Unenrolled ||
+                    facts.stance is IdentityLifecycle.Stance.Lapsed),
         )
     }
 

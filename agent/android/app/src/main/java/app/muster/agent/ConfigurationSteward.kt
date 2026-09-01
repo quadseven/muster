@@ -52,14 +52,20 @@ class ConfigurationSteward(private val context: Context) {
         val refused: List<ConfigurationPolicy.Refusal> = emptyList(),
         val didNotLand: List<String> = emptyList(),
         val kept: String? = null,
+        val revoked: Boolean = false,
     ) : StepOutcome {
 
         override fun concerns(): List<String> = buildList {
-            kept?.let { add("no fresh policy - $it") }
+            if (revoked) {
+                add("this device has been revoked; keeping the last known configuration")
+            } else {
+                kept?.let { add("no fresh policy - $it") }
+            }
             refused.forEach { add("REFUSED '${it.name}' - ${it.why}") }
             if (didNotLand.isNotEmpty()) add("DID_NOT_LAND $didNotLand")
         }
         override fun toString(): String = when {
+            revoked -> "this device has been revoked; kept the last known configuration"
             kept != null -> "kept the last known configuration: $kept"
             else -> buildString {
                 append("revision=$revision wrote=$wrote removed=$removed unchanged=$unchanged")
@@ -90,6 +96,16 @@ class ConfigurationSteward(private val context: Context) {
         )
 
         val fetched = client.fetch()
+        // Persist the deliberate answer before returning it. Periodic and boot
+        // check-ins have no Activity alive to remember their report, and those
+        // are the ordinary paths on an appliance nobody is holding.
+        RevocationStore.record(context, fetched)
+        if (fetched is ConfigurationClient.Fetched.Revoked) {
+            // SURFACE ONLY. Revocation does not remove app-config, stop local
+            // enforcement, or wipe. Those actions destroy capability or data
+            // and require their own decision; wiping is muster#15.
+            return Outcome(revoked = true)
+        }
         // The decision itself lives in ConfigurationPolicy, where a test can
         // break it. This line only obeys it.
         val configuration = ConfigurationPolicy.instruction(fetched)
@@ -116,6 +132,8 @@ class ConfigurationSteward(private val context: Context) {
             "this device has no identity yet; nothing to fetch with"
         is ConfigurationClient.Fetched.Unrecognized ->
             "muster does not recognize this device's certificate"
+        is ConfigurationClient.Fetched.Revoked ->
+            "this device has been revoked"
         is ConfigurationClient.Fetched.Unreachable ->
             "muster is unreachable (${fetched.detail})"
         is ConfigurationClient.Fetched.Refused ->
