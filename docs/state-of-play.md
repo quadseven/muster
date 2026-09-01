@@ -32,6 +32,37 @@ refusal, the response mapping and the durable agent state, but no handset has
 made a post-revoke request in this period. The next-request behavior, including
 the fifteen-minute periodic path, remains unmeasured on hardware.
 
+## OCSP and a CRL are built, and NOT SERVING
+
+Written 2026-09-01. This one is a third category and the distinction matters
+more than the usual measured/written split: the code is merged, the tests pass,
+and **the endpoints answer nothing at all**, because they have never been
+deployed.
+
+`muster/revocation.py` builds both artifacts. Issued certificates now carry AIA
+and CRL distribution point extensions. Both endpoints are registered as
+Starlette `Host` routers on their own hostnames, so they are a fourth audience -
+public, unauthenticated, and unlike every other route here, meant to be cached.
+A kith outage answers 503 for the CRL and RFC 6960 `tryLater` for OCSP, never a
+quiet "not revoked". D28 argues the five-minute freshness window.
+
+**What is NOT true yet, and would be easy to assume from a green build:**
+
+- The pod is not running this image, and the running deployment has neither
+  `MUSTER_CRL_URL` nor `MUSTER_OCSP_URL` set. `app_from_env` REFUSES TO START
+  without both, so bumping the image digest before the manifest gains them is a
+  CrashLoopBackOff rather than a quiet fallback. That guard is deliberate: the
+  defaults it replaced pointed at `muster.example`, which would have stamped an
+  unreachable URI into every certificate while every test still passed.
+- `crl.muster.casa` and `ocsp.muster.casa` have no tunnel routes and no DNS.
+  Nothing answers on either name.
+- No `openssl crl` or `openssl ocsp` invocation has ever been run against a
+  real muster. Every assertion above is a test client.
+
+Tracked as #24, which carries the deploy order. Certificates issued BEFORE that
+deploy carry no AIA or CRLDP extensions at all, so a third party validating an
+old certificate has nothing to fetch; they age out as devices renew.
+
 ## Periodic check-in is wired, not measured
 
 Written 2026-09-01 with no handset attached. `CheckInJob` is declared in the
