@@ -8,45 +8,57 @@ and what the next person should not rediscover the hard way.
 
 ## Revocation and wipe, in four buckets
 
-Read 2026-09-01 20:03Z off `main` at 8bdde8b and the live pod, which runs
-image `sha-e3544d25d832` (= e3544d2, muster#12) - five merges behind main. The
-buckets are this repo's standard: PROVEN means measured on the real target
-with the measurement quoted; a green suite never gets a thing past the second
-bucket.
+Re-read 2026-09-01 22:05Z off `main` at 818a957 and the live pod, which since
+22:01Z runs image `sha-0b67b2389203` (= 0b67b23, muster#30; #31 is docs only
+and built no image). Deployment revision 39, deployed by hand under muster#24
+with a timed rollback armed that stood down on its own. The buckets are this
+repo's standard: PROVEN means measured on the real target with the measurement
+quoted; a green suite never gets a thing past the second bucket.
 
     PROVEN
       nothing in this goal
 
     DEPLOYED, NEVER EXERCISED
-      POST /v1/kith/{key_id}/revoke              on the live pod (edd1119)
-      _proven_device refuses revoked_at != NULL  on the live pod (edd1119)
-      revoked_at column                          in the live kith_device table
-      -> all four live rows have revoked_at NULL; no revocation has ever
-         been issued against this control plane.
-
-    MERGED, NOT DEPLOYED
-      console Revoke / Readmit / Queue erase controls    (#28, this change)
+      POST /v1/kith/{key_id}/revoke and readmit      on the live pod
+      _proven_device refuses revoked_at != NULL      on the live pod
+      console Revoke / Readmit / Queue erase controls on the live pod (#28, #30)
       wipe_pending_at, POST /v1/kith/{key_id}/wipe,
       POST /v1/device/wipe, the synthesized `wipe` file  (#25)
+      CRL at https://crl.<zone>/ and OCSP at https://ocsp.<zone>/   (#23)
+      -> all four live rows have revoked_at NULL and wipe_pending_at NULL;
+         no revocation and no wipe has ever been issued against this
+         control plane.
+      -> the CRL served at 22:01:29Z had zero serials and nextUpdate five
+         minutes after lastUpdate (D28); the OCSP hostname answers
+         application/ocsp-response. Both hostnames were proved to reach the
+         pod BEFORE the roll, by fetching them against the old image and
+         getting muster's own answer rather than a Cloudflare error.
+      -> certificates issued before 22:01Z carry no CRL distribution point
+         and no AIA; they gain them at their next renewal, at the pace the
+         device chooses. Nothing in muster follows either URL, so this is
+         a fact about relying parties, not about refusal.
+
+    MERGED, NOT DEPLOYED
       agent: Fetched.Revoked, WipePolicy/WipeSteward      (#21, #25)
-      CRL and OCSP responder, AIA/CRLDP on new certs      (#23)
-      -> the live console still reads "Until this page is drawn, revoking
-         is an API call". The live pod has no /v1/device/wipe route and the
-         live table has no wipe_pending_at column (both queried 2026-09-01).
-      -> main's image CANNOT be deployed as-is: app_from_env refuses to
-         start without MUSTER_CRL_URL and MUSTER_OCSP_URL, which the live
-         deployment does not set. The manifest is in the private operations
-         repo; #24 carries the order (env vars, tunnel routes, DNS, digest).
+      -> the served /agent.apk is the one the image carries; whether the
+         three enrolled handsets have fetched it is not recorded anywhere
+         muster can see, so the agent half of wipe stays here until a
+         handset reports.
 
     NOT BUILT
       nothing in this goal
 
+Until this re-read the section above said the live pod ran `sha-e3544d25d832`,
+"five merges behind main", that "main's image CANNOT be deployed as-is", and
+that the console, wipe and CRL/OCSP were MERGED, NOT DEPLOYED. Revision 39
+made each of those false; what still holds is that nothing has been exercised.
+
 **The one measurement that moves revocation to PROVEN**, and it is a human's
-browser session because administration is OIDC-only by design (D23): sign in,
-revoke `travel-router` (the only uniquely named device), watch its next request
-answer 403 and the pod log `revoked device refused`, readmit it, watch it
-recover. Until the console with the Revoke and Readmit controls is deployed
-the human has no button to click, so the deploy comes first.
+browser session because administration is OIDC-only by decision (D23): sign
+in, open Devices, revoke `travel-router` (the only uniquely named device), watch
+its next hourly request answer 403 and the pod log `revoked device refused`,
+readmit it, watch it recover. The button exists on the live console as of
+revision 39; the measurement is pre-staged and waiting on the click.
 
 ## What works, proven end to end
 
