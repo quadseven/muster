@@ -381,14 +381,19 @@ that order.
   which are a human's job - `docs/administrator-sign-in.md` says exactly what.
   `app_from_env` refuses to start without it. Like everything else here, none
   of it is in Pulumi yet.
-- **The revocation hostnames are not at the edge yet.** The CRL and OCSP
-  endpoints exist (muster#17) and their URLs are required at startup, but the
-  tunnel still routes only `enroll.muster.example`. Until two more hostnames
-  (a `crl.*` and an `ocsp.*`) are added to the tunnel and to DNS, the
-  revocation extensions in issued certificates point somewhere unreachable,
-  and the manifest variables should name those future hostnames NOW - they
-  are stamped into certificates at issue time, and reissuing is a renewal
-  away only at the pace devices choose.
+- **The revocation hostnames ARE at the edge, by hand (2026-09-01 22:01Z).**
+  Until that moment this bullet said "the tunnel still routes only
+  `enroll.muster.example`" and warned that the extensions in issued
+  certificates pointed somewhere unreachable. Now the tunnel's remotely
+  managed ingress (configuration version 12) routes `crl.*` and `ocsp.*` to
+  the same Service as `enroll.*`, two proxied CNAMEs exist in the zone, and
+  the Deployment (revision 39) sets `MUSTER_CRL_URL` and `MUSTER_OCSP_URL` to
+  those hostnames. What is still true: certificates issued BEFORE that moment
+  carry no distribution point and gain one at renewal, at the pace devices
+  choose; and every one of those three changes was applied by hand, so the
+  next bullet applies to them too. The tunnel's ingress in particular is
+  declared in Pulumi as a shorter list than what is live, and an apply of
+  that path would remove these routes along with every other hand-added one.
 - **Nothing is in Pulumi.** The estate's standing rule is that infrastructure is
   IaC; all of the above was applied by hand to get the thing standing. This file
   is the interim record, not the destination.
