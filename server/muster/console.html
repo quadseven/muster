@@ -129,6 +129,9 @@
   }
   nav button[aria-current="page"]::before { background: var(--amber); }
   .who { display: flex; align-items: center; gap: .75rem; font-size: .9rem; }
+  /* The address is who you are, not a thing to read in full; a long one used
+     to push the sections onto a second line at any width. */
+  .who .muted { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* ---- the page ---- */
   main { max-width: 62rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; }
@@ -220,6 +223,16 @@
   @media (max-width: 46rem) {
     .device-row { display: block; }
     .device-actions { justify-content: flex-start; margin-top: .8rem; }
+    /* The bar is one row at a desk and two on a phone: wordmark and account
+       on the first, the sections underneath as a single row that slides
+       sideways. Left to wrap on its own the nav became a five-line column
+       beside the wordmark and pushed the page below the fold. */
+    .bar { flex-wrap: wrap; row-gap: .25rem; padding: .7rem 1rem; }
+    .who { margin-left: auto; }
+    .who .muted { max-width: 9rem; }
+    nav { order: 3; flex: 1 0 100%; margin-left: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    nav::-webkit-scrollbar { display: none; }
+    nav button { white-space: nowrap; }
   }
 
   /* ---- fields ---- */
