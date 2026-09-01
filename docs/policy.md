@@ -115,8 +115,6 @@ Reaching a device that has gone dark requires the device to enforce a deadline
 on itself with no network, which is a different and considerably more dangerous
 mechanism - a phone whose router breaks for long enough would erase itself.
 
-**There is no console button for this yet.** It is an API call today.
-
 ## An absent restrictions file and an empty one mean different things
 
     no file        nothing has been configured; the device is left as it is

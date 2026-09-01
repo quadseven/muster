@@ -209,6 +209,18 @@
   .breath-most { margin-top: 1.75rem; }
   #pending { margin-top: .6rem; }
   .confirm-lede { margin: .5rem 0 1.2rem; }
+  .device-list { margin-top: .6rem; }
+  .device-row { align-items: flex-start; }
+  .device-meta { min-width: 0; }
+  .device-meta .fp { overflow-wrap: anywhere; }
+  .device-status { margin-top: .2rem; }
+  .device-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
+  .action.danger { border-color: var(--charcoal); }
+  .action.danger:hover { background: var(--charcoal); color: var(--warm-white); }
+  @media (max-width: 46rem) {
+    .device-row { display: block; }
+    .device-actions { justify-content: flex-start; margin-top: .8rem; }
+  }
 
   /* ---- fields ---- */
   .field { display: block; font-size: .9rem; color: var(--stone); margin-bottom: .3rem; }
@@ -466,31 +478,16 @@
         <h2>Devices</h2>
         <p>The kith: the devices Muster recognizes.</p>
       </div>
-      <div class="empty">
-        <strong>The kith is written down now, and this page does not read it yet.</strong>
-        <p class="breath">
-          Since #34 every issued certificate is recorded, and the roll is
-          already answerable over the API. Drawing it here is the next slice.
-          What belongs on it:
+      <div class="panel">
+        <h3>Recognized devices</h3>
+        <p class="muted">
+          Erasing is delivered at the device's next check-in. Queue the erase,
+          wait for the pending state to clear, then revoke. Revoking first cuts
+          off the channel and the erase will never arrive.
         </p>
-        <ul>
-          <li>The name the device was vouched for under</li>
-          <li>Its key fingerprint, as read off both screens at enrollment</li>
-          <li>When its certificate was issued, and when it expires</li>
-          <li>Whether it has been revoked, and a way to revoke it from here</li>
-        </ul>
-        <p class="breath">
-          What will not be on it is a count of devices online. Muster has no
-          idea whether a device is reachable and does not need one: an identity
-          that is not renewed lapses, and one an administrator revokes is
-          refused the next time it asks. Neither needs the device to be
-          listening. Until this page is drawn, revoking is an API call - which
-          is a real gap, because an administrator cutting off a device they
-          have just lost is the worst moment to be reaching for a terminal. Nor will an empty list stand in for an unreachable
-          store - the API answers 503 for that on purpose, because "no devices"
-          and "the database is gone" send an operator looking in opposite
-          directions.
-        </p>
+        <div class="device-list" id="devices">
+          <p class="muted">Loading devices...</p>
+        </div>
       </div>
     </section>
 
@@ -577,6 +574,17 @@
   </div>
 </dialog>
 
+<dialog id="device-action">
+  <h3 id="device-action-question"></h3>
+  <p class="muted confirm-lede" id="device-action-lede"></p>
+  <p class="fp" id="device-action-fp"></p>
+  <p class="muted" id="device-action-name"></p>
+  <div class="actions">
+    <button class="action" id="device-action-cancel">Cancel</button>
+    <button class="action primary" id="device-action-confirm"></button>
+  </div>
+</dialog>
+
 <!-- The QR as big as the screen allows, because that is what the ceremony is:
      a phone held up to a monitor. The checksum stays visible in it - the whole
      point of the text beside the QR is lost if the view somebody actually scans
@@ -597,6 +605,7 @@
   // screen. It is a credential for a network and grants nothing here.
   const $ = (id) => document.getElementById(id);
   let poll = null;
+  let devicePoll = null;
   let section = 'overview';
 
   async function api(path, options = {}) {
@@ -614,6 +623,7 @@
     $('shell').hidden = !session.signed_in;
     if (!session.signed_in) {
       stopPolling();
+      stopDevicePolling();
       clearProvisioningQr();
       $('gate-actions').hidden = !session.sign_in_configured;
       $('gate-unconfigured').hidden = session.sign_in_configured;
@@ -652,6 +662,7 @@
     // front. A console left open on a second monitor should not ask the
     // service that signs certificates for the pending list all week.
     if (name === 'overview') startPolling(); else stopPolling();
+    if (name === 'devices') startDevicePolling(); else stopDevicePolling();
     // NOT LEFT ON THE MONITOR. A provisioning QR can carry the network password
     // in clear text, and a console that keeps one drawn on a section nobody is
     // looking at is a password on a screen in a room. Navigating away is the
@@ -678,6 +689,18 @@
 
   function stopPolling() {
     if (poll) { clearInterval(poll); poll = null; }
+  }
+
+  function startDevicePolling() {
+    refreshDevices();
+    if (devicePoll) return;
+    devicePoll = setInterval(() => {
+      if (document.visibilityState === 'visible') refreshDevices();
+    }, 2000);
+  }
+
+  function stopDevicePolling() {
+    if (devicePoll) { clearInterval(devicePoll); devicePoll = null; }
   }
 
   // ---- the ceremony -------------------------------------------------------
@@ -729,6 +752,72 @@
       row.append(left, button);
       target.append(row);
     }
+  }
+
+  async function refreshDevices() {
+    let devices;
+    try {
+      const response = await api('/v1/kith');
+      if (!response.ok) throw new Error(await refusalDetail(response));
+      ({ devices } = await response.json());
+    } catch (error) {
+      $('devices').replaceChildren(element('p', 'muted', error.message));
+      return;
+    }
+    const target = $('devices');
+    if (!devices.length) {
+      target.replaceChildren(element('p', 'muted', 'No recognized devices.'));
+      return;
+    }
+    target.replaceChildren();
+    for (const device of devices) target.append(deviceRow(device));
+  }
+
+  function deviceRow(device) {
+    const row = document.createElement('div');
+    row.className = 'row device-row';
+    const left = document.createElement('div');
+    left.className = 'device-meta';
+    left.append(
+      element('div', '', device.name),
+      element('div', 'fp', device.fingerprint),
+      element('div', 'muted shape', device.role ? 'role: ' + device.role : 'no role'),
+    );
+    const status = element('div', 'device-status', deviceStatus(device));
+    status.classList.add('muted');
+    left.append(status);
+
+    const actions = document.createElement('div');
+    actions.className = 'device-actions';
+    const wipe = document.createElement('button');
+    wipe.className = 'action danger';
+    wipe.textContent = device.wipe_pending_at ? 'Call off erase' : 'Queue erase';
+    wipe.disabled = Boolean(device.revoked_at);
+    wipe.title = device.revoked_at
+      ? 'A revoked device cannot receive an erase instruction'
+      : '';
+    wipe.onclick = () => openDeviceAction(device, device.wipe_pending_at ? 'cancel-wipe' : 'wipe');
+    actions.append(wipe);
+
+    const revoke = document.createElement('button');
+    revoke.className = 'action';
+    revoke.textContent = device.revoked_at ? 'Revoked' : 'Revoke';
+    revoke.disabled = Boolean(device.revoked_at || device.wipe_pending_at);
+    revoke.title = device.wipe_pending_at
+      ? 'Wait for the erase to land before revoking'
+      : '';
+    if (!device.revoked_at) {
+      revoke.onclick = () => openDeviceAction(device, 'revoke');
+    }
+    actions.append(revoke);
+    row.append(left, actions);
+    return row;
+  }
+
+  function deviceStatus(device) {
+    if (device.revoked_at) return 'Revoked';
+    if (device.wipe_pending_at) return 'Erase queued - waiting for check-in';
+    return 'Active';
   }
 
   function element(tag, className, text) {
@@ -787,6 +876,62 @@
     if (!response.ok) alert('That vouch was refused: ' + (await response.text()));
     pendingRequest = null;
     refresh();
+  };
+
+  let deviceAction = null;
+  const DEVICE_ACTIONS = {
+    wipe: {
+      question: 'Erase this device?',
+      lede: 'This queues an erase for the named device. It will be erased at its next check-in. Do not revoke it first, or the instruction cannot arrive.',
+      confirm: 'Queue erase',
+      path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/wipe',
+      body: { wipe: true },
+    },
+    'cancel-wipe': {
+      question: 'Call off this erase?',
+      lede: 'The erase is still pending. Calling it off leaves this device active.',
+      confirm: 'Call off erase',
+      path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/wipe',
+      body: { wipe: false },
+    },
+    revoke: {
+      question: 'Revoke this device?',
+      lede: 'Revocation stops muster answering this device. Only do this after any queued erase has landed.',
+      confirm: 'Revoke device',
+      path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/revoke',
+      body: { revoked: true },
+    },
+  };
+
+  function openDeviceAction(device, action) {
+    deviceAction = { device, action };
+    const words = DEVICE_ACTIONS[action];
+    $('device-action-question').textContent = words.question;
+    $('device-action-lede').textContent = words.lede;
+    $('device-action-fp').textContent = device.fingerprint;
+    $('device-action-name').textContent = device.name;
+    $('device-action-confirm').textContent = words.confirm;
+    $('device-action').showModal();
+  }
+
+  $('device-action-cancel').onclick = () => {
+    $('device-action').close();
+    deviceAction = null;
+  };
+
+  $('device-action-confirm').onclick = async () => {
+    if (!deviceAction) return;
+    const { device, action } = deviceAction;
+    const words = DEVICE_ACTIONS[action];
+    const response = await api(words.path(device), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(words.body),
+    });
+    $('device-action').close();
+    if (!response.ok) alert('That action was refused: ' + (await response.text()));
+    deviceAction = null;
+    refreshDevices();
   };
 
   // ---- the provisioning QR ------------------------------------------------
