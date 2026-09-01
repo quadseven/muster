@@ -263,6 +263,30 @@ def _read(path: pathlib.Path) -> str:
         ) from exc
 
 
+def _refuse_unusable_scope(key_id: str, role: str) -> None:
+    """Both halves of a scope name, checked before either becomes a path.
+
+    THE SECOND DOOR. `enroll.mint` refuses a bad role at the first one, and this
+    module checks again because the difference between a lookup and an arbitrary
+    read of the pod's filesystem is not a property to leave resting on a
+    function two modules away.
+
+    Extracted from `for_device` rather than inlined: it is the same two
+    questions for every caller, and keeping them here is what lets the answer
+    below read as scope resolution rather than as validation with resolution
+    buried in it.
+    """
+    if not _KEY_ID.match(key_id):
+        raise ValueError(
+            "a key_id is 64 lowercase hex characters; this is not one"
+        )
+    if role and not _ROLE.match(role):
+        raise ValueError(
+            f"'{role}' is not a role: lowercase letters, digits and dashes, "
+            "starting with a letter. A role becomes half of a file name here."
+        )
+
+
 @dataclass
 class Policies:
     """The directory, read on demand.
@@ -353,19 +377,7 @@ class Policies:
         the shared and role scopes are intentionally not consulted for this
         name.
         """
-        if not _KEY_ID.match(key_id):
-            raise ValueError(
-                "a key_id is 64 lowercase hex characters; this is not one"
-            )
-        # THE SECOND DOOR. `enroll.mint` refuses a bad role at the first one,
-        # and this module checks again because the difference between a lookup
-        # and an arbitrary read of the pod's filesystem is not a property to
-        # leave resting on a function two modules away.
-        if role and not _ROLE.match(role):
-            raise ValueError(
-                f"'{role}' is not a role: lowercase letters, digits and dashes, "
-                "starting with a letter. A role becomes half of a file name here."
-            )
+        _refuse_unusable_scope(key_id, role)
 
         # WIPE-PENDING DOES NOT NEED THE REST OF POLICY, and it must not wait
         # for it. The device is about to be erased; a broken policy volume is

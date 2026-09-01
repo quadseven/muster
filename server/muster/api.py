@@ -1006,6 +1006,42 @@ def _register_proof_routes(app: FastAPI, state: State) -> None:
         return {"verdict": Verdict.OK.value}
 
 
+def _turn_wipe_pending_into_revoked(state: State, proven: str) -> None:
+    """The wipe-pending -> revoked transition, or a 409 saying it does not apply.
+
+    EXTRACTED FROM THE ROUTE, not for tidiness: `_register_device_routes` is
+    over the complexity cap and this is the branchiest thing in it. Keeping the
+    transition here leaves the route reading as "prove, transition, answer".
+
+    BOTH REFUSALS ARE THE SAME SENTENCE, DELIBERATELY. One is "this device was
+    never told to wipe"; the other is "something else already moved it out of
+    wipe-pending" - two devices racing, or an administrator calling the wipe off
+    between the proof and this line. A device cannot act differently on the two,
+    and telling it which one it lost would say something about a state it is not
+    entitled to know.
+    """
+    try:
+        member = state.kith.member(proven)
+    except kith_store.Unreachable as unreachable:
+        raise _unreachable(unreachable) from unreachable
+
+    not_pending = HTTPException(
+        status_code=409,
+        detail="this device is not waiting to be wiped",
+        headers={"Cache-Control": "no-store"},
+    )
+    if member is None or member.device.wipe_pending_at is None:
+        raise not_pending
+    # THE TRANSITION IS THE AUTHORITY, not the read above. Between that read
+    # and this call an administrator may have called the wipe off, so a device
+    # that acknowledges must not be revoked on the strength of a stale row.
+    if not state.kith.acknowledged_wipe(proven):
+        raise not_pending
+
+    state.telemetry.count("device.wipe.acknowledged")
+    telemetry.event("device wipe acknowledged", key_id=proven)
+
+
 def _register_device_routes(app: FastAPI, state: State) -> None:
     """What an enrolled device asks muster for, over the identity it holds.
 
@@ -1161,24 +1197,7 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         """
         response.headers["Cache-Control"] = "no-store"
         proven = _proven_device(state, nonce, signature_b64, certificate_pem)
-        try:
-            member = state.kith.member(proven)
-        except kith_store.Unreachable as unreachable:
-            raise _unreachable(unreachable) from unreachable
-        if member is None or member.device.wipe_pending_at is None:
-            raise HTTPException(
-                status_code=409,
-                detail="this device is not waiting to be wiped",
-                headers={"Cache-Control": "no-store"},
-            )
-        if not state.kith.acknowledged_wipe(proven):
-            raise HTTPException(
-                status_code=409,
-                detail="this device is not waiting to be wiped",
-                headers={"Cache-Control": "no-store"},
-            )
-        state.telemetry.count("device.wipe.acknowledged")
-        telemetry.event("device wipe acknowledged", key_id=proven)
+        _turn_wipe_pending_into_revoked(state, proven)
         return {"key_id": proven, "revoked": True}
 
     @app.post("/v1/device/renew", status_code=201)
