@@ -213,6 +213,41 @@ def test_replaying_a_write_does_not_duplicate_a_certificate(kith, records):
     assert kith.roll()[0].certificates == 1
 
 
+def test_certificate_status_follows_the_device_across_renewals(kith, clock):
+    """Revocation is on the key, while relying parties ask about serials.
+
+    Both issued certificates have to inherit the one device decision. Looking
+    up only the current certificate would let an older, still-valid identity
+    answer good after the administrator revoked the device that holds it.
+    """
+    kith.issued(a_device(), a_certificate("AAAA", request_id="req-1"))
+    clock.advance(3600)
+    kith.issued(
+        a_device(at=clock()), a_certificate("BBBB", request_id="req-2", at=clock())
+    )
+    kith.set_revoked(key_id(b"device-one"), True)
+
+    assert kith.certificate_status("AAAA").revoked_at == clock()
+    assert kith.certificate_status("BBBB").revoked_at == clock()
+
+
+def test_expired_certificates_drop_out_of_the_revocation_list(kith, clock):
+    expired = a_certificate("AAAA")
+    current = a_certificate(
+        "BBBB", request_id="req-2", at=START + dt.timedelta(days=1)
+    )
+    kith.issued(a_device(), expired)
+    kith.issued(a_device(at=current.issued_at), current)
+    kith.set_revoked(key_id(b"device-one"), True)
+
+    clock.t = expired.not_after
+
+    assert [
+        status.certificate.serial
+        for status in kith.unexpired_revocations(clock())
+    ] == ["BBBB"]
+
+
 def test_last_seen_only_moves_forward(kith, clock):
     """A deferred touch that drains late must not drag last_seen backwards."""
     kith.issued(a_device(), a_certificate("AAAA"))
@@ -823,6 +858,24 @@ def test_the_roll_settles_which_certificate_is_current():
     assert sql.count("ORDER BY n.issued_at DESC, n.serial DESC LIMIT 1") == 2, sql
 
 
+def test_revocation_queries_join_device_identity_to_certificate_serials():
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+
+    records.certificate_status("AAAA")
+    records.unexpired_revocations(START)
+
+    statements = [
+        sql for sql, _ in connection.log
+        if "JOIN kith_device d ON d.key_id = c.key_id" in sql
+    ]
+    assert len(statements) == 2
+    assert "c.serial = %s" in statements[0]
+    assert "d.revoked_at IS NOT NULL AND c.not_after > %s" in statements[1]
+
+
 def test_values_are_passed_as_parameters_and_never_interpolated():
     """A device name comes from an operator's keyboard and lands in SQL."""
     connection = FakeConnection()
@@ -1045,10 +1098,12 @@ def test_every_statement_is_something_postgresql_can_actually_parse():
     records.roll()
     records.member("abc")
     records.history("abc")
+    records.certificate_status("AAAA")
+    records.unexpired_revocations(START)
     records.awaiting_collection("req-1")
 
     statements = [sql for sql, _ in connection.log]
-    assert len(statements) >= 8, statements
+    assert len(statements) >= 10, statements
 
     for sql in statements:
         # psycopg substitutes %s client-side, so the placeholder never reaches

@@ -11,20 +11,28 @@ name the administrator vouched for rather than the one the device asked for.
 """
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import io
+import urllib.parse
+from email.utils import format_datetime
 
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509 import ocsp
 from cryptography.x509.oid import NameOID
 from fastapi.testclient import TestClient
+from starlette.routing import Host
 
 from muster import console
+from muster import kith as kith_store
 from muster.api import State, create_app
 from muster.ca import Authority
 from muster.enroll import DEFAULT_CODE_TTL_S, MAX_ATTEMPTS, Enrollment
+from muster.proof import Proofs
+from muster.revocation import FRESHNESS
 from tests.conftest import FakeProvider
 
 # One shared fake identity provider for every test in this file that needs "an
@@ -1940,14 +1948,47 @@ ADMINISTRATOR_ONLY = {
     ("POST", "/v1/kith/{key_id}/revoke"),
 }
 
+# THE FOURTH AUDIENCE: public, unauthenticated, and cacheable - standard
+# revocation answers for relying parties outside muster (muster#17). Mounted
+# on hostnames rather than paths because both standards conventionally live
+# at `/`, which the console already serves, and only the hostname tells the
+# surfaces apart. Entries are `hostname/path` for two reasons: an entry here
+# can never be confused with a console route, and moving one of these onto
+# the console hostname fails the exact match below instead of silently
+# joining OPEN_TO_ANYONE. The hostnames are the authority URLs the `state`
+# fixture above configures - the ca.py module defaults.
+PUBLIC_UNAUTHENTICATED = {
+    ("GET", "crl.muster.example/"),
+    ("POST", "ocsp.muster.example/"),
+    # RFC 5019: the same request, base64 in the final path segment, for
+    # clients that cannot POST.
+    ("GET", "ocsp.muster.example/{request_b64:path}"),
+}
+
 
 def _registered(app):
-    return {
+    registered = {
         (method, route.path)
         for route in app.routes
         for method in getattr(route, "methods", set())
         if method != "HEAD"
     }
+    # HOST-MOUNTED ROUTES ARE AUDITED TOO, and were not: a Starlette Host has
+    # no `methods`, so the comprehension above was blind to it - and the
+    # public CRL and OCSP surfaces are mounted that way, because they share
+    # the path `/` with the console and only the hostname tells them apart.
+    # A surface this check cannot see is a surface that can be added without
+    # the deliberate decision this test exists to force. Named here as
+    # `hostname/path` so the two cannot be confused with a console route.
+    registered |= {
+        (method, f"{host.host}{route.path}")
+        for host in app.routes
+        if isinstance(host, Host)
+        for route in host.routes
+        for method in getattr(route, "methods", set())
+        if method != "HEAD"
+    }
+    return registered
 
 
 def _walkable(path):
@@ -1958,16 +1999,34 @@ def _walkable(path):
 
 def test_every_route_is_deliberately_open_or_deliberately_not(client):
     """A new endpoint defaults to reachable by anyone, which is the right
-    default for this service and the wrong one to leave unexamined."""
-    assert _registered(client.app) == OPEN_TO_ANYONE | DEVICE_PROVEN | ADMINISTRATOR_ONLY
+    default for this service and the wrong one to leave unexamined.
+
+    HOST-MOUNTED ROUTES COUNT, and once did not: a Starlette Host has no
+    `methods`, so `_registered` was blind to it, and the public CRL and OCSP
+    surfaces - mounted that way, because they share the path `/` with the
+    console - could be added, changed, or removed with no test noticing. An
+    audit with a blind spot for a whole audience approves it by omission.
+    """
+    assert _registered(client.app) == (
+        OPEN_TO_ANYONE
+        | DEVICE_PROVEN
+        | ADMINISTRATOR_ONLY
+        | PUBLIC_UNAUTHENTICATED
+    )
 
 
-def test_the_three_audiences_do_not_overlap():
+def test_the_audiences_do_not_overlap():
     """A route in two sets would pass whichever test ran first and prove
     nothing. Cheap here, and the sets are about to grow (muster#27, #42)."""
-    assert not OPEN_TO_ANYONE & DEVICE_PROVEN
-    assert not DEVICE_PROVEN & ADMINISTRATOR_ONLY
-    assert not OPEN_TO_ANYONE & ADMINISTRATOR_ONLY
+    audiences = (
+        OPEN_TO_ANYONE,
+        DEVICE_PROVEN,
+        ADMINISTRATOR_ONLY,
+        PUBLIC_UNAUTHENTICATED,
+    )
+    for index, first in enumerate(audiences):
+        for second in audiences[index + 1:]:
+            assert not first & second
 
 
 @pytest.mark.parametrize("path", ["/docs", "/redoc"])
@@ -2095,6 +2154,8 @@ def _ca_on_disk(tmp_path, monkeypatch):
     monkeypatch.setenv("MUSTER_CA_KEY", str(key))
     monkeypatch.setenv("MUSTER_CA_CERT", str(cert))
     monkeypatch.setenv("MUSTER_BASE_URL", "https://enroll.muster.example")
+    monkeypatch.setenv("MUSTER_CRL_URL", "https://crl.muster.example/")
+    monkeypatch.setenv("MUSTER_OCSP_URL", "https://ocsp.muster.example/")
 
 
 def _configure_sign_in(monkeypatch):
@@ -2127,6 +2188,36 @@ def test_sign_in_alone_is_a_way_in(monkeypatch, tmp_path):
         ).status_code
         == 401
     )
+
+
+@pytest.mark.parametrize(
+    "missing", ["MUSTER_CRL_URL", "MUSTER_OCSP_URL", "both"]
+)
+def test_the_app_refuses_to_start_half_configured_on_revocation_urls(
+    monkeypatch, tmp_path, missing
+):
+    """Each URL is stamped into every certificate muster issues AND is the
+    hostname the matching public endpoint answers on. A pod that comes up
+    with only one of them - or with a silent default - would mint
+    certificates pointing at one hostname while serving revocation checks
+    on another, and nothing inside muster follows either URL, so the
+    disagreement would never surface in a test or a log. Half-configured
+    must be a pod that does not start."""
+    from muster.api import app_from_env
+
+    _ca_on_disk(tmp_path, monkeypatch)
+    _configure_sign_in(monkeypatch)
+    monkeypatch.setenv("MUSTER_ADMIN_SUBJECTS", "s-0001-administrator")
+    if missing in ("MUSTER_CRL_URL", "both"):
+        monkeypatch.delenv("MUSTER_CRL_URL", raising=False)
+    if missing in ("MUSTER_OCSP_URL", "both"):
+        monkeypatch.delenv("MUSTER_OCSP_URL", raising=False)
+
+    with pytest.raises(RuntimeError) as caught:
+        app_from_env()
+    message = str(caught.value)
+    assert "MUSTER_CRL_URL" in message
+    assert "MUSTER_OCSP_URL" in message
 
 
 def test_a_provider_with_nobody_allowed_refuses_to_start(monkeypatch, tmp_path):
@@ -2814,11 +2905,441 @@ def test_a_device_with_no_kith_row_yet_is_still_answered(state, tmp_path):
     assert _fetch_asset(client, key, identity, "wall.png").status_code == 200
 
 
+# ---- the public revocation surface: CRL and OCSP (muster#17) ------------
+#
+# Standard answers for relying parties outside muster. `_proven_device`
+# remains the check muster itself enforces; these endpoints answer the
+# different question a third-party PKI client can ask about one serial. The
+# whole audience is the internet, so the tests that matter are the ones about
+# what the endpoints say during a kith outage - the moment a wrong answer is
+# actually possible.
+
+# NAMED HOSTNAMES, NOT THE ca.py MODULE DEFAULTS. A test that used the
+# defaults on both sides would keep passing while a deployment stamped an
+# unreachable example URI into every certificate - the exact gap
+# app_from_env now refuses to start about. The URLs are the contract under
+# test: the certificate extensions, the Host routers and the cache headers
+# all have to agree with them.
+REVOCATION_CRL_URL = "https://crl.muster.example.test/"
+REVOCATION_OCSP_URL = "https://ocsp.muster.example.test/"
+
+
+def _revocation_state(clock_=None):
+    """A State whose authority publishes revocations on named hostnames."""
+    at = clock_ or (lambda: dt.datetime(2026, 8, 19, tzinfo=dt.timezone.utc))
+    state = State(
+        enrollment=Enrollment(clock=Clock()),
+        authority=Authority.create(
+            "muster test CA",
+            clock=lambda: dt.datetime(2026, 8, 18, tzinfo=dt.timezone.utc),
+            crl_url=REVOCATION_CRL_URL,
+            ocsp_url=REVOCATION_OCSP_URL,
+        ),
+        sign_in=_ADMIN_PROVIDER.sign_in(),
+        kith=kith_store.Kith(kith_store.MemoryRecords(), clock=at),
+    )
+    # Proofs wired so a device can renew before it is revoked - a revoked
+    # device cannot renew, so that order matters to the tests below.
+    state.proofs = Proofs(
+        clock=state.enrollment.clock,
+        ca_certificate=x509.load_pem_x509_certificate(
+            state.authority.certificate_pem
+        ),
+    )
+    return state
+
+
+def _key_id_of(key):
+    from muster.enroll import key_id as _key_id
+
+    return _key_id(
+        key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+
+
+def _revoke(client, key):
+    """Through the administrator route, not by writing the store directly."""
+    response = client.post(
+        f"/v1/kith/{_key_id_of(key)}/revoke",
+        json={"revoked": True},
+        cookies=ADMIN,
+    )
+    assert response.status_code == 200, response.text
+
+
+def _collect_pem(client, presented):
+    """The issued certificate's PEM, over the route the handset uses."""
+    response = client.get(
+        f"/v1/enroll/requests/{presented['request_id']}/identity"
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["certificate_pem"]
+
+
+def _fetch_crl(client, state):
+    """Ask the hostname the certificates point at, and no other."""
+    host = urllib.parse.urlsplit(state.authority.crl_url).hostname
+    return client.get("/", headers={"Host": host})
+
+
+def _ocsp_request_der(state, certificate_pem):
+    """One request as a relying party builds it, for one issued certificate."""
+    ca_cert = x509.load_pem_x509_certificate(state.authority.certificate_pem)
+    cert = x509.load_pem_x509_certificate(certificate_pem.encode())
+    return (
+        ocsp.OCSPRequestBuilder()
+        .add_certificate(cert, ca_cert, hashes.SHA256())
+        .build()
+        .public_bytes(serialization.Encoding.DER)
+    )
+
+
+def _ask_ocsp(client, state, request_der):
+    host = urllib.parse.urlsplit(state.authority.ocsp_url).hostname
+    return client.post(
+        "/",
+        content=request_der,
+        headers={"Host": host, "Content-Type": "application/ocsp-request"},
+    )
+
+
+def test_issued_certificates_point_at_the_configured_revocation_urls():
+    """The extensions a relying party follows carry the configured URLs. If
+    these fell back to the module defaults the suite would still pass and
+    every certificate would carry an unreachable muster.example URI - the
+    failure app_from_env now refuses to start about."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    _key, presented, _vouched = _enroll(client, name="pixel", collect=False)
+    cert = x509.load_pem_x509_certificate(_collect_pem(client, presented).encode())
+
+    [point] = cert.extensions.get_extension_for_class(x509.CRLDistributionPoints).value
+    assert [name.value for name in point.full_name] == [REVOCATION_CRL_URL]
+    [access] = cert.extensions.get_extension_for_class(
+        x509.AuthorityInformationAccess
+    ).value
+    assert access.access_location.value == REVOCATION_OCSP_URL
+
+
+def test_the_crl_lists_exactly_the_revoked_devices_certificate():
+    """A relying party downloads one artifact and trusts it for the whole
+    estate, so the assertions are the wire contract: it parses, it is signed
+    by the CA that issued the certificates it revokes, and it names exactly
+    the serial an administrator revoked - not the live device beside it, and
+    not nothing."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    stolen_key, presented, stolen = _enroll(client, name="stolen", collect=False)
+    _collect_pem(client, presented)
+    _enroll(client, name="still-ours")
+    _revoke(client, stolen_key)
+
+    response = _fetch_crl(client, state)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pkix-crl"
+    crl = x509.load_der_x509_crl(response.content)
+    ca_cert = x509.load_pem_x509_certificate(state.authority.certificate_pem)
+    assert crl.is_signature_valid(ca_cert.public_key())
+    assert [entry.serial_number for entry in crl] == [stolen["serial"]]
+
+
+def test_a_renewed_device_has_every_live_certificate_listed():
+    """Revocation is on the KEY, and a key that renewed holds two live
+    certificates. The list must name both: a relying party that checked only
+    the newest serial would keep accepting the one before it - the exact
+    hole the serial-to-key join exists to close."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    key, presented, _vouched = _enroll(client, name="stolen", collect=False)
+    first = x509.load_pem_x509_certificate(_collect_pem(client, presented).encode())
+
+    # A renewal the way the renew route records one: the SAME key, a new
+    # serial, through the same kith write. The route itself is covered by
+    # the renewal section; the question here is what the CRL says once the
+    # store holds both certificates.
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "x")]))
+        .sign(key, hashes.SHA256())
+    )
+    renewed = state.authority.issue(
+        csr.public_bytes(serialization.Encoding.DER), "stolen"
+    )
+    member = state.kith.member(_key_id_of(key))
+    state.kith.issued(
+        member.device,
+        kith_store.Certificate(
+            serial=f"{renewed.serial:X}",
+            request_id="renewal",
+            not_before=renewed.not_before,
+            not_after=renewed.not_after,
+            issued_at=state.kith.now(),
+            certificate_pem=renewed.certificate_pem.decode(),
+        ),
+    )
+    _revoke(client, key)
+
+    crl = x509.load_der_x509_crl(_fetch_crl(client, state).content)
+    assert sorted(entry.serial_number for entry in crl) == sorted(
+        [first.serial_number, renewed.serial]
+    )
+
+
+def test_an_expired_certificate_drops_off_the_crl_rather_than_accumulating():
+    """Expiry already answers for a dead certificate. Carrying its serial
+    forever would grow the artifact with entries nothing can present, until
+    the list was nothing but them."""
+    moving = [dt.datetime(2026, 8, 19, tzinfo=dt.timezone.utc)]
+    state = _revocation_state(clock_=lambda: moving[0])
+    client = TestClient(create_app(state))
+
+    key, presented, _vouched = _enroll(client, name="stolen", collect=False)
+    cert = x509.load_pem_x509_certificate(_collect_pem(client, presented).encode())
+    _revoke(client, key)
+
+    while_it_lives = x509.load_der_x509_crl(_fetch_crl(client, state).content)
+    assert [entry.serial_number for entry in while_it_lives] == [cert.serial_number]
+
+    moving[0] = cert.not_valid_after_utc + dt.timedelta(seconds=1)
+
+    after_expiry = x509.load_der_x509_crl(_fetch_crl(client, state).content)
+    assert len(after_expiry) == 0
+
+
+def test_ocsp_answers_good_for_a_live_device_and_revoked_for_a_revoked_one():
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    stolen_key, stolen_presented, _stolen = _enroll(client, name="stolen", collect=False)
+    stolen_pem = _collect_pem(client, stolen_presented)
+    _live_key, live_presented, _live = _enroll(client, name="still-ours", collect=False)
+    live_pem = _collect_pem(client, live_presented)
+    _revoke(client, stolen_key)
+
+    response = _ask_ocsp(client, state, _ocsp_request_der(state, stolen_pem))
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/ocsp-response"
+    parsed = ocsp.load_der_ocsp_response(response.content)
+    assert parsed.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL
+    assert parsed.certificate_status == ocsp.OCSPCertStatus.REVOKED
+    # The time a relying party sees is the administrator's act, not the
+    # moment somebody happened to ask.
+    assert parsed.revocation_time_utc is not None
+
+    parsed = ocsp.load_der_ocsp_response(
+        _ask_ocsp(client, state, _ocsp_request_der(state, live_pem)).content
+    )
+    assert parsed.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL
+    assert parsed.certificate_status == ocsp.OCSPCertStatus.GOOD
+
+
+def test_ocsp_get_answers_the_same_as_the_post():
+    """RFC 5019's GET form, for clients that cannot POST. Same request in a
+    path segment, same signed answer - a divergence between the two would be
+    a second responder nobody tested."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    key, presented, _vouched = _enroll(client, name="stolen", collect=False)
+    pem = _collect_pem(client, presented)
+    _revoke(client, key)
+
+    encoded = base64.b64encode(_ocsp_request_der(state, pem)).decode()
+    host = urllib.parse.urlsplit(state.authority.ocsp_url).hostname
+    response = client.get(
+        f"/{urllib.parse.quote(encoded, safe='')}", headers={"Host": host}
+    )
+
+    parsed = ocsp.load_der_ocsp_response(response.content)
+    assert parsed.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL
+    assert parsed.certificate_status == ocsp.OCSPCertStatus.REVOKED
+
+
+def test_ocsp_says_unknown_for_a_serial_the_kith_has_no_record_of():
+    """NOT 'good'. Issued by this CA but never written down - an issuance
+    whose deferred kith write was lost in an outage is exactly this shape -
+    and 'good' would be a positive claim about a row that does not exist."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "x")]))
+        .sign(key, hashes.SHA256())
+    )
+    unrecorded = state.authority.issue(
+        csr.public_bytes(serialization.Encoding.DER), "unrecorded"
+    )
+
+    response = _ask_ocsp(
+        client, state, _ocsp_request_der(state, unrecorded.certificate_pem.decode())
+    )
+    parsed = ocsp.load_der_ocsp_response(response.content)
+    assert parsed.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL
+    assert parsed.certificate_status == ocsp.OCSPCertStatus.UNKNOWN
+
+
+def test_ocsp_refuses_to_answer_for_another_ca():
+    """The request names a different issuer. Answering it at all - even
+    'unknown' - would be speaking for certificates this CA never signed."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    stranger_key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "stranger CA")])
+    stranger_ca = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(stranger_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(dt.datetime(2026, 8, 1, tzinfo=dt.timezone.utc))
+        .not_valid_after(dt.datetime(2036, 8, 1, tzinfo=dt.timezone.utc))
+        .sign(stranger_key, hashes.SHA256())
+    )
+    _key, presented, _vouched = _enroll(client, name="pixel", collect=False)
+    cert = x509.load_pem_x509_certificate(_collect_pem(client, presented).encode())
+    request_der = (
+        ocsp.OCSPRequestBuilder()
+        .add_certificate(cert, stranger_ca, hashes.SHA256())
+        .build()
+        .public_bytes(serialization.Encoding.DER)
+    )
+
+    response = _ask_ocsp(client, state, request_der)
+    parsed = ocsp.load_der_ocsp_response(response.content)
+    assert parsed.response_status == ocsp.OCSPResponseStatus.UNAUTHORIZED
+
+
+def test_a_kith_outage_is_503_for_the_crl_not_an_empty_list(monkeypatch):
+    """AN EMPTY CRL IS AN AUTHORITATIVE LIE. During a store outage the only
+    safe answer is no artifact: a signed list with nothing in it says
+    'nobody is revoked', and a cache could serve it in place of the complete
+    list it replaces."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+    key, presented, _vouched = _enroll(client, name="stolen", collect=False)
+    _collect_pem(client, presented)
+    _revoke(client, key)
+    assert len(x509.load_der_x509_crl(_fetch_crl(client, state).content)) == 1
+
+    def unreachable(*_args, **_kwargs):
+        raise kith_store.Unreachable("the kith store cannot be read")
+
+    monkeypatch.setattr(state.kith, "unexpired_revocations", unreachable)
+
+    response = _fetch_crl(client, state)
+    assert response.status_code == 503, (
+        f"got {response.status_code} - an outage degraded into an answer"
+    )
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_the_public_crl_does_not_leak_the_stores_error_to_the_internet(monkeypatch):
+    """THE REASON GOES TO THE LOG, NOT DOWN THE WIRE.
+
+    Every other route that puts `str(unreachable)` in its detail sits behind an
+    administrator session or a device proof. This one is open to the internet,
+    and `Unreachable` wraps the driver's error - which carries the DSN host,
+    port and database name. Flagged by CodeQL as information exposure through
+    an exception, and it was right.
+    """
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+
+    store_detail = "postgres-rw.internal.example:5432 dbname=muster user=muster"
+
+    def unreachable(*_args, **_kwargs):
+        raise kith_store.Unreachable(f"connection failed: {store_detail}")
+
+    monkeypatch.setattr(state.kith, "unexpired_revocations", unreachable)
+
+    response = _fetch_crl(client, state)
+    assert response.status_code == 503
+    body = response.text
+    assert store_detail not in body, (
+        f"the store's error reached a stranger: {body!r}"
+    )
+    for fragment in ("postgres", "5432", "dbname", "user="):
+        assert fragment not in body, (
+            f"{fragment!r} leaked to an unauthenticated caller: {body!r}"
+        )
+
+
+def test_ocsp_is_trylater_during_a_kith_outage_rather_than_good(monkeypatch):
+    """RFC 6960 has a signed answer for exactly this condition, and anything
+    else is a lie: 'unknown' says the serial was never issued, and 'good'
+    turns loss of the revocation database into permission."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+    key, presented, _vouched = _enroll(client, name="stolen", collect=False)
+    pem = _collect_pem(client, presented)
+    _revoke(client, key)
+    request_der = _ocsp_request_der(state, pem)
+
+    parsed = ocsp.load_der_ocsp_response(_ask_ocsp(client, state, request_der).content)
+    assert parsed.certificate_status == ocsp.OCSPCertStatus.REVOKED
+
+    def unreachable(*_args, **_kwargs):
+        raise kith_store.Unreachable("the kith store cannot be read")
+
+    monkeypatch.setattr(state.kith, "certificate_status", unreachable)
+
+    response = _ask_ocsp(client, state, request_der)
+    assert response.status_code == 200, (
+        "an unsuccessful OCSP response is still an answer, not an error page"
+    )
+    parsed = ocsp.load_der_ocsp_response(response.content)
+    assert parsed.response_status == ocsp.OCSPResponseStatus.TRY_LATER
+    # Deliberately not cached: the store may recover before the next poll.
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_revocation_answers_are_cacheable_until_their_signed_next_update():
+    """THE HEADER AND THE SIGNED TIME ARE ONE CONTRACT. A proxy serving
+    either artifact past its signed nextUpdate would extend the revocation
+    window beyond what a relying party can verify, and a shorter max-age
+    would multiply store reads for no better answer."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+    _key, presented, _vouched = _enroll(client, name="pixel", collect=False)
+    pem = _collect_pem(client, presented)
+
+    crl_response = _fetch_crl(client, state)
+    crl = x509.load_der_x509_crl(crl_response.content)
+    assert crl.next_update_utc - crl.last_update_utc == FRESHNESS
+    assert crl_response.headers["cache-control"] == (
+        f"public, max-age={int(FRESHNESS.total_seconds())}, must-revalidate"
+    )
+    assert crl_response.headers["expires"] == format_datetime(
+        crl.next_update_utc, usegmt=True
+    )
+
+    ocsp_response = _ask_ocsp(client, state, _ocsp_request_der(state, pem))
+    parsed = ocsp.load_der_ocsp_response(ocsp_response.content)
+    assert parsed.next_update_utc - parsed.this_update_utc == FRESHNESS
+    assert ocsp_response.headers["cache-control"] == (
+        f"public, max-age={int(FRESHNESS.total_seconds())}, must-revalidate"
+    )
+    assert ocsp_response.headers["expires"] == format_datetime(
+        parsed.next_update_utc, usegmt=True
+    )
+
+
 # ---- renewal (muster#10) ------------------------------------------------
 #
 # The whole point: a device replaces its own certificate over the identity it
 # already holds, with nobody present. Everything here is about the ways that
 # must NOT work.
+
 
 
 def _renew(client, key, identity, csr_key=None):
