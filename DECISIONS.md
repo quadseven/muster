@@ -29,6 +29,7 @@ describe are the code and comments in this tree.
 - [Not destroying things](#not-destroying-things) - D20 to D22
 - [Who is allowed in](#who-is-allowed-in) - D23 to D26
 - [Letting a device know it was revoked](#letting-a-device-know-it-was-revoked) - D27
+- [Answering for a certificate outside muster](#answering-for-a-certificate-outside-muster) - D28
 
 ---
 
@@ -1475,3 +1476,36 @@ a platform-named conflict authorizes removing an application. Only an
 administrator saying so clears a role. Only "differs" - never "unknown" - can
 delete. The asymmetry between the two mistakes decides which way an uncertain
 answer falls.
+
+## Answering for a certificate outside muster
+
+### D28. Five minutes of staleness is the price of a cacheable revocation artifact
+
+**2026-09-01.** Evidence: `server/muster/revocation.py` (`FRESHNESS`),
+`server/muster/api.py` (`_cache_headers`).
+
+**Context.** `_proven_device` refuses a revoked device on its very next request -
+the check is a row lookup in the same process, so there is no staleness at all.
+The CRL and the OCSP responder are a different contract: they exist so somebody
+who is NOT muster can ask, and an artifact that cannot be cached is a database
+query per relying party per validation.
+
+**The number is the revocation delay, and that is the whole decision.**
+`nextUpdate` is not a tuning knob. It is exactly how long a shared cache may go
+on saying `good` after an administrator has revoked a device, so choosing it is
+choosing how late a third party may act on stale permission.
+
+**Chosen. Five minutes.** Short against a 90-day certificate, so it is a
+rounding error on the window an attacker gets from lapse anyway. Long against
+the kith store's 30-second breaker cooldown, so an ordinary refresh does not
+land in the database hot path during an outage. One constant feeds both the
+wire contract and the cache header, so the number a client is promised and the
+number an intermediary honors cannot drift apart.
+
+**What it does NOT weaken.** muster's own routes never consult these artifacts.
+A revoked device is refused by `_proven_device` immediately whatever the CRL
+says, so this window is the exposure of a third-party verifier, not of muster.
+
+**Revisit when** there is a second relying party whose decisions matter as much
+as muster's own, or if certificate lifetime drops far enough (#16) that five
+minutes stops being small against it.

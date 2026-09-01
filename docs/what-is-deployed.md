@@ -255,6 +255,16 @@ now states it. Worth knowing because `replicas: 1` means the old pod is gone
 before the new one is ready, so this shape of failure is a short outage rather
 than a blocked rollout.
 
+**muster#17 added two more variables of that shape.** `MUSTER_CRL_URL` and
+`MUSTER_OCSP_URL` are both required: the pod refuses to start without them.
+Each is stamped into every certificate muster issues - the CRL distribution
+point and the OCSP entry of the authority information access extension - and
+each hostname is the one the matching public endpoint answers on. The refusal
+exists because the failure it prevents is a silent one: nothing inside muster
+ever follows either URL, so a default would ship unreachable example URIs in
+every certificate and serve the endpoints on a hostname no request arrives
+with, and nothing would disagree until a relying party did.
+
 **The CA volume needs an fsGroup.** A secret volume is owned by root and the
 container runs as 10001, so `defaultMode: 0400` gives `PermissionError` on
 `ca.key` and a CrashLoopBackOff. `fsGroup: 10001` plus `0440` is what makes it
@@ -371,6 +381,14 @@ that order.
   which are a human's job - `docs/administrator-sign-in.md` says exactly what.
   `app_from_env` refuses to start without it. Like everything else here, none
   of it is in Pulumi yet.
+- **The revocation hostnames are not at the edge yet.** The CRL and OCSP
+  endpoints exist (muster#17) and their URLs are required at startup, but the
+  tunnel still routes only `enroll.muster.example`. Until two more hostnames
+  (a `crl.*` and an `ocsp.*`) are added to the tunnel and to DNS, the
+  revocation extensions in issued certificates point somewhere unreachable,
+  and the manifest variables should name those future hostnames NOW - they
+  are stamped into certificates at issue time, and reissuing is a renewal
+  away only at the pace devices choose.
 - **Nothing is in Pulumi.** The estate's standing rule is that infrastructure is
   IaC; all of the above was applied by hand to get the thing standing. This file
   is the interim record, not the destination.
