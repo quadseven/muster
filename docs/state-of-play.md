@@ -17,6 +17,34 @@ Verified against `enroll.muster.example`, not inferred from a green build:
 
 The enrollment ceremony and the identity machinery are the finished part.
 
+## Revocation is wired, not measured
+
+Written 2026-09-01 with no handset attached. An administrator can revoke a
+device with `POST /v1/kith/{key_id}/revoke`, and `_proven_device` refuses that
+key on its next request. The agent turns the resulting 403 into
+`ConfigurationClient.Fetched.Revoked`, records the state in device-protected
+storage, and keeps enforcing its last known configuration. Wipe is a separate
+state and must be delivered before revocation; see D27 and D29 in
+`DECISIONS.md`.
+
+This is written, not measured on a device. The server and JVM suites prove the
+refusal, the response mapping and the durable agent state, but no handset has
+made a post-revoke request in this period. The next-request behavior, including
+the fifteen-minute periodic path, remains unmeasured on hardware.
+
+## Periodic check-in is wired, not measured
+
+Written 2026-09-01 with no handset attached. `CheckInJob` is declared in the
+manifest and scheduled from `MusterDeviceAdminReceiver`; its fifteen-minute
+periodic run executes the same `BootPlan.STEPS` as boot and the status-screen
+sync. That means configuration fetch and renewal are reached by the existing
+check-in rather than by separate schedulers. `CheckInSchedulePolicy` carries
+the interval and the network/catch-up rules.
+
+This is written, not measured on a device. JVM tests prove the schedule shape
+and that the job runs the boot plan, but no handset has run the periodic job or
+shown that a real network check-in reaches muster.
+
 ## Automatic renewal is wired, not measured
 
 Written 2026-09-01 with no handset attached. The agent now puts renewal in
