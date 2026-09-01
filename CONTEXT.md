@@ -9,6 +9,13 @@ that nobody has to touch a wiped handset. That changes what a **vouch** can
 prove, and the words below say how rather than leaving the code and this file
 disagreeing.
 
+Amended 2026-09-01, when revoke gained a way back (**readmit**), **wipe** became
+a verb of its own, and the paragraph saying there would never be a CRL stopped
+being true. Where each of those stands on the real target - proven, deployed
+but never exercised, merged but not deployed, or not built - is in
+`docs/state-of-play.md` under "Revocation and wipe, in four buckets", dated the
+same day. This file says what the words mean; that one says which are live.
+
 To **muster** is to assemble a company and take the roll. That is the whole
 product: know which devices are yours, prove it cryptographically, and act on
 them from one place.
@@ -105,6 +112,11 @@ actually do and a certificate cannot.
     lapse     an identity expires and is not renewed
     revoke    an administrator says a device is no longer ours, and muster
               stops answering it from that moment
+    readmit   an administrator takes a revocation back, and muster answers the
+              device again at its next request
+    wipe      an administrator asks for a device to be erased; the device is
+              still answered until it fetches the instruction and acknowledges
+              it, and only then is it revoked (D29)
 
 **Scan replaces the typing AND the second click.** A device that scanned arrives
 already knowing where to enroll and with what, presents itself, and is issued an
@@ -144,9 +156,15 @@ Revoke takes effect on the revoked device's next request and not before, and the
 credentials it already holds are still in its hands. Cutting those off is a
 rotation at the other end, which is a second act and a deliberate one.
 
-**Still no CRL, and that is a decision.** A revocation list exists so a third
-party can check without asking the issuer. muster has no third party: it is the
-only issuer and the only verifier, and the check is one row in the kith.
+**A CRL and an OCSP responder exist since muster#23, and muster's own routes
+never consult them.** Until 824f912 this paragraph said "still no CRL, and that
+is a decision", on the argument that muster is the only issuer and the only
+verifier so the check is one row in the kith. That argument still holds for
+muster itself: `_proven_device` refuses a revoked device on its very next
+request, from the row, with no staleness. The artifacts exist for the relying
+party that is NOT muster - a VPN concentrator, a compliance control that asks
+for one - and they are served on their own hostnames, cacheable for five minutes
+(D28). Both are built and neither is yet deployed (muster#24).
 
 ## Two rules that shape everything
 

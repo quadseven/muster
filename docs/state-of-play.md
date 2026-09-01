@@ -1,15 +1,60 @@
 # State of play
 
-Dated 2026-08-19. **Everything here was verified live on that date, not
-remembered.** The reference docs beside this one explain *how* each piece works;
-this one says what is standing, what is not, and what the next person should not
-rediscover the hard way.
+**Every section carries its own date, and the date is the claim.** The bulk of
+this file was verified live on 2026-08-19; the sections dated 2026-09-01 were
+read off the code and the live pod on that day. The reference docs beside this
+one explain *how* each piece works; this one says what is standing, what is not,
+and what the next person should not rediscover the hard way.
+
+## Revocation and wipe, in four buckets
+
+Read 2026-09-01 20:03Z off `main` at 8bdde8b and the live pod, which runs
+image `sha-e3544d25d832` (= e3544d2, muster#12) - five merges behind main. The
+buckets are this repo's standard: PROVEN means measured on the real target
+with the measurement quoted; a green suite never gets a thing past the second
+bucket.
+
+    PROVEN
+      nothing in this goal
+
+    DEPLOYED, NEVER EXERCISED
+      POST /v1/kith/{key_id}/revoke              on the live pod (edd1119)
+      _proven_device refuses revoked_at != NULL  on the live pod (edd1119)
+      revoked_at column                          in the live kith_device table
+      -> all four live rows have revoked_at NULL; no revocation has ever
+         been issued against this control plane.
+
+    MERGED, NOT DEPLOYED
+      console Revoke / Readmit / Queue erase controls    (#28, this change)
+      wipe_pending_at, POST /v1/kith/{key_id}/wipe,
+      POST /v1/device/wipe, the synthesized `wipe` file  (#25)
+      agent: Fetched.Revoked, WipePolicy/WipeSteward      (#21, #25)
+      CRL and OCSP responder, AIA/CRLDP on new certs      (#23)
+      -> the live console still reads "Until this page is drawn, revoking
+         is an API call". The live pod has no /v1/device/wipe route and the
+         live table has no wipe_pending_at column (both queried 2026-09-01).
+      -> main's image CANNOT be deployed as-is: app_from_env refuses to
+         start without MUSTER_CRL_URL and MUSTER_OCSP_URL, which the live
+         deployment does not set. The manifest is in the private operations
+         repo; #24 carries the order (env vars, tunnel routes, DNS, digest).
+
+    NOT BUILT
+      nothing in this goal
+
+**The one measurement that moves revocation to PROVEN**, and it is a human's
+browser session because administration is OIDC-only by design (D23): sign in,
+revoke `travel-router` (the only uniquely named device), watch its next request
+answer 403 and the pod log `revoked device refused`, readmit it, watch it
+recover. Until the console with the Revoke and Readmit controls is deployed
+the human has no button to click, so the deploy comes first.
 
 ## What works, proven end to end
 
 Verified against `enroll.muster.example`, not inferred from a green build:
 
-    admin sign-in            200 with the token, 401 without
+    admin sign-in            303 to the identity provider; 401 on every admin
+                             route without a session (re-read 2026-09-01; the
+                             shared token this line once named is gone)
     mint a pairing code      6 digits, single use, expires in minutes
     GET /agent.apk           200, 12.6 MB
     GET /agent.json          checksum computed from the bytes served
@@ -54,7 +99,7 @@ quiet "not revoked". D28 argues the five-minute freshness window.
   CrashLoopBackOff rather than a quiet fallback. That guard is deliberate: the
   defaults it replaced pointed at `muster.example`, which would have stamped an
   unreachable URI into every certificate while every test still passed.
-- `crl.muster.casa` and `ocsp.muster.casa` have no tunnel routes and no DNS.
+- `crl.muster.example` and `ocsp.muster.example` have no tunnel routes and no DNS.
   Nothing answers on either name.
 - No `openssl crl` or `openssl ocsp` invocation has ever been run against a
   real muster. Every assertion above is a test client.
@@ -94,11 +139,15 @@ certificate authenticates the next check-in. Date-mark this measured only after
 a device past `renew_after` has done those things with no person present and
 `GET /v1/kith/{key_id}` reports one device with two certificates.
 
-**That first line is the deployed pod, not the code.** Since #36 an administrator
-signs in at the estate's identity provider, but nothing is applied: it needs an
-application client and a secret, which are a human's job.
-`docs/administrator-sign-in.md` says what, and `docs/what-is-deployed.md`
-carries the same caveat.
+**Administrator sign-in is deployed, and it is the only way in.** Until
+2026-09-01 this paragraph said "nothing is applied"; that was true on
+2026-08-19 and false by 2026-08-21, when `docs/administrator-sign-in.md`
+recorded the pool going live. Re-read 2026-09-01: the live deployment sets
+every `MUSTER_OIDC_*` variable and `MUSTER_ADMIN_SUBJECTS`, `/v1/session`
+reports `sign_in_configured: true`, and `/auth/signin` answers 303 to the
+hosted UI. The consequence for anybody measuring admin-gated behavior: there
+is no token to script with, so every such measurement is one human browser
+session per mechanism.
 
 **The console's Provisioning section is code, not a measurement.** #47 puts the
 provisioning QR on the page, checked against `/agent.json` before it is drawn,

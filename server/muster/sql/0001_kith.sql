@@ -101,14 +101,15 @@ ALTER TABLE kith_device
 -- WHEN AN ADMINISTRATOR SAID THIS DEVICE IS NO LONGER OURS. NULL is the
 -- ordinary case and means "still ours".
 --
--- THIS IS NOT A CRL, deliberately, and the difference is worth stating because
--- a certificate authority without a revocation list looks like an oversight. A
--- CRL exists so that a THIRD PARTY can check revocation without asking the
--- issuer. muster has no third party: it is the only issuer and the only
--- verifier, and every device request already goes through `_proven_device`,
--- which is one function with a database behind it. Publishing a signed list for
--- nobody to fetch, and building the distribution and freshness problems that
--- come with one, would be answering a question this deployment does not ask.
+-- THIS ROW IS WHAT MUSTER CHECKS; THE CRL IS DERIVED FROM IT. Until muster#23
+-- this comment said "this is not a CRL, deliberately", because muster was the
+-- only issuer and the only verifier and every device request already goes
+-- through `_proven_device`, which is one function with this table behind it.
+-- That half is still true and is why muster's own routes never read the CRL.
+-- What changed is that a third party may now ask: `revocation.py` builds a CRL
+-- and OCSP answers FROM this column, joined through the certificate serial, so
+-- there is still exactly one place revocation is recorded and the artifacts
+-- can never disagree with it by more than their freshness window (D28).
 --
 -- NULLABLE RATHER THAN NOT NULL DEFAULT, unlike `role` above. A timestamp has
 -- no honest zero value: `'epoch'` would mean "revoked in 1970" to every query
