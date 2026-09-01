@@ -65,6 +65,14 @@ object BootPlan {
         // applies it. Fetching last would make every change take two boots, on
         // appliances that may not boot for months.
         "configuration" to { context: Context -> ConfigurationSteward(context).reconcile() },
+        // AFTER CONFIGURATION AND BEFORE THE OTHER STEWARDS, because the wipe
+        // instruction arrives as a managed file and this is the step that acts
+        // on it. A wipe is terminal; anything that ran before it would not
+        // matter, and anything after it may never run. Placed before the
+        // restrictions deliberately: a device that has been told to erase
+        // itself must not spend its remaining time reconciling less important
+        // policy.
+        "wipe" to { context: Context -> WipeSteward(context).reconcile() },
         "restrictions" to { context: Context -> RestrictionSteward(context).reconcile() },
         // After restrictions, because the restrictions are what keep a managed
         // app on the handset at all - there is no point configuring an app

@@ -1006,6 +1006,42 @@ def _register_proof_routes(app: FastAPI, state: State) -> None:
         return {"verdict": Verdict.OK.value}
 
 
+def _turn_wipe_pending_into_revoked(state: State, proven: str) -> None:
+    """The wipe-pending -> revoked transition, or a 409 saying it does not apply.
+
+    EXTRACTED FROM THE ROUTE, not for tidiness: `_register_device_routes` is
+    over the complexity cap and this is the branchiest thing in it. Keeping the
+    transition here leaves the route reading as "prove, transition, answer".
+
+    BOTH REFUSALS ARE THE SAME SENTENCE, DELIBERATELY. One is "this device was
+    never told to wipe"; the other is "something else already moved it out of
+    wipe-pending" - two devices racing, or an administrator calling the wipe off
+    between the proof and this line. A device cannot act differently on the two,
+    and telling it which one it lost would say something about a state it is not
+    entitled to know.
+    """
+    try:
+        member = state.kith.member(proven)
+    except kith_store.Unreachable as unreachable:
+        raise _unreachable(unreachable) from unreachable
+
+    not_pending = HTTPException(
+        status_code=409,
+        detail="this device is not waiting to be wiped",
+        headers={"Cache-Control": "no-store"},
+    )
+    if member is None or member.device.wipe_pending_at is None:
+        raise not_pending
+    # THE TRANSITION IS THE AUTHORITY, not the read above. Between that read
+    # and this call an administrator may have called the wipe off, so a device
+    # that acknowledges must not be revoked on the strength of a stale row.
+    if not state.kith.acknowledged_wipe(proven):
+        raise not_pending
+
+    state.telemetry.count("device.wipe.acknowledged")
+    telemetry.event("device wipe acknowledged", key_id=proven)
+
+
 def _register_device_routes(app: FastAPI, state: State) -> None:
     """What an enrolled device asks muster for, over the identity it holds.
 
@@ -1090,8 +1126,18 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                 headers={"Cache-Control": "no-store"},
             ) from unreachable
         role = member.device.role if member is not None else ""
+        # WIPE-PENDING IS THE STATE THAT STILL GETS SERVED. `_proven_device`
+        # above refuses only `revoked_at`, so this member can be both
+        # authenticated and waiting to be erased. The wipe instruction must
+        # arrive BEFORE the refusal, which is exactly the ordering this flag
+        # carries into policy resolution.
+        wipe_pending = (
+            member is not None and member.device.wipe_pending_at is not None
+        )
         try:
-            configuration = state.policies.for_device(proven, role=role)
+            configuration = state.policies.for_device(
+                proven, role=role, wipe_pending=wipe_pending
+            )
         except (policy.Unreadable, policy.NoSource) as cannot_say:
             # 503 AND NOT AN EMPTY ANSWER, and the difference is every managed
             # file on every device in the estate. The agent removes a file that
@@ -1131,6 +1177,28 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
             "revision": configuration.revision,
             "files": configuration.files,
         }
+
+    @app.post("/v1/device/wipe", status_code=200)
+    def device_wipe(
+        response: Response,
+        nonce: str = Body(..., embed=True),
+        signature_b64: str = Body(..., embed=True),
+        certificate_pem: str = Body(..., embed=True),
+    ):
+        """A wipe-pending device says it has received the instruction and is acting on it.
+
+        THIS IS THE SECOND HALF OF THE ORDERING. The administrator set
+        `wipe_pending_at`, which `_proven_device` deliberately does NOT refuse,
+        so the wipe file could travel on /v1/device/config. This endpoint is
+        the device's acknowledgement: once it arrives, wipe-pending becomes
+        `revoked_at`, and from then on `_proven_device` refuses the key on
+        every route. A device that wiped without this transition would be able
+        to renew back into the kith as soon as it rebooted.
+        """
+        response.headers["Cache-Control"] = "no-store"
+        proven = _proven_device(state, nonce, signature_b64, certificate_pem)
+        _turn_wipe_pending_into_revoked(state, proven)
+        return {"key_id": proven, "revoked": True}
 
     @app.post("/v1/device/renew", status_code=201)
     def device_renew(
@@ -1529,6 +1597,32 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         state.telemetry.count("kith.role.changed")
         return {"key_id": key_id, "role": role}
 
+    @app.post("/v1/kith/{key_id}/wipe", dependencies=[admin])
+    def set_device_wipe(key_id: str, wipe: bool = Body(default=True, embed=True)):
+        """Ask for this device to be erased, WITHOUT refusing it first.
+
+        WHY THIS IS A SEPARATE STATE AND NOT A FLAG ON /revoke (muster#15).
+        `_proven_device` refuses a revoked key before anything is served, so a
+        single call that sets both `wipe_pending_at` and `revoked_at` would
+        remove the only channel the wipe instruction could travel down. This
+        endpoint sets wipe-pending and clears revocation; the device fetches
+        the wipe file, acknowledges it on /v1/device/wipe, and only then does
+        it become revoked.
+
+        `wipe: false` cancels a wipe request. It does not readmit a device;
+        it only clears the pending instruction, so the device keeps working
+        until an administrator says otherwise.
+        """
+        _changed_or_refused(lambda: state.kith.set_wipe_pending(key_id, wipe), _unreachable)
+        telemetry.event(
+            "device wipe requested" if wipe else "device wipe cancelled",
+            key_id=key_id,
+        )
+        state.telemetry.count(
+            "kith.wipe_pending.changed", tags=[f"wipe:{str(wipe).lower()}"]
+        )
+        return {"key_id": key_id, "wipe_pending": wipe}
+
     @app.post("/v1/kith/{key_id}/revoke", dependencies=[admin])
     def set_device_revoked(key_id: str, revoked: bool = Body(default=True, embed=True)):
         """This device is no longer ours - or, with `revoked: false`, it is again.
@@ -1646,6 +1740,11 @@ def _member(member: kith_store.Member) -> dict:
         "revoked_at": (
             member.device.revoked_at.isoformat()
             if member.device.revoked_at is not None
+            else None
+        ),
+        "wipe_pending_at": (
+            member.device.wipe_pending_at.isoformat()
+            if member.device.wipe_pending_at is not None
             else None
         ),
         "first_seen": member.device.first_seen.isoformat(),

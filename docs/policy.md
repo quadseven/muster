@@ -77,6 +77,46 @@ That is not a nicety. A restriction name that muster does not recognize is
 **refused rather than skipped**, because a silently ignored line leaves a device
 with no restriction and a config file on it that reads as though it has one.
 
+## Erasing a device, and how long that takes
+
+An administrator can tell a device to erase itself:
+
+    POST /v1/kith/{key_id}/wipe   {"wipe": true}
+
+**Order matters and the API enforces it.** Revoking a device stops muster
+answering it at all, which also removes the channel a wipe would travel down.
+So wipe is a separate state that is deliberately still served: mark the device
+wipe-pending, let it collect the instruction, and revoke afterwards. Revoking
+first produces a wipe that can never arrive. `DECISIONS.md` D29 has the full
+argument.
+
+It is reversible - `{"wipe": false}` calls it off - because an administrator can
+name the wrong `key_id` and the alternative to a way back is a factory reset
+nobody intended.
+
+**HOW LONG IT TAKES, STATED HONESTLY, because the number is the whole value of
+the feature:**
+
+    powered, networked, awake     <= 15 minutes (the check-in floor)
+    doze or a rare standby bucket hours
+    no network                    until it returns - unbounded
+    powered off                   until it boots - unbounded
+
+**The worst case is unbounded**, which is the same sentence `CONTEXT.md` uses to
+justify lapse. Read that before relying on this:
+
+- Against a holder who is careless, or does not know the device is managed, and
+  against decommissioning a device you have in your hand - this works, and
+  fifteen minutes is genuinely fast.
+- Against somebody competent it does nothing. They put the handset in airplane
+  mode, or pull the SIM, before anybody acts, and the wipe never lands.
+
+Reaching a device that has gone dark requires the device to enforce a deadline
+on itself with no network, which is a different and considerably more dangerous
+mechanism - a phone whose router breaks for long enough would erase itself.
+
+**There is no console button for this yet.** It is an API call today.
+
 ## An absent restrictions file and an empty one mean different things
 
     no file        nothing has been configured; the device is left as it is

@@ -68,6 +68,12 @@ object ConfigurationPolicy {
         // expect. Like `wallpaper`, it is a reference and not the payload -
         // an APK is twelve megabytes and does not travel in a JSON body.
         "install-apps",
+        // The instruction to erase this device. It arrives in the same files
+        // map, is written to device-protected storage like every other managed
+        // file, and is read by WipeSteward. It is device scope only on the
+        // server; this half cannot make it less destructive, but it can ensure
+        // the name is closed rather than a remote write primitive.
+        "wipe",
     )
 
     /** How much of a name muster does not manage is worth putting in logcat. */

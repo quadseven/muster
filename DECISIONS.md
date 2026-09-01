@@ -30,6 +30,7 @@ describe are the code and comments in this tree.
 - [Who is allowed in](#who-is-allowed-in) - D23 to D26
 - [Letting a device know it was revoked](#letting-a-device-know-it-was-revoked) - D27
 - [Answering for a certificate outside muster](#answering-for-a-certificate-outside-muster) - D28
+- [Erasing a device without losing the way to reach it](#erasing-a-device-without-losing-the-way-to-reach-it) - D29
 
 ---
 
@@ -1509,3 +1510,56 @@ says, so this window is the exposure of a third-party verifier, not of muster.
 **Revisit when** there is a second relying party whose decisions matter as much
 as muster's own, or if certificate lifetime drops far enough (#16) that five
 minutes stops being small against it.
+
+## Erasing a device without losing the way to reach it
+
+### D29. Wipe is a second state, because revoking first makes the wipe unreachable
+
+**2026-09-01.** Evidence: `server/muster/api.py` (`_proven_device`,
+`/v1/kith/{key_id}/wipe`), `server/muster/policy.py` (`WIPE_FILE`),
+`server/muster/sql/0001_kith.sql` (`wipe_pending_at`).
+
+**Context.** D27 gave muster a revoke that takes effect on the device's next
+request, and said plainly what it does not do: it cannot retract a credential
+the device already fetched. Erasing the device is the missing half.
+
+**The trap, and it is easy to walk into.** `_proven_device` refuses a revoked
+key BEFORE anything is served. Every route a device can reach goes through it.
+So marking a device revoked removes the only channel a wipe instruction could
+travel down - and an administrator doing the obvious thing, revoking a stolen
+device and then telling it to erase itself, produces a wipe that can never
+arrive. One call setting both columns would do exactly this, silently, and
+would look like it worked from the console.
+
+**Chosen. Two states, in order.** `wipe_pending_at` is deliberately NOT refused
+by `_proven_device`: the device is still served, and what it is served is the
+wipe. `revoked_at` comes afterwards, and from then on the key is refused
+everywhere. The wrong order is written down as a test that fails if the
+distinction is ever collapsed.
+
+**The wipe does not come from the policy directory.** It is synthesized from
+the kith and returned before any policy read, because an absent policy secret
+or one unreadable file must not be able to stand between a wipe instruction and
+the device that has to receive it. A device-scoped `.wipe` file on disk is
+ignored unless the kith marks the device wipe-pending, so the filesystem alone
+cannot arm one.
+
+**Device scope only.** `wipe` is excluded from `ROLE_FILES` and from the
+directory scan. `policy.py` already refuses `kith.app-config` on the weaker
+argument that a shared credential is a credential everywhere; a wipe under a
+shared scope is a fleet-wide factory reset one typo away.
+
+**What this does NOT buy, and the docs must not imply otherwise.** A wipe
+reaches a device on its next check-in, which is fifteen minutes on a powered,
+networked handset and **unbounded** on one that is switched off or off-network.
+That is the same sentence CONTEXT.md already uses to justify lapse. It is
+useful against a holder who is careless or does not know the device is managed,
+and against decommissioning. It is not protection against somebody competent,
+who puts the handset in airplane mode before anyone acts. Reaching a device
+that has gone dark needs the device to enforce a deadline on itself, which is
+#18 and is the most dangerous item in the backlog.
+
+**`DevicePolicyManager.wipeData()` has no test and cannot have one.** It needs
+hardware and it is not a call you run twice. The plan that decides to wipe is
+tested; the call is not, and nothing fakes it - a fake `wipeData` proves the
+plan and reads as if it proved the wipe.
