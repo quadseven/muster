@@ -393,8 +393,9 @@ that order.
   certificates pointed somewhere unreachable. Now the tunnel's remotely
   managed ingress (configuration version 12) routes `crl.*` and `ocsp.*` to
   the same Service as `enroll.*`, two proxied CNAMEs exist in the zone, and
-  the Deployment (revision 39) sets `MUSTER_CRL_URL` and `MUSTER_OCSP_URL` to
-  those hostnames. What is still true: certificates issued BEFORE that moment
+  the Deployment (revision 43, since 22:32Z; revision 39 first set them, over
+  https, which was wrong) sets `MUSTER_CRL_URL` and `MUSTER_OCSP_URL` to
+  those hostnames over plain http. What is still true: certificates issued BEFORE that moment
   carry no distribution point and gain one at renewal, at the pace devices
   choose; and every one of those three changes was applied by hand, so the
   next bullet applies to them too. The tunnel's ingress in particular is
