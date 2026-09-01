@@ -569,13 +569,27 @@ def _register_revocation_routes(app: FastAPI, state: State) -> None:
             request_der = b""
         return await _ocsp_response(request, responder, request_der)
 
+    # PLAIN HTTP, REQUIRED, and until 2026-09-01 this check required the
+    # opposite. A relying party checking a certificate against these URLs is
+    # in the middle of deciding whether to trust this CA; fetching the CRL
+    # over TLS would first need a verified certificate for the CRL host,
+    # which is the question it was trying to answer. So RFC 5280 clients and
+    # the CA/Browser Forum baseline put distribution points and OCSP
+    # responders on http, the response is trusted because it is SIGNED by
+    # the issuer (revocation.py), not because of the transport, and the
+    # verifiers that follow these URIs - OpenSSL, curl, the platform stores -
+    # do not follow an https one. An https URL here is therefore not extra
+    # safety; it is a revocation check that silently never happens. The pod
+    # refuses at startup, where the misconfiguration is one log line, rather
+    # than stamping it into certificates that live for ninety days.
     crl_url = urllib.parse.urlsplit(state.authority.crl_url)
     ocsp_url = urllib.parse.urlsplit(state.authority.ocsp_url)
     for label, configured in (("CRL", crl_url), ("OCSP", ocsp_url)):
-        if configured.scheme != "https" or not configured.hostname:
+        if configured.scheme != "http" or not configured.hostname:
             raise ValueError(
-                f"{label} URL must be an absolute https URL, got "
-                f"{configured.geturl()!r}"
+                f"{label} URL must be an absolute plain http URL with a "
+                f"hostname - relying parties do not fetch revocation data "
+                f"over https - got {configured.geturl()!r}"
             )
 
     crl_router = Router(

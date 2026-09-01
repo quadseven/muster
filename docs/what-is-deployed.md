@@ -256,7 +256,13 @@ before the new one is ready, so this shape of failure is a short outage rather
 than a blocked rollout.
 
 **muster#17 added two more variables of that shape.** `MUSTER_CRL_URL` and
-`MUSTER_OCSP_URL` are both required: the pod refuses to start without them.
+`MUSTER_OCSP_URL` are both required: the pod refuses to start without them,
+and it refuses to start unless both are plain `http://` URLs with a hostname.
+Not https: a verifier fetching a CRL over TLS would need the CRL host's own
+certificate verified first, so the standards and every verifier that follows
+these URIs use http, and the artifact is trusted because the issuer signs it.
+(Until 2026-09-01 the check demanded https; setting the live env to http
+against that build crashed the pod for 2m37s. The check is now the other way.)
 Each is stamped into every certificate muster issues - the CRL distribution
 point and the OCSP entry of the authority information access extension - and
 each hostname is the one the matching public endpoint answers on. The refusal
