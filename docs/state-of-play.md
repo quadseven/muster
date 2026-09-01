@@ -149,6 +149,21 @@ hosted UI. The consequence for anybody measuring admin-gated behavior: there
 is no token to script with, so every such measurement is one human browser
 session per mechanism.
 
+**That is a decision, not a gap, and it was taken on 2026-09-01.** Three
+options were put to the operator: browser-only as it stands; a short-lived
+break-glass token minted by an authenticated browser session; or a scoped
+service credential for an agent. The operator chose browser-only. So an
+administrator action - revoke, readmit, queue an erase, mint a pairing code -
+is always a person at the console, and an agent verifying one of those
+mechanisms on the live target needs that person once per MECHANISM, not once
+per run: after the first human-driven pass, everything downstream of the click
+(the device's next request, the pod's log line, the row changing, the router's
+own log) is observable unattended. Enrollment is the precedent: the OpenWrt
+`travel-router` was vouched for in one browser session on 2026-08-30 and has
+fetched configuration hourly, with nobody present, ever since. Do not write
+"cannot be measured by an agent" anywhere in this repo; write which single
+click is the human's and pre-stage everything around it.
+
 **The console's Provisioning section is code, not a measurement.** #47 puts the
 provisioning QR on the page, checked against `/agent.json` before it is drawn,
 and there is no pairing QR any more because nothing on a device could read it.

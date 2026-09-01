@@ -13,6 +13,15 @@ and vouches for devices.
 Now an administrator signs in at the identity provider the estate already runs,
 and muster verifies a signed token. muster never sees a password.
 
+## Browser-only, by decision (2026-09-01)
+
+There is no API credential for administrators and there will not be one for
+now. The operator was offered a break-glass token minted from a signed-in
+browser session and a scoped service credential, and chose neither: every
+administrator action is a person at the console. `docs/state-of-play.md` says
+what that costs anyone measuring an admin-gated mechanism (one human session
+per mechanism) and why that is a price rather than a wall.
+
 ## What is actually deployed, as of 2026-08-21
 
 Wired and live. `/v1/session` reports `sign_in_configured: true` and the boot
