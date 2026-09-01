@@ -156,6 +156,7 @@ class StatusActivity : Activity() {
                 renewAfter = epochOf(renewAfter),
                 now = now,
             ),
+            revoked = RevocationStore.current(this),
             notAfter = epochOf(notAfter),
             renewAfter = epochOf(renewAfter),
             serverUrl = serverUrl(),

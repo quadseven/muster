@@ -22,11 +22,13 @@ class DeviceStatusTest {
     private fun facts(
         deviceOwner: Boolean = true,
         stance: Stance = Stance.Current,
+        revoked: Boolean = false,
         lastCheckIn: Long? = 1_000_000L,
         restrictions: List<String> = listOf("no_safe_boot"),
     ) = DeviceStatus.Facts(
         deviceOwner = deviceOwner,
         stance = stance,
+        revoked = revoked,
         notAfter = 1_795_000_000L,
         renewAfter = 1_792_000_000L,
         serverUrl = "https://enroll.muster.example",
@@ -51,6 +53,15 @@ class DeviceStatusTest {
         // that decides whether policy applies.
         val view = DeviceStatus.render(facts(deviceOwner = false, stance = Stance.Current))
         assertEquals("Not managed", view.headline)
+    }
+
+    @Test
+    fun aRevokedDeviceSaysSoInsteadOfLookingCurrent() {
+        val view = DeviceStatus.render(facts(revoked = true))
+
+        assertEquals("Device revoked", view.headline)
+        assertTrue(view.detail.contains("last known configuration"))
+        assertFalse(view.canEnroll)
     }
 
     @Test

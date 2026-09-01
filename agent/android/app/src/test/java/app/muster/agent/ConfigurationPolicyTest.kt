@@ -40,6 +40,7 @@ class ConfigurationPolicyTest {
         // than a case nobody wrote.
         assertNull(ConfigurationPolicy.instruction(ConfigurationClient.Fetched.NotEnrolled))
         assertNull(ConfigurationPolicy.instruction(ConfigurationClient.Fetched.Unrecognized))
+        assertNull(ConfigurationPolicy.instruction(ConfigurationClient.Fetched.Revoked))
         assertNull(
             ConfigurationPolicy.instruction(ConfigurationClient.Fetched.Unreachable("dns"))
         )

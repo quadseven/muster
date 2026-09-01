@@ -28,6 +28,7 @@ describe are the code and comments in this tree.
 - [Telling a device what to be](#telling-a-device-what-to-be) - D15 to D19
 - [Not destroying things](#not-destroying-things) - D20 to D22
 - [Who is allowed in](#who-is-allowed-in) - D23 to D26
+- [Letting a device know it was revoked](#letting-a-device-know-it-was-revoked) - D27
 
 ---
 
@@ -1403,6 +1404,52 @@ tolerable only while the writer set is small and controlled on a private
 repository. Going public is the moment to revisit it, which is why a comment now
 sits next to the runner declaration in the workflow files themselves rather than
 only in a document a reviewer might not open.
+
+---
+
+## Letting a device know it was revoked
+
+### D27. Revocation is a status, not permission to destroy what is cached
+
+**2026-09-01.** Evidence:
+`agent/android/app/src/main/java/app/muster/agent/ConfigurationClient.kt`,
+`agent/android/app/src/main/java/app/muster/agent/RevocationStatus.kt`,
+`agent/android/app/src/main/java/app/muster/agent/DeviceStatus.kt`.
+
+**What went wrong.** muster refused a revoked device with a specific 403 after
+verifying its proof, and the agent read that as the same generic refusal as any
+other response. The phone kept its last configuration, which was safe, but the
+status screen still called it current and the periodic check-in retried forever.
+From the handset, an administrator's deliberate act was indistinguishable from
+an ordinary network failure.
+
+**The choices were not equivalent.** Reporting revocation, stopping local
+reconciliation, deleting cached `app-config` credentials, and wiping the device
+increase in consequence. The server's answer establishes only that the device
+is no longer in the kith. It does not establish that deleting application data
+or disabling the policy already in force is safe, and muster cannot revoke a
+credential that another service has already accepted.
+
+**Chosen. Surface the state and keep enforcing the last known configuration.**
+The 403 becomes its own sealed `Fetched.Revoked` outcome, so every exhaustive
+consumer must decide what it means. It produces no configuration instruction:
+no managed file is written or removed, including `app-config`, and the local
+stewards continue reconciling what is already on the device. Wiping remains a
+separate decision in muster#15.
+
+**The status is durable because the ordinary check-in has no screen open.** A
+background or boot check-in records an explicit revocation in device-protected
+storage, and the status screen reads it on its next render. A successful
+configuration answer clears it after an administrator readmits the device.
+Every non-answer preserves the previous state. In particular, a timeout cannot
+invent a revocation and cannot erase one; only muster's deliberate 403 can set
+it.
+
+**The retry behavior is intentionally modest.** Revocation does not queue the
+network catch-up job, because muster was reached and another network cannot
+change its answer. The normal periodic check-in remains, so an administrator
+can readmit a device and have that fact reach the handset without a wipe or a
+cable.
 
 ---
 

@@ -115,6 +115,32 @@ class ConfigurationClientTest {
     }
 
     @Test
+    fun aRevocationIsAnAnswerOfItsOwn() {
+        // 403 is muster's deliberate answer after it has verified this
+        // device's proof. It is not a transport failure and must not send the
+        // operator looking at wifi while the device retries looking healthy.
+        val client = ConfigurationClient(
+            FakeTransport(config = Reply(403, "{\"detail\":\"this device has been revoked\"}")),
+            FakeIdentity(),
+        )
+
+        assertTrue(client.fetch() is ConfigurationClient.Fetched.Revoked)
+    }
+
+    @Test
+    fun aDifferentRefusalIsNotARevocation() {
+        // A proxy refusal and an explicit answer from muster demand different
+        // operator action. Status alone may distinguish them; body text may
+        // not, because an intermediary controls its own response body.
+        val client = ConfigurationClient(
+            FakeTransport(config = Reply(502, "this device has been revoked")),
+            FakeIdentity(),
+        )
+
+        assertTrue(client.fetch() is ConfigurationClient.Fetched.Refused)
+    }
+
+    @Test
     fun aBodyThatWillNotParseIsNeverAnEmptyConfiguration() {
         // A captive portal answers 200 with a login page. Reading that as "you
         // have no policy" would strip a device the moment it joined hotel wifi.
