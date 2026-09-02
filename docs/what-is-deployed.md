@@ -341,6 +341,16 @@ So, concretely, while Postgres is away:
   have Kubernetes pull the pod out of the Service, which stops enrollment and
   renewal for everything - the outage this design survives, arrived at through
   the health check instead of through the code.
+  THAT HAPPENED ANYWAY, ONCE, BY TIMEOUT RATHER THAN BY VERDICT (2026-09-02
+  05:40:13Z to 05:41:14Z, 61s). The probe in the ops-repo manifest allows
+  `timeoutSeconds: 1`; at 05:40:00Z four cron jobs started on the pod's node,
+  `/readyz` (a few filesystem touches through a thread pool) took longer than
+  a second eight probes running, and the pod left the Service with no
+  restart, no error, and `/livez` passing throughout. Nothing was refused
+  that the logs can see - the next handset check-in was 05:41:29Z - but
+  with `Recreate` and one replica that minute was an enrollment outage. The
+  fix is the probe timeout in the manifest, which is Infra's, and was asked
+  for that morning.
 - **Collection answers 503, not 404.** The agent treats 404 as "gone, stop
   polling" and anything unrecognized as retryable, so a 404 caused by a database
   would tell a device to abandon a certificate muster really did sign.
