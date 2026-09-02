@@ -342,15 +342,21 @@ So, concretely, while Postgres is away:
   renewal for everything - the outage this design survives, arrived at through
   the health check instead of through the code.
   THAT HAPPENED ANYWAY, ONCE, BY TIMEOUT RATHER THAN BY VERDICT (2026-09-02
-  05:40:13Z to 05:41:14Z, 61s). The probe in the ops-repo manifest allows
-  `timeoutSeconds: 1`; at 05:40:00Z four cron jobs started on the pod's node,
+  05:40:13Z to 05:41:14Z, 61s). The ops-repo manifest set no `timeoutSeconds`
+  on either probe, so both ran on Kubernetes' one-second default; at 05:40:00Z four cron jobs started on the pod's node,
   `/readyz` (a few filesystem touches through a thread pool) took longer than
   a second eight probes running, and the pod left the Service with no
   restart, no error, and `/livez` passing throughout. Nothing was refused
   that the logs can see - the next handset check-in was 05:41:29Z - but
   with `Recreate` and one replica that minute was an enrollment outage. The
-  fix is the probe timeout in the manifest, which is Infra's, and was asked
-  for that morning.
+  fix is the probe timeout in the manifest, which is Infra's; it landed as
+  Deployment revision 44 at 05:49Z the same morning (readiness and liveness
+  `timeoutSeconds: 5`, same image, http env), applied from the ops repo. The
+  probe was right and the timeout was wrong: `/readyz` does real work, which
+  is what makes it worth having, and making it cheaper to fit a one-second
+  default would be walking toward a probe that can never fail. The 25m CPU
+  request is the other half of the cause and was deliberately not bundled -
+  on one replica with `Recreate`, a reschedule is its own outage.
 - **Collection answers 503, not 404.** The agent treats 404 as "gone, stop
   polling" and anything unrecognized as retryable, so a 404 caused by a database
   would tell a device to abandon a certificate muster really did sign.
