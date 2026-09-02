@@ -349,8 +349,9 @@ So, concretely, while Postgres is away:
   restart, no error, and `/livez` passing throughout. Nothing was refused
   that the logs can see - the next handset check-in was 05:41:29Z - but
   with `Recreate` and one replica that minute was an enrollment outage. The
-  fix is the probe timeout in the manifest, which is Infra's, and was asked
-  for that morning.
+  fix is the probe timeout in the manifest, which is Infra's; it landed as
+  Deployment revision 44 at 05:49Z the same morning (readiness and liveness
+  `timeoutSeconds: 5`, same image, http env), applied from the ops repo.
 - **Collection answers 503, not 404.** The agent treats 404 as "gone, stop
   polling" and anything unrecognized as retryable, so a 404 caused by a database
   would tell a device to abandon a certificate muster really did sign.
