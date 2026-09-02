@@ -121,7 +121,9 @@ yours, sign in once - the refusal page names the exact subject it did not
 recognize, which is the string to put in the list.
 
 **4. The environment.** In the cluster these arrive as a secret named
-`muster-sign-in`, which `deploy/oke/muster.yaml` already reads as **optional**:
+`muster-sign-in`, which the Deployment manifest (in the operator's private ops
+repository - until 2026-09-02 this sentence pointed at `deploy/oke/muster.yaml`,
+a path that has never existed in this repository) reads as **optional**:
 until it exists the pod comes up token-only rather than crash-looping, and
 creating it plus a restart is the whole cutover.
 

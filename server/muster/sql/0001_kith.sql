@@ -7,7 +7,8 @@
 -- habit. The three reasons not to migrate from a serving process are concurrent
 -- replicas racing, a rolling deploy where two versions disagree about the
 -- schema, and a destructive statement running unattended. None apply here:
--- muster is replicas: 1 with strategy Recreate (deploy/oke/muster.yaml).
+-- muster is replicas: 1 with strategy Recreate (the Deployment manifest in the
+-- operator's ops repository, not in this one; read live 2026-09-02).
 --
 -- THIS FILE SAID "there is not an ALTER or a DROP in this file. The first
 -- change that needs one is the point at which this needs a real migration
