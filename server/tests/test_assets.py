@@ -283,6 +283,47 @@ def test_a_wedged_store_does_not_hang_readyz(tmp_path, monkeypatch):
     assert status["assets"] == 0
 
 
+# The readiness probe's own budget, from the Deployment manifest in the
+# operator's ops repository. That file is not in this repo, so the number is
+# written down here with the date it was read off the live pod, and the test
+# below is what stops the two drifting apart.
+READINESS_PROBE_TIMEOUT_S = 5.0  # kubectl, 2026-09-03
+
+
+def test_readyz_answers_while_the_asset_store_hangs(tmp_path, monkeypatch):
+    """The bound has to fit INSIDE the probe, not merely exist.
+
+    THE TEST ABOVE CANNOT CATCH THIS AND THAT IS WHY THIS ONE EXISTS. It sets
+    `STORAGE_TIMEOUT_S` to 0.2 before hanging the store, so it proves the
+    mechanism works while saying nothing about the number that ships. The
+    number that shipped was 5.0 - exactly the probe's timeout - so a stalled
+    share spent the entire budget deciding it was unreachable and the kubelet
+    gave up at the same instant. The pod left the Service twice in 24 hours
+    and `status()` was never once at fault: it answered, just never in time.
+
+    So this one uses the REAL constant, and asserts against the probe's.
+    """
+    import time
+
+    store = assets.Assets(root=tmp_path, configured=str(tmp_path))
+    monkeypatch.setattr(assets, "_list_names", lambda p: time.sleep(30), raising=False)
+
+    started = time.monotonic()
+    status = store.status()
+    took = time.monotonic() - started
+
+    assert status["readable"] is False
+    # Sixty percent of the budget, so a slow CI box has room and a change that
+    # eats the whole probe still fails here.
+    assert took < READINESS_PROBE_TIMEOUT_S * 0.6, (
+        f"a hung asset store held /readyz for {took:.1f}s against a "
+        f"{READINESS_PROBE_TIMEOUT_S}s readiness probe. The pod gets pulled "
+        f"from the Service for a wallpaper share being slow, which is the "
+        f"outcome readyz's own docstring says it exists to prevent. Lower "
+        f"assets.STORAGE_TIMEOUT_S."
+    )
+
+
 def test_a_healthy_store_is_not_slowed_down_by_the_bound(tmp_path):
     (tmp_path / "wall.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     store = assets.Assets(root=tmp_path, configured=str(tmp_path))
