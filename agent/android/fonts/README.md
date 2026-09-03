@@ -1,4 +1,12 @@
-# Bundled, not fetched
+# The bundled typefaces
+
+The TTFs themselves live in `app/src/main/res/font/`. This note and the license
+sit HERE, one directory up and outside `res/`, because Android's resource merger
+refuses any file in `res/font/` that is not `.xml`, `.ttf`, `.ttc` or `.otf` -
+a README beside the fonts fails the build with
+`The file name must end with .xml, .ttf, .ttc or .otf`.
+
+## Bundled, not fetched
 
 Instrument Sans and Martian Mono, the two faces the muster brand uses. Same
 faces as the splash page at the apex domain and the operator console, so the
