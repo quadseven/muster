@@ -65,14 +65,31 @@ quoted; a green suite never gets a thing past the second bucket.
          revocation closes).
       -> WHY WIPE CANNOT BE EXERCISED YET, read off the kith: the three
          Pixels have first_seen 2026-08-20, 08-23 and 08-23. The agent that
-         acts on the `wipe` file (#25) merged 2026-09-01 16:24Z and the
-         agent does not update itself, so no enrolled handset runs it. The
-         served `/agent.json` says `version_code 29804718`; a handset has to
-         be brought to that build (re-provisioned from the console QR, or the
-         served APK installed over the old one) before a queued erase can
-         do anything but sit in `wipe_pending_at`. Muster does not record
-         which agent build a device runs, so the only place to read that is
-         the handset itself.
+         acts on the `wipe` file (#25) merged 2026-09-01 16:24Z, and no
+         enrolled handset runs it.
+
+         THIS PARAGRAPH SAID "the agent does not update itself" UNTIL
+         2026-09-02, AND THAT WAS WRONG - it was written from the absence of
+         a self-update in the boot plan without reading the install path.
+         `AppInstallPolicy` names `app.muster.agent` as `OWN_PACKAGE` and
+         calls it "the one case that ends this process", sorting it last so a
+         boot that updates the agent does not skip every other app. The agent
+         updates itself, over the air, from the `install-apps` policy.
+
+         The real reason is one line of policy, read live off the pod:
+         `role-zippie.install-apps` says `app.muster.agent muster-agent-84.apk
+         ... version 84`, and the two reachable handsets report
+         `versionCode=84`. They are not stranded; they are exactly where they
+         were told to be. Bringing them to a newer build is publishing the APK
+         into the asset store and editing that one line - not a
+         re-provisioning. (The stale Pixel `91d5feae` carries a device-scoped
+         `install-apps` pinning it to 76.)
+
+         The served `/agent.json` says `version_code 29804718`, and a
+         handset has to reach that build before a queued erase can do
+         anything but sit in `wipe_pending_at`. Muster does not record which
+         agent build a device runs, so the only place to read that is the
+         handset itself.
       -> read off the handsets, evening of 2026-09-01 (EDT), over adb:
          `dumpsys package app.muster.agent | grep versionCode` on both
          reachable Pixels says `versionCode=84`. Neither runs 29804718,

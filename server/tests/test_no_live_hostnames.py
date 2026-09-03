@@ -65,6 +65,8 @@ ALLOWED = frozenset(
         "datadoghq.eu",
         "developers.google.com",
         "files.pythonhosted.org",
+        "fonts.googleapis.com",
+        "fonts.gstatic.com",
         "ghcr.io",
         "github.com",
         "kubectl.kubernetes.io",
@@ -74,6 +76,7 @@ ALLOWED = frozenset(
         "support.google.com",
         "tags.datadoghq.com",
         "www.apache.org",
+        "www.w3.org",
         # RFC 2606 documentation domain, explicitly fine
         "example.com",
         # not a host: attribute access that happens to end in a TLD

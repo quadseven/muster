@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<!--
+  muster splash. ONE SCREEN, NO BUILD STEP, NO JAVASCRIPT.
+
+  Built from the approved design (Muster Splash.dc.html in the design project).
+  That file is a component with inline styles and two authoring constructs this
+  page cannot ship: `style-hover` attributes and an `<sc-for>` loop. Both are
+  resolved here - hover moved into real CSS, the loop written out as the six
+  rows it renders. Every value below is the design's; where this file departs
+  from it the reason is written beside the departure.
+
+  THE ROSTER IS ILLUSTRATIVE SAMPLE DATA AND MUST STAY THAT WAY. It is not a
+  view of any muster, and wiring it to one from a public page would publish the
+  fleet this project exists to keep private.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>muster</title>
+<meta name="description" content="Device enrollment and identity for one household. A device makes its own key, you authorize one enrollment, and it carries a short-lived certificate that renews itself.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#101110">
+
+<!--
+  SVG FIRST, PNGs AS FALLBACK. The SVG follows the OS theme; a browser that
+  understands `type="image/svg+xml"` takes it and never reads the rasters.
+-->
+<link rel="icon" type="image/svg+xml" href="/icons/muster-favicon-auto.svg">
+<link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="48x48" href="/icons/favicon-48.png">
+<link rel="icon" type="image/png" sizes="64x64" href="/icons/favicon-64.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png">
+<link rel="manifest" href="/icons/site.webmanifest">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="crossorigin">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&amp;family=Martian+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --ink: #ECE8E1;
+    --page: #101110;
+    --panel: #0A0B0A;
+    --accent: #FFB703;
+    --sans: 'Instrument Sans', system-ui, sans-serif;
+    --mono: 'Martian Mono', ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+    THE `min()` IS LORE, NOT DECORATION. `minmax(430px, 1fr)` alone cannot
+    shrink the single column below 430px, so every phone narrower than that
+    scrolls sideways. `min(430px, 100%)` lets the track collapse to the
+    viewport and is the difference between two columns and a broken one.
+  */
+  .page {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr));
+  }
+
+  .pitch,
+  .roster {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .pitch {
+    padding: clamp(30px, 5vw, 46px) clamp(22px, 4.5vw, 56px) clamp(34px, 4vw, 40px);
+  }
+
+  .roster {
+    background: var(--panel);
+    border-left: 1px solid rgba(236, 232, 225, 0.08);
+    padding: clamp(30px, 4.5vw, 46px) clamp(22px, 4vw, 46px) clamp(34px, 4vw, 40px);
+  }
+
+  /* ---- the wordmark ---------------------------------------------------- */
+
+  .brand { display: flex; align-items: center; gap: 13px; }
+  .plates { display: flex; flex-direction: column; gap: 4px; }
+  .plate {
+    width: 22px;
+    height: 6px;
+    background: var(--ink);
+    transform: skewX(-30deg);
+  }
+  .plate--accent { background: var(--accent); }
+  .brand__word {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: -0.03em;
+  }
+
+  /* ---- the pitch ------------------------------------------------------- */
+
+  h1 {
+    margin: clamp(46px, 7vw, 78px) 0 0;
+    font-size: clamp(34px, 6.4vw, 58px);
+    font-weight: 500;
+    line-height: 1.03;
+    letter-spacing: -0.035em;
+    max-width: 16ch;
+    text-wrap: balance;
+  }
+
+  .lede {
+    margin: clamp(22px, 3vw, 30px) 0 0;
+    max-width: 46ch;
+    font-size: clamp(15.5px, 1.6vw, 17px);
+    line-height: 1.68;
+    color: rgba(236, 232, 225, 0.62);
+    text-wrap: pretty;
+  }
+
+  /* The design emphasizes this word without italics: weight stays, slant goes. */
+  .lede em { font-style: normal; color: var(--ink); }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px 22px;
+    margin-top: 38px;
+  }
+
+  .repo {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 22px;
+    background: var(--accent);
+    color: var(--page);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    text-decoration: none;
+    transition: transform 0.16s;
+  }
+  .repo:hover { transform: translate(-2px, -2px); }
+  .repo__tick { width: 6px; height: 6px; background: var(--page); }
+
+  .how {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: -0.02em;
+    color: rgba(236, 232, 225, 0.55);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(236, 232, 225, 0.16);
+    padding-bottom: 3px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .how:hover { color: var(--ink); border-color: var(--accent); }
+
+  /*
+    TWO RINGS, BECAUSE ONE COLOR CANNOT DO BOTH JOBS. Amber on the amber
+    button is invisible; the page color on the dim link is invisible. Each
+    ring is drawn in the color the surface behind it is not.
+  */
+  a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+  .repo:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 3px;
+  }
+
+  .facts {
+    margin-top: auto;
+    padding-top: clamp(44px, 6vw, 64px);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(215px, 100%), 1fr));
+    gap: 24px 34px;
+    max-width: 620px;
+  }
+  .fact__name {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 6px;
+  }
+  .fact p {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: rgba(236, 232, 225, 0.5);
+  }
+
+  /* ---- the roster ------------------------------------------------------ */
+
+  .roster__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 20px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: -0.01em;
+    color: rgba(236, 232, 225, 0.38);
+    padding-bottom: 14px;
+    border-bottom: 1px solid rgba(236, 232, 225, 0.1);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 15px 0;
+    border-bottom: 1px solid rgba(236, 232, 225, 0.055);
+  }
+
+  .row__dot {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    background: rgba(236, 232, 225, 0.55);
+  }
+
+  /*
+    THE NAME FLEXES, THE TWO COLUMNS AFTER IT DO NOT. A long device name has
+    to lose its tail rather than push the state and the expiry off the panel,
+    which is what `flex: none` on those two is for.
+  */
+  .row__name {
+    flex: 1;
+    min-width: 6ch;
+    font-size: clamp(13px, 1.4vw, 14.5px);
+    letter-spacing: -0.015em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row__state {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: -0.03em;
+    color: rgba(236, 232, 225, 0.42);
+    text-transform: lowercase;
+  }
+
+  .row__expires {
+    flex: none;
+    width: 4ch;
+    text-align: right;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: -0.03em;
+    color: rgba(236, 232, 225, 0.34);
+  }
+
+  .row--renewing .row__dot { background: var(--accent); }
+  .row--renewing .row__state { color: var(--accent); }
+
+  .row--off .row__dot { background: rgba(236, 232, 225, 0.14); }
+  .row--off .row__name { color: rgba(236, 232, 225, 0.38); }
+  .row--off .row__state { color: rgba(236, 232, 225, 0.26); }
+
+  .path { margin-top: auto; padding-top: clamp(34px, 5vw, 40px); }
+  .path__label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: -0.01em;
+    color: rgba(236, 232, 225, 0.3);
+    margin-bottom: 14px;
+  }
+  .path__steps {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: -0.02em;
+    color: rgba(236, 232, 225, 0.5);
+  }
+  .path__sep { color: rgba(236, 232, 225, 0.22); }
+  .path__step--now { color: var(--accent); }
+  .status {
+    margin-top: 22px;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: rgba(236, 232, 225, 0.3);
+  }
+
+  /*
+    THE HOVER TRANSLATE IS THE ONLY MOTION ON THE PAGE, so this is the only
+    thing the guard has to switch off.
+  */
+  @media (prefers-reduced-motion: reduce) {
+    .repo, .how { transition: none; }
+    .repo:hover { transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<main class="page">
+
+  <section class="pitch">
+    <div class="brand">
+      <div class="plates" aria-hidden="true">
+        <div class="plate"></div>
+        <div class="plate plate--accent"></div>
+        <div class="plate"></div>
+      </div>
+      <span class="brand__word">muster</span>
+    </div>
+
+    <h1>Every device here can prove it belongs.</h1>
+
+    <p class="lede">Device enrollment and identity for one household. A device makes its own key, you authorize one enrollment, and it carries a short-lived certificate that renews itself. The certificate <em>is</em> the membership &mdash; nothing to toggle, nothing to drift.</p>
+
+    <div class="actions">
+      <a class="repo" href="https://github.com/quadseven/muster">
+        <span class="repo__tick" aria-hidden="true"></span>quadseven/muster
+      </a>
+      <a class="how" href="https://github.com/quadseven/muster/blob/main/ARCHITECTURE.md">how it works</a>
+    </div>
+
+    <div class="facts">
+      <div class="fact">
+        <div class="fact__name">Keys never move</div>
+        <p>Devices generate their own and send only a signing request. muster holds none of them.</p>
+      </div>
+      <div class="fact">
+        <div class="fact__name">One human decision</div>
+        <p>Six digits read off two screens, or a provisioning QR nobody has to touch.</p>
+      </div>
+      <div class="fact">
+        <div class="fact__name">Expiry, not a flag</div>
+        <p>Lapsing is the default end state. Revoking is a decision, refused on the next request.</p>
+      </div>
+      <div class="fact">
+        <div class="fact__name">Fine with muster down</div>
+        <p>Enrollment may need the internet. Operation must not: enroll at home, work anywhere.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="roster" aria-label="Example roster, illustrative sample data">
+    <div class="roster__head">
+      <span>the roster</span>
+      <span>cert expires</span>
+    </div>
+
+    <div class="row">
+      <span class="row__dot" aria-hidden="true"></span>
+      <span class="row__name">pixel-8 &middot; ada</span>
+      <span class="row__state">issued</span>
+      <span class="row__expires">23d</span>
+    </div>
+    <div class="row">
+      <span class="row__dot" aria-hidden="true"></span>
+      <span class="row__name">unifi-udm-pro</span>
+      <span class="row__state">issued</span>
+      <span class="row__expires">19d</span>
+    </div>
+    <div class="row row--renewing">
+      <span class="row__dot" aria-hidden="true"></span>
+      <span class="row__name">mbp-14 &middot; workshop</span>
+      <span class="row__state">renewing</span>
+      <span class="row__expires">4h</span>
+    </div>
+    <div class="row">
+      <span class="row__dot" aria-hidden="true"></span>
+      <span class="row__name">hue-bridge &middot; hall</span>
+      <span class="row__state">issued</span>
+      <span class="row__expires">27d</span>
+    </div>
+    <div class="row row--off">
+      <span class="row__dot" aria-hidden="true"></span>
+      <span class="row__name">ipad-mini &middot; guest</span>
+      <span class="row__state">lapsed</span>
+      <span class="row__expires">&mdash;</span>
+    </div>
+    <div class="row row--off">
+      <span class="row__dot" aria-hidden="true"></span>
+      <span class="row__name">old-nas &middot; attic</span>
+      <span class="row__state">revoked</span>
+      <span class="row__expires">&mdash;</span>
+    </div>
+
+    <div class="path">
+      <div class="path__label">the happy path</div>
+      <div class="path__steps">
+        <span>mint</span><span class="path__sep">/</span>
+        <span>present</span><span class="path__sep">/</span>
+        <span class="path__step--now">vouch</span><span class="path__sep">/</span>
+        <span>issue</span><span class="path__sep">/</span>
+        <span>renew</span>
+      </div>
+      <div class="status">Early. The enrollment exchange is implemented and tested; the Android agent comes first.</div>
+    </div>
+  </section>
+
+</main>
+
+</body>
+</html>

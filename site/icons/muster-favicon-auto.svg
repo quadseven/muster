@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!--
+    Theme-following favicon, canonical geometry. Ground and plates swap with
+    the OS theme; AMBER DOES NOT, which is why the middle plate carries its own
+    class rather than `.plate` - inheriting the flip would turn the one
+    theme-invariant color in the system into a theme-dependent one.
+  -->
+  <style>
+    .bg { fill: #101110; }
+    .plate { fill: #FAF7F2; }
+    .accent { fill: #FFB703; }
+    @media (prefers-color-scheme: light) {
+      .bg { fill: #FAF7F2; }
+      .plate { fill: #101110; }
+    }
+  </style>
+  <rect class="bg" width="64" height="64"/>
+  <path class="plate" d="M20.5 19.3 L46.5 19.3 L43.5 24.7 L17.5 24.7 Z"/>
+  <path class="accent" d="M20.5 29.3 L46.5 29.3 L43.5 34.7 L17.5 34.7 Z"/>
+  <path class="plate" d="M20.5 39.3 L46.5 39.3 L43.5 44.7 L17.5 44.7 Z"/>
+</svg>
