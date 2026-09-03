@@ -6,7 +6,7 @@ import org.json.JSONObject
  * The device's half of the enrollment ceremony: present, then poll to collect.
  *
  * WHY THE STATUS CODES ARE MODELLED RATHER THAN LUMPED INTO "it failed". Each
- * one asks the device for a different behaviour, and getting them wrong is
+ * one asks the device for a different behavior, and getting them wrong is
  * invisible until a real enrollment goes sideways in someone's hand:
  *
  *   403 the code was wrong          -> the operator mistyped; ask again, same code

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The amber block from the splash page. SQUARE, like everything else in this
+  system: the mark has no rounding, the page's button has none, and a rounded
+  button here would be the only softened corner in the product.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_enabled="false">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/muster_hairline" />
+        </shape>
+    </item>
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <!-- Pressed is DARKER amber, not a ripple. A ripple needs a
+                 Material theme this app deliberately does not carry. -->
+            <solid android:color="#D99B03" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/muster_accent" />
+        </shape>
+    </item>
+</selector>

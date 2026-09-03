@@ -72,6 +72,10 @@ ALLOWED = frozenset(
         "kubectl.kubernetes.io",
         "pypi.org",
         "schemas.android.com",
+        # The SIL Open Font License's own canonical URL, which appears in the
+        # verbatim license text the bundled typefaces ship under. The text is
+        # not ours to edit.
+        "scripts.sil.org",
         "services.gradle.org",
         "support.google.com",
         "tags.datadoghq.com",

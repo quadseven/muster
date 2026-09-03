@@ -133,6 +133,30 @@ def test_the_provisioning_activities_stay_guarded():
     assert manifest.count("android.permission.BIND_DEVICE_ADMIN") >= 3
 
 
+def test_res_font_holds_only_font_files():
+    """`res/font/` accepts .xml, .ttf, .ttc and .otf AND NOTHING ELSE.
+
+    A README beside the typefaces is the obvious, wrong instinct - it is where
+    a reader would look for the license - and it fails the whole build at
+    `mergeDebugResources` with "The file name must end with .xml, .ttf, .ttc or
+    .otf". That is a resource-merger rule, so no unit test on this repo's
+    Python side would ever have caught it; it cost a red CI run to find. The
+    note and the OFL text live in `agent/android/fonts/` instead.
+    """
+    font_dir = MANIFEST.parent / "res/font"
+    if not font_dir.is_dir():
+        return
+    allowed = {".xml", ".ttf", ".ttc", ".otf"}
+    intruders = [
+        f.name for f in sorted(font_dir.iterdir()) if f.suffix.lower() not in allowed
+    ]
+    assert not intruders, (
+        f"res/font/ may only hold {sorted(allowed)}; found {intruders}. "
+        "Android's resource merger fails the build on anything else - put "
+        "notes and licenses in agent/android/fonts/ instead."
+    )
+
+
 def test_the_launcher_icon_is_declared():
     """An app with no icon gets a gray Android silhouette, which on a Device
     Owner is the only thing a person sees representing whatever owns their

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  THE APP HAD NO THEME AT ALL UNTIL 2026-09-02, which is why it opened as a
+  white platform-default screen with a stock blue button, under an icon and
+  beside a control plane that both have a real identity. Nothing was styled
+  wrongly; nothing was styled.
+
+  DeviceDefault RATHER THAN MATERIAL OR APPCOMPAT: this app carries no support
+  library and should not gain one for a screen of text, and DeviceDefault is the
+  platform theme that honors the system bars correctly under Android 15's
+  enforced edge-to-edge.
+
+  EVERY COLOUR IS STATED rather than inherited. DeviceDefault's own light or
+  dark character varies by device, so relying on it would make this screen look
+  different on two phones in the same drawer.
+
+  FIXED DARK, and that is a decision rather than laziness. The mark is drawn
+  for a dark ground, the splash page is dark, and a status screen that follows
+  the system into light would be the one muster surface that changes character
+  depending on the phone holding it.
+-->
+<resources>
+    <style name="Theme.Muster" parent="@android:style/Theme.DeviceDefault">
+        <item name="android:colorBackground">@color/muster_ground</item>
+        <item name="android:windowBackground">@color/muster_ground</item>
+        <item name="android:textColorPrimary">@color/muster_ink</item>
+        <item name="android:textColorSecondary">@color/muster_ink_dim</item>
+        <item name="android:colorAccent">@color/muster_accent</item>
+
+        <!-- The bars match the ground rather than floating above it, so the
+             screen reads as one surface from the status bar to the gesture
+             pill. -->
+        <item name="android:statusBarColor">@color/muster_ground</item>
+        <item name="android:navigationBarColor">@color/muster_ground</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+
+        <!-- The action bar is switched OFF rather than themed. The screen's
+             own headline says what this is, and an app bar repeating the app
+             name above it is the same sentence twice. -->
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
+    <!--
+      Text roles, named for the job rather than the look and matched to the
+      splash page's scale.
+    -->
+
+    <style name="Muster.Headline" parent="">
+        <item name="android:fontFamily">@font/instrument_sans_semibold</item>
+        <item name="android:textSize">30sp</item>
+        <item name="android:textColor">@color/muster_ink</item>
+        <item name="android:lineSpacingMultiplier">1.05</item>
+        <!-- The page sets -0.035em; sp letter spacing is in ems already. -->
+        <item name="android:letterSpacing">-0.035</item>
+    </style>
+
+    <style name="Muster.Body" parent="">
+        <item name="android:fontFamily">@font/instrument_sans_regular</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">@color/muster_ink_dim</item>
+        <item name="android:lineSpacingMultiplier">1.45</item>
+    </style>
+
+    <!-- LABELS ARE MONO, VALUES ARE NOT. Same rule as the page: the sans is
+         the voice, the mono is for data and the words that name data. It also
+         does real work here - a column of mono labels is scannable in a way a
+         column of sans labels is not. -->
+    <style name="Muster.RowLabel" parent="">
+        <item name="android:fontFamily">@font/martian_mono_medium</item>
+        <item name="android:textSize">10sp</item>
+        <item name="android:textColor">@color/muster_ink_faint</item>
+        <item name="android:letterSpacing">-0.01</item>
+        <item name="android:textAllCaps">false</item>
+    </style>
+
+    <style name="Muster.RowValue" parent="">
+        <item name="android:fontFamily">@font/instrument_sans_regular</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">@color/muster_ink</item>
+    </style>
+
+    <!-- Fingerprints, version stamps, URLs: things read character by character
+         or compared against another screen. Mono, and allowed to be small. -->
+    <style name="Muster.RowValue.Mono">
+        <item name="android:fontFamily">@font/martian_mono_medium</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:letterSpacing">-0.02</item>
+    </style>
+
+    <style name="Muster.Button" parent="">
+        <item name="android:fontFamily">@font/martian_mono_medium</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">-0.02</item>
+        <item name="android:textColor">@color/muster_on_accent</item>
+        <item name="android:background">@drawable/button_accent</item>
+        <item name="android:minHeight">52dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <style name="Muster.Button.Quiet">
+        <item name="android:textColor">@color/muster_ink_dim</item>
+        <item name="android:background">@drawable/button_quiet</item>
+    </style>
+</resources>

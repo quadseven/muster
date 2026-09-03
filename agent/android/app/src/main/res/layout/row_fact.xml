@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  One label/value pair, with a hairline above it.
+
+  THE RULE IS PART OF THE ROW, not a separate view the caller has to remember
+  to interleave. Building dividers at the call site is how a list ends up with
+  one at the bottom, or two together where a row was hidden.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical">
+
+    <View
+        android:id="@+id/rule"
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@drawable/hairline" />
+
+    <TextView
+        android:id="@+id/label"
+        style="@style/Muster.RowLabel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="16dp" />
+
+    <TextView
+        android:id="@+id/value"
+        style="@style/Muster.RowValue"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="5dp"
+        android:layout_marginBottom="16dp" />
+</LinearLayout>

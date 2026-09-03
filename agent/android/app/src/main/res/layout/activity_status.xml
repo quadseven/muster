@@ -3,20 +3,30 @@
   What this device is. The headline is the largest thing on the screen because
   it is the only line most people will read: everything below it is for whoever
   is troubleshooting, and they will scroll.
--->
-<!--
+
   fitsSystemWindows, or the top of this screen draws UNDER the app bar.
   targetSdk 36 means Android 15 and later enforce edge-to-edge, so the
   window extends behind the system bars and a layout that does not inset
   itself loses its first lines. Measured: the headline rendered at
   y=63..163 while the app bar occupied y=170..241, so the one line the
   screen exists to deliver was invisible and looked like a scroll bug.
+
+  RESTYLED 2026-09-02, and the change was a theme rather than this file. Until
+  then the app declared no theme at all, so this rendered in the platform
+  default: white ground, system typeface, stock blue button, under a launcher
+  icon and beside a control plane that both had a real identity. The structure
+  below barely moved; what it inherits did.
+
+  PADDING IS ON THE CHILDREN, NOT THE SCROLLVIEW. A ScrollView with padding
+  clips its own scrollbar and, more visibly, stops the row hairlines short of
+  the edges - so the rules look like they are floating rather than dividing.
 -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/muster_ground"
     android:fitsSystemWindows="true"
-    android:padding="24dp">
+    android:scrollbars="none">
 
     <!--
       focusableInTouchMode keeps the ScrollView from jumping to the button on
@@ -28,44 +38,102 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
+        android:paddingTop="28dp"
+        android:paddingBottom="36dp"
         android:focusable="true"
         android:focusableInTouchMode="true">
 
+        <!-- The masthead: the mark, then the word, the same pairing and the
+             same 13sp mono as the splash page's top-left corner. -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="24dp"
+            android:layout_marginEnd="24dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <ImageView
+                android:layout_width="26dp"
+                android:layout_height="26dp"
+                android:src="@drawable/plate_mark"
+                android:importantForAccessibility="no" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:fontFamily="@font/martian_mono_medium"
+                android:textSize="13sp"
+                android:letterSpacing="-0.03"
+                android:textColor="@color/muster_ink"
+                android:text="@string/app_name" />
+        </LinearLayout>
+
         <TextView
             android:id="@+id/headline"
+            style="@style/Muster.Headline"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="28sp"
-            android:textStyle="bold" />
+            android:layout_marginStart="24dp"
+            android:layout_marginEnd="24dp"
+            android:layout_marginTop="34dp" />
 
         <TextView
             android:id="@+id/detail"
+            style="@style/Muster.Body"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:textSize="15sp" />
+            android:layout_marginStart="24dp"
+            android:layout_marginEnd="24dp"
+            android:layout_marginTop="14dp" />
+
+        <!--
+          CONCERNS ARE THEIR OWN VIEW, not more lines in `detail`. They were
+          appended to it, which put "2 of 10 steps need attention" in the same
+          gray paragraph as "this device is owned by muster" - two sentences
+          with opposite urgency, rendered identically. Empty and gone when the
+          last reconcile was clean.
+        -->
+        <LinearLayout
+            android:id="@+id/concerns"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="24dp"
+            android:layout_marginEnd="24dp"
+            android:layout_marginTop="18dp"
+            android:orientation="vertical"
+            android:visibility="gone" />
 
         <Button
             android:id="@+id/sync"
+            style="@style/Muster.Button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
+            android:layout_marginStart="24dp"
+            android:layout_marginEnd="24dp"
+            android:layout_marginTop="30dp"
             android:text="@string/status_sync" />
 
         <!-- Shown only when there is genuinely nothing to enroll with. -->
         <Button
             android:id="@+id/enroll"
+            style="@style/Muster.Button.Quiet"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginStart="24dp"
+            android:layout_marginEnd="24dp"
+            android:layout_marginTop="10dp"
             android:visibility="gone"
             android:text="@string/status_enroll" />
 
+        <!-- The facts. Rows are built in StatusActivity so the label/value
+             pairing stays one decision rather than two. -->
         <LinearLayout
             android:id="@+id/rows"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="32dp"
+            android:layout_marginTop="38dp"
             android:orientation="vertical" />
 
     </LinearLayout>

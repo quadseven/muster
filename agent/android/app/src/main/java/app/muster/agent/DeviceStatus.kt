@@ -24,7 +24,17 @@ package app.muster.agent
 object DeviceStatus {
 
     /** One labelled line on the screen. */
-    data class Row(val label: String, val value: String)
+    /**
+     * One fact about this device.
+     *
+     * `machine` marks a value a person READS CHARACTER BY CHARACTER or compares
+     * against another screen - a URL, a build stamp - as opposed to one they
+     * read as a sentence. It is a property of the value, not a styling choice:
+     * the screen renders those in the mono face for the same reason the console
+     * and the splash page do, and something that only knew about fonts could
+     * not have decided which ones.
+     */
+    data class Row(val label: String, val value: String, val machine: Boolean = false)
 
     /**
      * @param headline the one line somebody reads before deciding to care
@@ -109,7 +119,9 @@ object DeviceStatus {
 
         val rows = mutableListOf<Row>()
         rows += Row("Managed by", if (facts.deviceOwner) "Muster (Device Owner)" else "nothing")
-        facts.serverUrl?.takeIf { it.isNotBlank() }?.let { rows += Row("Control plane", it) }
+        facts.serverUrl?.takeIf { it.isNotBlank() }?.let {
+            rows += Row("Control plane", it, machine = true)
+        }
         facts.notAfter?.let { rows += Row("Identity expires", when_(it, facts.now)) }
         facts.renewAfter?.let { rows += Row("Renews after", when_(it, facts.now)) }
         rows += Row(
@@ -118,8 +130,10 @@ object DeviceStatus {
             // config file. A config file says what was asked for; only the
             // device says what is true.
             if (facts.restrictions.isEmpty()) "none" else facts.restrictions.joinToString("\n"),
+            // Platform restriction keys, not prose.
+            machine = facts.restrictions.isNotEmpty(),
         )
-        rows += Row("Agent version", facts.agentVersion)
+        rows += Row("Agent version", facts.agentVersion, machine = true)
         rows += Row(
             "Last check-in",
             facts.lastCheckIn?.let { "${humanize(facts.now - it)} ago" } ?: "never",
