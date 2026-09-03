@@ -1,6 +1,7 @@
 package app.muster.agent
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,6 +47,30 @@ class RestrictionPolicyTest {
             DISALLOW_SAFE_BOOT
         """.trimIndent()
         assertEquals(setOf("no_set_wallpaper", "no_safe_boot"), keys(text))
+    }
+
+    @Test
+    fun theDataSiphonRestrictionsCarryTheirAospValues() {
+        // A WRONG LITERAL HERE IS SILENT: addUserRestriction stores a key it
+        // does not recognise and enforces nothing, so the only thing standing
+        // between a typo and a phone that quietly still dials is this
+        // assertion. Both values were read out of AOSP UserManager.java on
+        // 2026-09-03 rather than guessed from the shape of their neighbours.
+        assertEquals("no_outgoing_calls", RestrictionPolicy.MANAGED["DISALLOW_OUTGOING_CALLS"])
+        assertEquals("no_sms", RestrictionPolicy.MANAGED["DISALLOW_SMS"])
+    }
+
+    @Test
+    fun neitherDataSiphonRestrictionStrandsADevice() {
+        // Outgoing calls and SMS are not exits from a managed state, so they
+        // belong in MANAGED and NOT behind the stranding gate. If one ever
+        // moves, this says so rather than a device quietly refusing the line.
+        assertFalse("DISALLOW_OUTGOING_CALLS" in RestrictionPolicy.STRANDING)
+        assertFalse("DISALLOW_SMS" in RestrictionPolicy.STRANDING)
+
+        val asked = RestrictionPolicy.read("DISALLOW_OUTGOING_CALLS\nDISALLOW_SMS\n")
+        assertEquals(setOf("no_outgoing_calls", "no_sms"), asked.keys)
+        assertEquals(emptyList<RestrictionPolicy.Refusal>(), asked.refused)
     }
 
     @Test

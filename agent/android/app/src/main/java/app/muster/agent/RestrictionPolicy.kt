@@ -77,6 +77,23 @@ object RestrictionPolicy {
         // certificate". A device whose time can be moved by hand is one that
         // can be talked out of renewing, or into believing it has lapsed.
         "DISALLOW_CONFIG_DATE_TIME" to "no_config_date_time",
+        // THESE HANDSETS ARE NOT PHONES. They carry a SIM so zippie has a
+        // cellular leg; nobody is meant to place a call or send a message from
+        // one, and both are attack surface and bill on a line bought for data.
+        //
+        // WHAT THESE DO NOT DO, because the difference matters and has already
+        // caused a wrong expectation: they stop the device ORIGINATING. There
+        // is no user restriction in AOSP that refuses an INCOMING call, and
+        // voicemail is recorded by the carrier's network rather than by
+        // anything on the handset - so a phone with both of these set will
+        // still ring, and still collect voicemail. Stopping that is a change to
+        // the line, not to the device.
+        //
+        // Both values read out of AOSP
+        // core/java/android/os/UserManager.java on 2026-09-03, as the note
+        // above this map requires - not pattern-matched from their neighbours.
+        "DISALLOW_OUTGOING_CALLS" to "no_outgoing_calls",
+        "DISALLOW_SMS" to "no_sms",
     )
 
     /**
