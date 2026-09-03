@@ -201,7 +201,10 @@ def write_png(path, size, raw):
 
 def svg_paths(plates, view, center, scale, colors, indent="  "):  # noqa: ARG001
     out = []
-    for plate, col in zip(placed(plates, view, center, scale), colors):
+    # strict=True: three plates need three colors, and a mismatch that
+    # silently truncated would drop a plate from the SVG while the PNG
+    # (which does not go through this function) still had it.
+    for plate, col in zip(placed(plates, view, center, scale), colors, strict=True):
         d = " ".join(
             ("M" if i == 0 else "L") + f"{x:g} {y:g}"
             for i, (x, y) in enumerate(plate)
