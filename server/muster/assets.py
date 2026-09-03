@@ -39,6 +39,8 @@ import pathlib
 import re
 from dataclasses import dataclass
 
+from muster import telemetry
+
 # The most bytes muster will read into memory to answer one request.
 #
 # A CAP RATHER THAN A STREAM, and the reason is this route's contract. The
@@ -95,7 +97,25 @@ _DEFAULT_MEDIA_TYPE = "application/octet-stream"
 # cannot renew LAPSES, and lapse on a Device Owner phone means a wipe. So a
 # wallpaper nobody can read must degrade to "no wallpaper", never to "no
 # certificates".
-STORAGE_TIMEOUT_S = 5.0
+#
+# TWO SECONDS, AND THE NUMBER IS SET BY THE READINESS PROBE RATHER THAN BY THE
+# NAS. This was 5.0, which is exactly what the probe allows /readyz, and equal
+# budgets mean the graceful path can never win: a stalled share burned the full
+# five seconds deciding it was unreachable, the kubelet gave up at five seconds
+# too, and the pod left the Service instead of reporting a degraded store. That
+# is precisely the outcome `readyz` says it exists to prevent - "the store is
+# REPORTED here and never gates the verdict" - defeated by a number rather than
+# by any logic.
+#
+# Measured on the live pod 2026-09-03: a healthy listing is 3-13ms and /readyz
+# end to end is ~50ms, so two seconds is roughly 150x the healthy case and
+# still leaves three seconds of the probe's budget spare. It happened twice in
+# 24 hours, at 05:40 on consecutive days.
+#
+# ANY CHANGE HERE HAS TO STAY UNDER THE PROBE TIMEOUT, and the test named
+# `test_readyz_answers_while_the_asset_store_hangs` is what holds that, because
+# the probe timeout lives in a manifest this repo does not contain.
+STORAGE_TIMEOUT_S = 2.0
 
 # How many storage touches may be in flight at once.
 #
@@ -273,7 +293,18 @@ class Assets:
             return False
         try:
             _bounded(_list_names, self.root)
-        except (OSError, Unavailable):
+        except (OSError, Unavailable) as gone:
+            # SAID OUT LOUD, because this used to be swallowed in silence. A
+            # stalled share then looked identical to a healthy one in the log:
+            # /readyz still answered 200, just slowly, with `readable: false`
+            # buried in a body nothing records. Two readiness outages were
+            # diagnosed from the SHAPE of the access log rather than from any
+            # line saying the store had gone away.
+            telemetry.event(
+                "asset store did not answer",
+                detail=str(gone),
+                seconds=STORAGE_TIMEOUT_S,
+            )
             return False
         return True
 
