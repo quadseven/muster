@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The wordmark's three plates, as a vector. SAME GEOMETRY AS THE ICON, taken
+  from site/icons/src/render.py (canonical drawing, 64-unit viewBox): the
+  outer two in ink, the middle in amber, which is the one color that does not
+  flip between surfaces.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="26dp"
+    android:height="26dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+    <path
+        android:fillColor="@color/muster_ink"
+        android:pathData="M20.5,19.3 L46.5,19.3 L43.5,24.7 L17.5,24.7 Z" />
+    <path
+        android:fillColor="@color/muster_accent"
+        android:pathData="M20.5,29.3 L46.5,29.3 L43.5,34.7 L17.5,34.7 Z" />
+    <path
+        android:fillColor="@color/muster_ink"
+        android:pathData="M20.5,39.3 L46.5,39.3 L43.5,44.7 L17.5,44.7 Z" />
+</vector>

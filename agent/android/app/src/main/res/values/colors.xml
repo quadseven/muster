@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  THE SAME PALETTE AS THE SPLASH PAGE AND THE CONSOLE, to the hex digit. A
+  person who has seen muster.<zone> and then opens this app should not have to
+  wonder whether it is the same product.
+
+  These names say what a color IS FOR, not what it looks like. `muster_ink` on
+  `muster_ground` survives someone deciding the ground should be lighter;
+  `muster_off_white` would not.
+-->
+<resources>
+    <!-- The page ground. Not black: black on OLED next to a near-black system
+         bar shows the seam between them. -->
+    <color name="muster_ground">#101110</color>
+    <!-- The panel behind grouped rows, a shade under the ground. -->
+    <color name="muster_panel">#0A0B0A</color>
+    <color name="muster_ink">#ECE8E1</color>
+    <!-- Body text and row values: the ink, stepped back so the headline leads. -->
+    <color name="muster_ink_dim">#9E9C97</color>
+    <!-- Row labels and hairlines. Legible, deliberately quiet. -->
+    <color name="muster_ink_faint">#6B6A66</color>
+    <color name="muster_hairline">#26251F</color>
+    <!-- The one accent. Theme-invariant everywhere else in the system, so it
+         does not get a dark and a light variant here either. -->
+    <color name="muster_accent">#FFB703</color>
+    <!-- Text ON the accent. The accent is bright, so this is the ground. -->
+    <color name="muster_on_accent">#101110</color>
+    <!-- Something needs attention. Amber already means "in progress", so a
+         concern cannot also be amber. -->
+    <color name="muster_concern">#E5484D</color>
+</resources>

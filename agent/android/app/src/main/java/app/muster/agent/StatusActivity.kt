@@ -116,28 +116,47 @@ class StatusActivity : Activity() {
         findViewById<TextView>(R.id.detail).text = if (report == null) {
             view.detail
         } else {
-            (listOf(view.detail, "", report.headline) + report.concerns)
-                .joinToString("\n")
+            listOf(view.detail, report.headline).joinToString("\n\n")
         }
+
+        // CONCERNS GET THEIR OWN VIEWS, and until 2026-09-02 they did not: they
+        // were joined onto `detail`, which rendered "2 of 10 steps need
+        // attention" in the same dim paragraph as "this device is owned by
+        // Muster". Two sentences with opposite urgency, drawn identically, and
+        // the urgent one second.
+        val concerns = findViewById<LinearLayout>(R.id.concerns)
+        concerns.removeAllViews()
+        val outstanding = report?.concerns.orEmpty()
+        concerns.visibility = if (outstanding.isEmpty()) View.GONE else View.VISIBLE
+        for (concern in outstanding) {
+            val item = layoutInflater.inflate(R.layout.row_concern, concerns, false)
+            item.findViewById<TextView>(R.id.concern).text = concern
+            concerns.addView(item)
+        }
+
         findViewById<Button>(R.id.enroll).visibility =
             if (view.canEnroll) View.VISIBLE else View.GONE
 
         val rows = findViewById<LinearLayout>(R.id.rows)
         rows.removeAllViews()
-        for (row in view.rows) {
-            rows.addView(
-                TextView(this).apply {
-                    text = row.label
-                    setTextAppearance(android.R.style.TextAppearance_Material_Caption)
-                },
-            )
-            rows.addView(
-                TextView(this).apply {
-                    text = row.value
-                    setTextAppearance(android.R.style.TextAppearance_Material_Body1)
-                    setPadding(0, 0, 0, 24)
-                },
-            )
+        for ((index, row) in view.rows.withIndex()) {
+            val item = layoutInflater.inflate(R.layout.row_fact, rows, false)
+            item.findViewById<TextView>(R.id.label).text = row.label
+            item.findViewById<TextView>(R.id.value).apply {
+                text = row.value
+                // A build stamp or a URL is compared character by character;
+                // the mono face is what makes that possible. `machine` is
+                // decided in DeviceStatus, where the value comes from.
+                if (row.machine) {
+                    setTextAppearance(R.style.Muster_RowValue_Mono)
+                }
+            }
+            // The first rule would sit directly under the button block and read
+            // as an underline for it rather than as the top of a list.
+            if (index == 0) {
+                item.findViewById<View>(R.id.rule).visibility = View.GONE
+            }
+            rows.addView(item)
         }
     }
 
