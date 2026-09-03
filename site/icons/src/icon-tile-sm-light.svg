@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Small-size drawing, light ground. -->
+  <rect width="64" height="64" fill="#FAF7F2"/>
+  <path d="M18 16 L50 16 L46 24 L14 24 Z" fill="#101110"/>
+  <path d="M18 28 L50 28 L46 36 L14 36 Z" fill="#FFB703"/>
+  <path d="M18 40 L50 40 L46 48 L14 48 Z" fill="#101110"/>
+</svg>

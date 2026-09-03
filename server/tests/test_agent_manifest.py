@@ -7,6 +7,8 @@ without anybody connecting the two.
 """
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 MANIFEST = (
@@ -132,16 +134,38 @@ def test_the_provisioning_activities_stay_guarded():
 
 
 def test_the_launcher_icon_is_declared():
-    """An app with no icon gets a grey Android silhouette, which on a Device
+    """An app with no icon gets a gray Android silhouette, which on a Device
     Owner is the only thing a person sees representing whatever owns their
     phone."""
     manifest = MANIFEST.read_text()
     assert 'android:icon="@mipmap/ic_launcher"' in manifest
     assert 'android:roundIcon="@mipmap/ic_launcher_round"' in manifest
 
+    # THIS ASKED FOR `ic_launcher.png` IN EVERY BUCKET UNTIL 2026-09-02, and
+    # that assertion had stopped meaning anything. A legacy launcher raster is
+    # read only below API 26; this module is minSdk 29 (app/build.gradle.kts),
+    # so every device it can install on resolves `@mipmap/ic_launcher` to the
+    # adaptive XML and never opens the PNG. Keeping the check would have pinned
+    # a file nothing reads while saying nothing about whether an icon actually
+    # appears - so the rule is now the resolution path itself: every drawable
+    # the adaptive icon names must exist at every density it claims.
     res = MANIFEST.parent / "res"
-    for density in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"):
-        assert (res / f"mipmap-{density}/ic_launcher.png").is_file(), density
-        assert (res / f"mipmap-{density}/ic_launcher_foreground.png").is_file(), density
-    assert (res / "mipmap-anydpi-v26/ic_launcher.xml").is_file()
-    assert (res / "values/ic_launcher_background.xml").is_file()
+    densities = ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi")
+
+    for name in ("ic_launcher", "ic_launcher_round"):
+        adaptive = res / f"mipmap-anydpi-v26/{name}.xml"
+        assert adaptive.is_file(), f"{name} has no adaptive icon"
+        body = adaptive.read_text()
+        for layer in ("background", "foreground", "monochrome"):
+            assert f"<{layer}" in body, f"{name} declares no {layer} layer"
+
+        for ref in re.findall(r'@mipmap/([a-z_0-9]+)', body):
+            for density in densities:
+                got = res / f"mipmap-{density}/{ref}.png"
+                assert got.is_file(), f"{name} -> {ref} missing at {density}"
+
+        for ref in re.findall(r'@color/([a-z_0-9]+)', body):
+            defined = any(
+                ref in values.read_text() for values in res.glob("values/*.xml")
+            )
+            assert defined, f"{name} -> @color/{ref} is not defined"

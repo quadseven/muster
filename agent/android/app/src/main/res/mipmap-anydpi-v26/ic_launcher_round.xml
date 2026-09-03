@@ -1,11 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Adaptive icon. The foreground is the full plate, inset to 85% so the mark
-  stays inside the 66dp safe zone of the 108dp layer - a launcher crops a third
-  of this layer away, and artwork drawn to the edge loses its corners to the
-  mask on exactly the devices that use the roundest one.
+  Adaptive icon.
+
+  THE FOREGROUND IS THE BARE MARK, NOT A TILE. Until 2026-09-02 this pointed at
+  a foreground that was itself a finished icon - a paper-colored rounded square
+  with the mark inside it and a margin around that - so the launcher was masking
+  a tile that already had its own edge, and the mark ended up small in the
+  middle of two nested shapes. The layer now carries only the three plates on
+  transparency, which is what a foreground layer is for.
+
+  THE SAFE ZONE IS CHECKED, NOT ASSUMED. A launcher crops this layer to the
+  inner 66dp of 108dp. The mark's furthest vertex - the top plate's right tip,
+  not the bounding-box corner, which the shear cuts away - sits 30.84dp from
+  center against a 33dp safe radius: 2.16dp clear. site/icons/src/render.py
+  asserts that on every run, so a change to the geometry fails loudly instead of
+  quietly clipping on round-mask devices.
+
+  MONOCHROME IS THE SAME PATHS, FLAT BLACK. Android takes the alpha and applies
+  its own tint for themed icons, so the amber middle plate becomes the same
+  value as the outer two. Three identical bars reads as deliberate; graying the
+  middle plate to hint at amber would be the muddy version, and is why this
+  layer is drawn from the silhouette rather than from the color artwork.
 -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
 </adaptive-icon>

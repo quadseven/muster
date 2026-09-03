@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Canonical mark, light ground. -->
+  <rect width="64" height="64" fill="#FAF7F2"/>
+  <path d="M20.5 19.3 L46.5 19.3 L43.5 24.7 L17.5 24.7 Z" fill="#101110"/>
+  <path d="M20.5 29.3 L46.5 29.3 L43.5 34.7 L17.5 34.7 Z" fill="#FFB703"/>
+  <path d="M20.5 39.3 L46.5 39.3 L43.5 44.7 L17.5 44.7 Z" fill="#101110"/>
+</svg>

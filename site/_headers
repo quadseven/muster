@@ -1,0 +1,11 @@
+# Cloudflare Pages headers.
+#
+# THE ICONS ARE IMMUTABLE AND THE PAGE IS NOT. Every file under /icons/ is
+# content-addressed by hand - its bytes change only when the brand does, and
+# then it gets reviewed - so a year is a safe max-age. index.html must stay
+# short, or a splash edit takes a week to reach anybody who has been here.
+/icons/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/
+  Cache-Control: public, max-age=300, must-revalidate

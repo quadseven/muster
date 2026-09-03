@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Warm White from the muster palette. It matches the plate the mark sits
-         on in the source artwork, so the adaptive mask never exposes a seam
-         between the foreground layer and what is behind it. -->
-    <color name="ic_launcher_background">#FAF7F2</color>
+    <!-- The mark's ground, and A COLOR RATHER THAN A BITMAP on purpose: the
+         adaptive background is flat, so a PNG of it would be five buckets of
+         file to say one hex value, and softer at every one of them.
+
+         CHANGED FROM #FAF7F2 (Warm White) 2026-09-02. That value predated the
+         splash page; the approved ground is now #101110 everywhere - icon,
+         page, manifest theme_color - and a launcher icon on the old paper
+         ground would be the only surface still wearing it. -->
+    <color name="ic_launcher_background">#101110</color>
 </resources>
