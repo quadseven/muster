@@ -29,6 +29,7 @@ import org.json.JSONObject
  * can request wipe again. The alternative - erasing first and acknowledging
  * later - has no later.
  */
+// Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
 class WipeSteward(private val context: Context) {
 
     data class Outcome(
@@ -38,7 +39,13 @@ class WipeSteward(private val context: Context) {
         val kept: String? = null,
     ) : StepOutcome {
         override fun concerns(): List<String> = buildList {
-            kept?.let { add(it) }
+            // A healthy plan (no instruction on the device at all) is not a
+            // concern; the steward did exactly what it was told. Every other
+            // kept reason is: a wipe blocked before wipeData, or a non-wipe
+            // plan whose file is empty or has the wrong content.
+            if (kept != null && !plan.isQuietHealthy) {
+                add(kept)
+            }
             if (wipeRequested) {
                 // Honest, not reassuring. wipeData is the one action that
                 // normally does not return because the device resets.
