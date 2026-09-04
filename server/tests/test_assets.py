@@ -9,6 +9,7 @@ the endpoint takes a name from an unauthenticated-until-proven caller and turns
 it into a path - and `test_an_empty_directory_is_refused_rather_than_answered`,
 which is the same reasoning `policy.NoSource` exists for.
 """
+# Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
 from __future__ import annotations
 
 import hashlib
@@ -284,10 +285,38 @@ def test_a_wedged_store_does_not_hang_readyz(tmp_path, monkeypatch):
 
 
 # The readiness probe's own budget, from the Deployment manifest in the
-# operator's ops repository. That file is not in this repo, so the number is
-# written down here with the date it was read off the live pod, and the test
-# below is what stops the two drifting apart.
+# operator's ops repository.
+#
+# WHAT THIS IS A COPY OF, AND FROM WHERE. The real value lives in
+# production/oke/manifests/muster/deployment.yaml (readinessProbe.timeoutSeconds),
+# which this repo cannot see. It is written down here to hold muster's internal
+# storage bound - `assets.STORAGE_TIMEOUT_S` - inside it, and the date is the
+# day it was read off the live pod.
+#
+# THE INVARIANT IT CARRIES, IN WORDS: INTERNAL BOUND < PROBE TIMEOUT, WITH ROOM.
+# STORAGE_TIMEOUT_S has to fit comfortably inside this budget, because if the two
+# are equal a stalled share spends the whole budget deciding it is unreachable
+# and the kubelet gives up at the same instant - the pod leaves the Service. The
+# two tests below are what hold that. THIS COPY GOES STALE - and this constant
+# stops meaning anything - the moment the manifest's timeoutSeconds is lowered,
+# which is the one change nothing in this repo would otherwise notice.
 READINESS_PROBE_TIMEOUT_S = 5.0  # kubectl, 2026-09-03
+
+
+def test_storage_timeout_keeps_room_under_the_readiness_probe():
+    """The RELATIONSHIP, with a margin - not a matched pair of literals.
+
+    `STORAGE_TIMEOUT_S` is the internal bound and the probe's timeout is the
+    budget it has to fit inside, because equal budgets mean a stalled share
+    spends the whole probe deciding it is unreachable and the kubelet pulls the
+    pod at the same instant. So this asserts the room between them, as a ratio,
+    and survives EITHER number moving as long as the room stays. The probe
+    timeout's real value lives in the ops repo's
+    production/oke/manifests/muster/deployment.yaml (readinessProbe.timeoutSeconds),
+    so when the two drift, that manifest is the source that wins and this copy
+    in the constant above is what has gone stale.
+    """
+    assert assets.STORAGE_TIMEOUT_S < READINESS_PROBE_TIMEOUT_S * 0.6
 
 
 def test_readyz_answers_while_the_asset_store_hangs(tmp_path, monkeypatch):
@@ -319,8 +348,12 @@ def test_readyz_answers_while_the_asset_store_hangs(tmp_path, monkeypatch):
         f"a hung asset store held /readyz for {took:.1f}s against a "
         f"{READINESS_PROBE_TIMEOUT_S}s readiness probe. The pod gets pulled "
         f"from the Service for a wallpaper share being slow, which is the "
-        f"outcome readyz's own docstring says it exists to prevent. Lower "
-        f"assets.STORAGE_TIMEOUT_S."
+        f"outcome readyz's own docstring says it exists to prevent. That probe "
+        f"timeout's REAL value lives in the operator's ops repo, in "
+        f"production/oke/manifests/muster/deployment.yaml "
+        f"(readinessProbe.timeoutSeconds) - which this repo cannot see - and "
+        f"{READINESS_PROBE_TIMEOUT_S}s here is only a recorded copy of it. "
+        f"Lower assets.STORAGE_TIMEOUT_S."
     )
 
 
