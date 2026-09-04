@@ -17,6 +17,7 @@ import org.junit.Test
  * certificate and a clock behind its own identity - which is the reason the
  * decision is a function rather than a branch inside an Activity.
  */
+// Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
 class DeviceStatusTest {
 
     private fun facts(
@@ -25,6 +26,7 @@ class DeviceStatusTest {
         revoked: Boolean = false,
         lastCheckIn: Long? = 1_000_000L,
         restrictions: List<String> = listOf("no_safe_boot"),
+        agentVersion: String = "0.1.0",
     ) = DeviceStatus.Facts(
         deviceOwner = deviceOwner,
         stance = stance,
@@ -33,7 +35,7 @@ class DeviceStatusTest {
         renewAfter = 1_792_000_000L,
         serverUrl = "https://enroll.muster.example",
         restrictions = restrictions,
-        agentVersion = "0.1.0",
+        agentVersion = agentVersion,
         lastCheckIn = lastCheckIn,
         now = 1_000_060L,
     )
@@ -189,5 +191,36 @@ class DeviceStatusTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun theAgentVersionRowShows12HexCharactersOfTheSha() {
+        // The exact wrap from the issue. The full SHA does not fit this column
+        // at 12sp mono, so the screen shows what the image tags use.
+        val view = DeviceStatus.render(
+            facts(agentVersion = "0.1.0-dfdc094af4269b01314c5ccd6a1fb828a9147e3e"),
+        )
+        assertEquals(
+            "0.1.0-dfdc094af426",
+            view.rows.single { it.label == "Agent version" }.value,
+        )
+        assertEquals("0.1.0-dfdc094af426", DeviceStatus.shortSha("0.1.0-dfdc094af4269b01314c5ccd6a1fb828a9147e3e"))
+    }
+
+    @Test
+    fun shortShaPassesAFormWithoutAShaSuffixThroughUnchanged() {
+        // Not every build has a SHA suffix, and the function must not invent
+        // one or mangle the version it is given.
+        assertEquals("0.1.0", DeviceStatus.shortSha("0.1.0"))
+    }
+
+    @Test
+    fun shortShaPassesAShortenedOrEmptySuffixThroughUnchanged() {
+        // These are not full 40-char SHAs and are exactly as long as they need
+        // to be on screen already; shrinking them further would lose meaning
+        // that a person compares.
+        assertEquals("0.1.0-abc", DeviceStatus.shortSha("0.1.0-abc"))
+        assertEquals("0.1.0-", DeviceStatus.shortSha("0.1.0-"))
+        assertEquals("", DeviceStatus.shortSha(""))
     }
 }
