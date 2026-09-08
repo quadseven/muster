@@ -1,5 +1,7 @@
 package app.muster.agent
 
+// Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
+
 /**
  * What this device should say about itself, in one place a test can reach.
  *
@@ -133,7 +135,7 @@ object DeviceStatus {
             // Platform restriction keys, not prose.
             machine = facts.restrictions.isNotEmpty(),
         )
-        rows += Row("Agent version", facts.agentVersion, machine = true)
+        rows += Row("Agent version", shortSha(facts.agentVersion), machine = true)
         rows += Row(
             "Last check-in",
             facts.lastCheckIn?.let { "${humanize(facts.now - it)} ago" } ?: "never",
@@ -150,6 +152,38 @@ object DeviceStatus {
                     facts.stance is IdentityLifecycle.Stance.Lapsed),
         )
     }
+
+    /**
+     * A version stamp fit to display on one line.
+     *
+     * The APK's versionName carries the full 40-character commit SHA
+     * (`0.1.0-dfdc094af4269b01314c5ccd6a1fb828a9147e3e`), which is right for
+     * the store and too wide for this column - at 12sp mono it wraps mid-hash.
+     * The field exists to be COMPARED character by character, so a split at an
+     * arbitrary point defeats it. This keeps the semver and the first 12 hex
+     * characters, which is what `git rev-parse --short=12` gives and what the
+     * image tags use, and passes anything else through unchanged.
+     */
+    fun shortSha(versionName: String): String {
+        // A full SHA is <something>-<40 hex>; anything else is shown as it was
+        // given. HEX IS CHECKED AS WELL AS LENGTH, because the only thing that
+        // makes cutting a string safe is knowing the tail is a hash: 40
+        // characters of prose lose their meaning when truncated, and
+        // versionName arrives from the build, not from this file.
+        val separator = versionName.lastIndexOf('-')
+        if (separator < 0) return versionName
+        val sha = versionName.substring(separator + 1)
+        if (sha.length != SHA_LENGTH || !sha.all { it in HEX_DIGITS }) return versionName
+        return versionName.substring(0, separator + 1) + sha.take(SHA_DISPLAY_LENGTH)
+    }
+
+    /** A git object name in full. */
+    private const val SHA_LENGTH = 40
+
+    /** What `git rev-parse --short=12` gives, and what the image tags carry. */
+    private const val SHA_DISPLAY_LENGTH = 12
+
+    private const val HEX_DIGITS = "0123456789abcdef"
 
     /**
      * A duration a person can act on.
