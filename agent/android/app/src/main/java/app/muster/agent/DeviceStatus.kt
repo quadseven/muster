@@ -165,12 +165,25 @@ object DeviceStatus {
      * image tags use, and passes anything else through unchanged.
      */
     fun shortSha(versionName: String): String {
-        // A full SHA is <something>-<40 hex>; anything else is not a full SHA
-        // and is shown as it was given.
+        // A full SHA is <something>-<40 hex>; anything else is shown as it was
+        // given. HEX IS CHECKED AS WELL AS LENGTH, because the only thing that
+        // makes cutting a string safe is knowing the tail is a hash: 40
+        // characters of prose lose their meaning when truncated, and
+        // versionName arrives from the build, not from this file.
         val separator = versionName.lastIndexOf('-')
-        if (separator < 0 || versionName.length - separator - 1 != 40) return versionName
-        return versionName.substring(0, separator + 1) + versionName.substring(separator + 1, separator + 1 + 12)
+        if (separator < 0) return versionName
+        val sha = versionName.substring(separator + 1)
+        if (sha.length != SHA_LENGTH || !sha.all { it in HEX_DIGITS }) return versionName
+        return versionName.substring(0, separator + 1) + sha.take(SHA_DISPLAY_LENGTH)
     }
+
+    /** A git object name in full. */
+    private const val SHA_LENGTH = 40
+
+    /** What `git rev-parse --short=12` gives, and what the image tags carry. */
+    private const val SHA_DISPLAY_LENGTH = 12
+
+    private const val HEX_DIGITS = "0123456789abcdef"
 
     /**
      * A duration a person can act on.

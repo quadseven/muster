@@ -215,6 +215,15 @@ class DeviceStatusTest {
     }
 
     @Test
+    fun shortShaPassesA40CharacterSuffixThatIsNotHexThroughUnchanged() {
+        // Length alone does not make a tail a hash. A suffix this long that is
+        // not hex is something else - a branch name, a build label - and
+        // cutting it at 12 would be losing meaning rather than noise.
+        val notAHash = "0.1.0-" + "z".repeat(40)
+        assertEquals(notAHash, DeviceStatus.shortSha(notAHash))
+    }
+
+    @Test
     fun shortShaPassesAShortenedOrEmptySuffixThroughUnchanged() {
         // These are not full 40-char SHAs and are exactly as long as they need
         // to be on screen already; shrinking them further would lose meaning
