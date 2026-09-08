@@ -11,6 +11,7 @@ import org.junit.Test
  * hardware and cannot be run twice, so these tests prove the decision only.
  * WipeSteward's class comment says the same thing at the call site.
  */
+// Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
 class WipePolicyTest {
 
     @Test
@@ -36,5 +37,27 @@ class WipePolicyTest {
     @Test
     fun aDifferentContentIsNotAnErase() {
         assertFalse(WipePolicy.plan("maybe wipe\n").wipe)
+    }
+
+    @Test
+    fun noInstructionIsTheQuietHealthyCaseAndNotAConcern() {
+        // No file at all means the steward did exactly what it was told, so
+        // this must not surface as a concern next to the real ones.
+        assertTrue(WipePolicy.plan(null).isQuietHealthy)
+    }
+
+    @Test
+    fun aWipePendingIsNotTheQuietHealthyCase() {
+        assertFalse(WipePolicy.plan(WipePolicy.COMMAND).isQuietHealthy)
+    }
+
+    @Test
+    fun anEmptyFileIsAConcernNotTheQuietHealthyCase() {
+        assertFalse(WipePolicy.plan("").isQuietHealthy)
+    }
+
+    @Test
+    fun aWrongContentFileIsAConcernNotTheQuietHealthyCase() {
+        assertFalse(WipePolicy.plan("maybe wipe\n").isQuietHealthy)
     }
 }

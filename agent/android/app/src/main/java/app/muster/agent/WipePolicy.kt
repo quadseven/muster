@@ -19,6 +19,7 @@ package app.muster.agent
  * empty file is a local write gone wrong or a partial answer and must not be
  * read as a wipe. Only the exact command the server synthesizes means yes.
  */
+// Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
 object WipePolicy {
 
     const val FILE_NAME = "wipe"
@@ -31,12 +32,16 @@ object WipePolicy {
      */
     const val COMMAND = "wipe\n"
 
-    data class Plan(val wipe: Boolean, val reason: String) {
+    data class Plan(val wipe: Boolean, val reason: String, val isQuietHealthy: Boolean = false) {
         override fun toString(): String = "wipe=$wipe reason=$reason"
     }
 
     fun plan(onDevice: String?): Plan = when (onDevice) {
-        null -> Plan(false, "no wipe instruction")
+        // No instruction on the device is the quiet healthy case: the steward
+        // did exactly what it was told, and the step must not read as a concern.
+        // Every other outcome - a wipe pending, or a non-wipe file that is empty
+        // or wrong - is something a person has to look at.
+        null -> Plan(false, "no wipe instruction", isQuietHealthy = true)
         COMMAND -> Plan(true, "the wipe instruction arrived")
         "" -> Plan(false, "wipe file is empty; refusing to treat a partial write as an erase")
         else -> Plan(false, "wipe file content is not the command; refusing to guess")
