@@ -302,6 +302,12 @@ def test_a_wedged_store_does_not_hang_readyz(tmp_path, monkeypatch):
 # which is the one change nothing in this repo would otherwise notice.
 READINESS_PROBE_TIMEOUT_S = 5.0  # kubectl, 2026-09-03
 
+# How much of that budget muster's own bound is allowed to spend. Named once
+# and read by both assertions below, because a margin repeated at two call
+# sites is the same kind of unenforced copy this whole section is about - one
+# of the two gets tuned and the pair stops meaning anything.
+PROBE_BUDGET_SHARE = 0.6
+
 
 def test_storage_timeout_keeps_room_under_the_readiness_probe():
     """The RELATIONSHIP, with a margin - not a matched pair of literals.
@@ -316,7 +322,7 @@ def test_storage_timeout_keeps_room_under_the_readiness_probe():
     so when the two drift, that manifest is the source that wins and this copy
     in the constant above is what has gone stale.
     """
-    assert assets.STORAGE_TIMEOUT_S < READINESS_PROBE_TIMEOUT_S * 0.6
+    assert assets.STORAGE_TIMEOUT_S < READINESS_PROBE_TIMEOUT_S * PROBE_BUDGET_SHARE
 
 
 def test_readyz_answers_while_the_asset_store_hangs(tmp_path, monkeypatch):
@@ -344,7 +350,7 @@ def test_readyz_answers_while_the_asset_store_hangs(tmp_path, monkeypatch):
     assert status["readable"] is False
     # Sixty percent of the budget, so a slow CI box has room and a change that
     # eats the whole probe still fails here.
-    assert took < READINESS_PROBE_TIMEOUT_S * 0.6, (
+    assert took < READINESS_PROBE_TIMEOUT_S * PROBE_BUDGET_SHARE, (
         f"a hung asset store held /readyz for {took:.1f}s against a "
         f"{READINESS_PROBE_TIMEOUT_S}s readiness probe. The pod gets pulled "
         f"from the Service for a wallpaper share being slow, which is the "
