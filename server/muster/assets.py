@@ -30,6 +30,7 @@ the closed vocabulary in `policy.MANAGED_FILES` stays the only thing that
 decides what a device acts on. An endpoint that let a device enumerate the store
 would be a wider answer than any device needs.
 """
+# Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
 from __future__ import annotations
 
 import concurrent.futures
@@ -112,9 +113,11 @@ _DEFAULT_MEDIA_TYPE = "application/octet-stream"
 # still leaves three seconds of the probe's budget spare. It happened twice in
 # 24 hours, at 05:40 on consecutive days.
 #
-# ANY CHANGE HERE HAS TO STAY UNDER THE PROBE TIMEOUT, and the test named
-# `test_readyz_answers_while_the_asset_store_hangs` is what holds that, because
-# the probe timeout lives in a manifest this repo does not contain.
+# ANY CHANGE HERE HAS TO STAY UNDER THE PROBE TIMEOUT, and the tests named
+# `test_storage_timeout_keeps_room_under_the_readiness_probe` and
+# `test_readyz_answers_while_the_asset_store_hangs` are what hold that, because
+# the probe timeout is a copy - `READINESS_PROBE_TIMEOUT_S` in that same test
+# file - of a number in a manifest this repo does not contain.
 STORAGE_TIMEOUT_S = 2.0
 
 # How many storage touches may be in flight at once.
