@@ -14,6 +14,18 @@ package app.muster.agent
  * it was told. "Nothing to do" is not the same as "did what it was told" when
  * nothing-to-do means the config file never arrived, so `inert` counts as a
  * concern even though it is the quietest outcome a steward has.
+ *
+ * WHERE THAT READING INVERTS, and it is the rule applied rather than an
+ * exception to it: for wipe, no instruction on the device is what a healthy
+ * handset looks like every day of its life. The server writes that file only
+ * when an administrator orders an erase, so its ABSENCE is the steward doing
+ * exactly what it was told, not a config that failed to arrive. Counting it
+ * made both enrolled handsets read "2 of 10 steps need attention" with one of
+ * the two being the wipe step reporting health (#44), and a screen that cries
+ * wolf on every healthy device trains its reader to ignore the one time it is
+ * right. `WipePolicy.Plan.isQuietHealthy` marks that single case. An empty or
+ * wrong-content wipe file stays a concern, because those ARE the arrived-broken
+ * shape the paragraph above is about.
  */
 object SyncReport {
 
