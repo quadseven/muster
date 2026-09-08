@@ -106,6 +106,35 @@ quoted; a green suite never gets a thing past the second bucket.
       -> certificates issued before 22:01Z carry no CRL distribution point
          and no AIA; they gain them at their next renewal, at the pace the
          device chooses.
+      -> CONSUMED BY A THIRD PARTY 2026-09-07 22:47 EDT, which is what
+         #24 was still open for. openssl, over http, against the real
+         hostnames, not a test client:
+           . the CRL parses and carries EXACTLY the two unexpired
+             certificates of the one revoked device (91d5feae, revoked
+             2026-09-01 22:27:56Z) and nothing else - compared as a set
+             against `kith_certificate` joined to `kith_device`, not
+             eyeballed by count. The three live devices' certificates are
+             correctly absent.
+           . OCSP answers `good` for a live device's serial, `revoked`
+             with the right revocation time for the revoked one, and
+             `unknown` for a serial that was never issued. All three
+             report `Response verify OK`, so the responder's signature
+             validates against the CA - the responses are trusted, not
+             merely parsed.
+           . both carry `Cache-Control: public, max-age=300,
+             must-revalidate` and an `expires` five minutes out, and
+             NEITHER carries a credential header. Read off the wire.
+      -> STILL NOT MEASURED, and now for a precise reason rather than for
+         want of trying: no certificate carries an AIA URI to reach,
+         because NOTHING HAS BEEN ISSUED SINCE THE DEPLOY. All five
+         certificates in the live kith were issued 2026-08-20 to
+         2026-08-30, before the endpoints existed, and all five carry
+         only Basic Constraints, Extended Key Usage and Key Usage - no
+         AIA, no CRLDP. The deployed image (commit 4a8e947) DOES carry
+         the code that adds both, so the gap is issuance, not build.
+         Until a device renews, the CRL and OCSP endpoints work and are
+         verifiable but no certificate in circulation points at them, so
+         an external validator has no way to discover them.
 
     MERGED, NOT DEPLOYED
       agent: Fetched.Revoked, WipePolicy/WipeSteward      (#21, #25)
@@ -178,36 +207,60 @@ refusal, the response mapping and the durable agent state, but no handset has
 made a post-revoke request in this period. The next-request behavior, including
 the fifteen-minute periodic path, remains unmeasured on hardware.
 
-## OCSP and a CRL are built, and NOT SERVING
+## OCSP and a CRL SERVE, and a third party has now verified both
 
-Written 2026-09-01. This one is a third category and the distinction matters
-more than the usual measured/written split: the code is merged, the tests pass,
-and **the endpoints answer nothing at all**, because they have never been
-deployed.
+Rewritten 2026-09-07. **The version of this section written 2026-09-01 was
+overtaken the same day and said the opposite of the live system for six days.**
+It is quoted here rather than deleted, because the failure it illustrates - a
+doc that is accurate at the hour it is written and false by the evening - is the
+one this file exists to catch.
 
-`muster/revocation.py` builds both artifacts. Issued certificates now carry AIA
-and CRL distribution point extensions. Both endpoints are registered as
+What it said:
+
+> the code is merged, the tests pass, and **the endpoints answer nothing at
+> all**, because they have never been deployed.
+
+> The pod is not running this image, and the running deployment has neither
+> `MUSTER_CRL_URL` nor `MUSTER_OCSP_URL` set.
+
+> No `openssl crl` or `openssl ocsp` invocation has ever been run against a
+> real muster. Every assertion above is a test client.
+
+All three are false. The deploy landed 2026-09-01 as revision 43; the running
+pod carries both variables; and openssl consumed both endpoints on 2026-09-07.
+
+`muster/revocation.py` builds both artifacts. Both endpoints are registered as
 Starlette `Host` routers on their own hostnames, so they are a fourth audience -
 public, unauthenticated, and unlike every other route here, meant to be cached.
 A kith outage answers 503 for the CRL and RFC 6960 `tryLater` for OCSP, never a
 quiet "not revoked". D28 argues the five-minute freshness window.
 
-**What is NOT true yet, and would be easy to assume from a green build:**
+**MEASURED 2026-09-07 22:47 EDT**, by openssl over plain http against the real
+hostnames. The detail is in the revision-43 block above; in short, the CRL
+carries exactly the revoked device's two unexpired certificates and nothing
+else, OCSP answers good / revoked / unknown with `Response verify OK` against
+the CA, and both responses are cacheable and credential-free on the wire.
 
-- The pod is not running this image, and the running deployment has neither
-  `MUSTER_CRL_URL` nor `MUSTER_OCSP_URL` set. `app_from_env` REFUSES TO START
-  without both, so bumping the image digest before the manifest gains them is a
-  CrashLoopBackOff rather than a quiet fallback. That guard is deliberate: the
-  defaults it replaced pointed at `muster.example`, which would have stamped an
-  unreachable URI into every certificate while every test still passed.
-- `crl.muster.example` and `ocsp.muster.example` have no tunnel routes and no DNS.
-  Nothing answers on either name.
-- No `openssl crl` or `openssl ocsp` invocation has ever been run against a
-  real muster. Every assertion above is a test client.
+**THE ONE THING THAT IS STILL NOT TRUE, and it is the one the guard exists
+for.** No certificate in circulation carries an AIA URI, because none has been
+issued since the deploy. All five certificates in the live kith were issued
+between 2026-08-20 and 2026-08-30 and carry Basic Constraints, Extended Key
+Usage and Key Usage - and nothing else. No AIA. No CRLDP.
 
-Tracked as #24, which carries the deploy order. Certificates issued BEFORE that
-deploy carry no AIA or CRLDP extensions at all, so a third party validating an
-old certificate has nothing to fetch; they age out as devices renew.
+So the endpoints are reachable and verifiable, and no certificate points at
+them. A third party handed one of today's device certificates has no way to
+discover either. The deployed image (commit 4a8e947) does carry the code that
+stamps both extensions, so this is a gap in ISSUANCE, not in the build: it
+closes the first time any device renews, at the pace the device chooses (#13,
+#22), or immediately for any device enrolled from now on.
+
+The defaults that guard replaced pointed at `muster.example`, which would have
+stamped an unreachable URI into every certificate while every test still passed.
+That is why the AIA box is the one that had to be measured on a real
+certificate and cannot be inferred from a green build - and it remains
+unmeasured for exactly that reason.
+
+Tracked as #24.
 
 ## Periodic check-in is wired, not measured
 
