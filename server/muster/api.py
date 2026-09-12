@@ -85,6 +85,7 @@ import os
 import pathlib
 import urllib.parse
 from dataclasses import dataclass, field
+from typing import Callable
 from email.utils import format_datetime
 
 from cryptography.hazmat.primitives import serialization
@@ -1512,6 +1513,36 @@ def _changed_or_refused(write, unreachable) -> None:
         raise HTTPException(status_code=404, detail="no such device")
 
 
+def _refuse_reboot_on_a_revoked_device(
+    state: State,
+    key_id: str,
+    unreachable: Callable[[kith_store.Unreachable], HTTPException],
+) -> None:
+    """A 409 if arming a reboot on this device would silently readmit it (muster#58).
+
+    EXTRACTED FROM THE ROUTE, not for tidiness: `_register_kith_routes` is
+    over the complexity cap (Grug: cyclomatic 24/15, cognitive 31/25), and a
+    branchy check left inline would move it around without removing it from
+    that function's count - the same reason `_turn_wipe_pending_into_revoked`
+    lives at module level instead of inside its own registrar.
+
+    THE UNREACHABLE-HANDLER IS A PARAMETER, matching `_changed_or_refused`'s
+    already-working shape, rather than a bare `_unreachable` reference. That
+    bare reference is exactly what made `_turn_wipe_pending_into_revoked` a
+    real bug (muster#59, filed rather than fixed there) - this function does
+    not repeat it.
+    """
+    try:
+        member = state.kith.member(key_id)
+    except kith_store.Unreachable as exc:
+        raise unreachable(exc) from exc
+    if member is not None and member.device.revoked_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="this device is revoked; readmit it before asking it to reboot",
+        )
+
+
 def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
     """Who muster has issued to. The first endpoints that can answer at all.
 
@@ -1783,13 +1814,15 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         readmitting to deliver it is correct. A reboot is the opposite: far
         weaker than revocation, and silently readmitting a device an
         administrator revoked on purpose just to reboot it would be a
-        dangerous surprise rather than a convenience. This is a plain read
-        before the write rather than a database-level guard, matching
-        `_turn_wipe_pending_into_revoked`'s own use of a member-read for a
-        friendly refusal - accepted here because the race it leaves (revoking
-        and reboot-arming the same device in the same instant, from two admin
-        calls) leaves an inert flag on a device that already refuses every
-        request, not a security property like wipe's ordering protects.
+        dangerous surprise rather than a convenience. `_refuse_reboot_on_a_
+        revoked_device` does a plain read before the write rather than a
+        database-level guard, matching `_turn_wipe_pending_into_revoked`'s own
+        use of a member-read for a friendly refusal - accepted here because
+        the race it leaves (revoking and reboot-arming the same device in the
+        same instant, from two admin calls) leaves an inert flag on a device
+        that already refuses every request, not a security property like
+        wipe's ordering protects. It lives outside this route (Grug: this
+        registrar was already over the complexity cap) rather than inline.
 
         `reboot: false` CANCELS AN UNDELIVERED INSTRUCTION, and is refused
         nothing - cancelling never touches `revoked_at` either way, so there
@@ -1802,16 +1835,7 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         at a moment of the attacker's choosing.
         """
         if reboot:
-            try:
-                member = state.kith.member(key_id)
-            except kith_store.Unreachable as exc:
-                raise _unreachable(exc) from exc
-            if member is not None and member.device.revoked_at is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="this device is revoked; readmit it before "
-                           "asking it to reboot",
-                )
+            _refuse_reboot_on_a_revoked_device(state, key_id, _unreachable)
         _changed_or_refused(
             lambda: state.kith.set_reboot_requested(key_id, reboot), _unreachable
         )
