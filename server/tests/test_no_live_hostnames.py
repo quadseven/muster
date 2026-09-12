@@ -70,6 +70,10 @@ ALLOWED = frozenset(
         "ghcr.io",
         "github.com",
         "kubectl.kubernetes.io",
+        # Cloudflare Pages' own shared domain, named in docs/what-is-deployed.md
+        # to describe the splash site's apex CNAME (muster#49). Generic to every
+        # Pages project on Cloudflare, not specific to this one.
+        "pages.dev",
         "pypi.org",
         "schemas.android.com",
         # The SIL Open Font License's own canonical URL, which appears in the

@@ -40,6 +40,44 @@ without it, deliberately: see `docs/administrator-sign-in.md`).
                 kith in memory, says so at boot and on /readyz, and keeps
                 issuing. Step 7 below is what creates it.
 
+## The splash page's infrastructure, applied by hand and unmanaged
+
+`site/` ships a static page, and `site/README.md` says "Cloudflare Pages,
+serving this directory as the site root" and stops there. Three real pieces
+of infrastructure stand behind that sentence and none of them is Pulumi:
+
+    Pages project    <pages-project>                 created by hand via the CF API
+    apex CNAME       muster.example                  -> <pages-project>.pages.dev, proxied
+    custom domain    muster.example attached to the Pages project, set by hand
+
+**Deliberately outside Pulumi, and this is worth stating plainly rather than
+discovering by absence.** The muster control plane's own tunnel routes
+(`enroll`, `crl`, `ocsp` on this same zone) WERE once exactly this kind of
+by-hand gap - added at the Cloudflare edge on 2026-09-01/02 while Pulumi's
+`tunnel_public_ingress` still declared only one unrelated route, which meant
+the next `pulumi up` on that path would have deleted all three and taken the
+control plane's public face down with them. That landmine was real and is now
+DEFUSED: infra#3132 absorbed all three into `tunnel_public_ingress` on
+2026-09-03, and they are IaC-managed today.
+
+**The apex CNAME and the Pages project were never part of that absorption,
+and infra's own Pulumi config says so directly** (`pulumi/cloudflare/
+Pulumi.prod.yaml`, the comment beside the `muster` zone entry): the apex is a
+hand-made CNAME to the Pages project's own `pages.dev` address, and "stays
+outside this stack" in that comment's own words. So the risk here is the
+opposite shape from the tunnel landmine - not "an
+unrelated apply deletes this," since it was never in the applied config to
+begin with, but "a future migration absorbs the tunnel routes, is declared
+complete, and nobody notices the splash page was never covered." Read
+infra#3132 before touching anything on this zone; it names exactly which
+three hostnames ARE IaC-managed now, which is precisely the list this splash
+page's own apex is not on.
+
+Moving the Pages project and the apex CNAME into Pulumi is a real option, and
+this stack already manages at least one other vendor-hosted static site's apex
+that way - but it is a decision an operator makes, not something to infer from
+this doc existing.
+
 ## The order it has to be done in
 
 **1. The CA, once and only once.**
