@@ -73,6 +73,14 @@ object BootPlan {
         // itself must not spend its remaining time reconciling less important
         // policy.
         "wipe" to { context: Context -> WipeSteward(context).reconcile() },
+        // RIGHT AFTER WIPE, BEFORE THE OTHER STEWARDS, same reasoning as wipe
+        // itself (muster#58). A reboot ends this process too - restrictions,
+        // wallpaper and the rest would be pointless to reconcile immediately
+        // before the device restarts and gets another chance at them anyway.
+        // If BOTH a wipe and a reboot instruction are pending, wipe always
+        // runs first and ends the process before this step is reached, so no
+        // separate precedence guard is needed.
+        "reboot" to { context: Context -> RebootSteward(context).reconcile() },
         "restrictions" to { context: Context -> RestrictionSteward(context).reconcile() },
         // After restrictions, because the restrictions are what keep a managed
         // app on the handset at all - there is no point configuring an app

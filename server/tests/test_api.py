@@ -1929,6 +1929,9 @@ DEVICE_PROVEN = {
     # instruction before it erases itself. Device-proven for the same reason
     # every other device action is: the proof is the authorization.
     ("POST", "/v1/device/wipe"),
+    # muster#58: a reboot-requested device acknowledges before calling
+    # DevicePolicyManager.reboot(), same shape as wipe and the same reason.
+    ("POST", "/v1/device/reboot"),
 }
 
 ADMINISTRATOR_ONLY = {
@@ -1960,6 +1963,9 @@ ADMINISTRATOR_ONLY = {
     # wipe instruction can still travel to the device that will be refused
     # after it acknowledges.
     ("POST", "/v1/kith/{key_id}/wipe"),
+    # muster#58: a device that could reboot itself on request could be told
+    # to by whatever compromised it, at a moment of the attacker's choosing.
+    ("POST", "/v1/kith/{key_id}/reboot"),
 }
 
 # THE FOURTH AUDIENCE: public, unauthenticated, and cacheable - standard
@@ -2874,6 +2880,174 @@ def test_a_wipe_can_be_called_off_before_the_device_comes_back(state, tmp_path):
     assert policy.WIPE_FILE not in response.json()["files"], (
         "the wipe was called off and the device was still told to wipe"
     )
+
+
+# ---- rebooting a device remotely (muster#58) -------------------------------
+
+
+def _reboot_requested_device(state, tmp_path):
+    """A really-enrolled device, then told to reboot itself. Same return shape
+    as `_wipe_pending_device`."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, key = _enrolled_device(client, state, tmp_path)
+    identity = _collect_identity(client, state)
+    assert client.post(
+        f"/v1/kith/{key_id}/reboot", json={"reboot": True}, cookies=ADMIN
+    ).status_code == 200
+    return client, key, identity, key_id
+
+
+def test_a_reboot_requested_device_is_served_the_reboot_file(state, tmp_path):
+    """UNLIKE WIPE, this does not need its own policy directory - reboot is
+    merged into the normal response rather than short-circuiting it, so a
+    device with a real policy source still gets both."""
+    from muster import policy
+
+    root = tmp_path / "policy-reboot"
+    root.mkdir()
+    (root / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    state.policies = policy.Policies(root=root)
+    client, key, identity, _key_id = _reboot_requested_device(state, tmp_path)
+
+    response = _fetch_config(client, key, identity)
+
+    assert response.status_code == 200
+    files = response.json()["files"]
+    assert policy.REBOOT_FILE in files, "the reboot instruction did not arrive"
+    assert "restrictions" in files, (
+        "reboot short-circuited the rest of policy - it must not, unlike wipe"
+    )
+
+
+def test_reboot_cannot_be_armed_on_a_revoked_device(state, tmp_path):
+    """THE OPPOSITE DESIGN FROM WIPE, DELIBERATELY. `set_wipe_pending` clears
+    `revoked_at` because wipe supersedes revocation; silently readmitting a
+    revoked device just to reboot it would be a dangerous surprise instead of
+    a convenience, so arming a reboot on one is refused outright."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
+    ).status_code == 200
+
+    response = client.post(
+        f"/v1/kith/{key_id}/reboot", json={"reboot": True}, cookies=ADMIN
+    )
+
+    assert response.status_code == 409
+    assert "revoked" in response.json()["detail"]
+    assert client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"][
+        "reboot_requested_at"
+    ] is None, "the refused request must not have been written anyway"
+
+
+def test_revoking_after_a_reboot_is_armed_leaves_it_undeliverable(state, tmp_path):
+    """A reboot armed before a later revocation is not cleared - it simply
+    can never be fetched, because `_proven_device` refuses the key before the
+    policy layer runs. Written down so this shape is not confused with wipe's:
+    wipe is DESIGNED to still reach a revoked-along-the-way device; reboot is
+    not, and is not meant to be."""
+    client, key, identity, key_id = _reboot_requested_device(state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
+    ).status_code == 200
+
+    response = _fetch_config(client, key, identity)
+
+    assert response.status_code == 403
+    assert "revoked" in response.json()["detail"]
+
+
+def test_the_reboot_route_is_administrator_only(state, tmp_path):
+    """A device that could reboot itself on request could be told to by
+    whatever compromised it. Same argument as wipe."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+
+    assert client.post(
+        f"/v1/kith/{key_id}/reboot", json={"reboot": True}
+    ).status_code == 401
+
+
+def test_a_reboot_can_be_called_off_before_the_device_comes_back(state, tmp_path):
+    """REVERSIBLE, same argument as wipe: an administrator can name the wrong
+    key_id, and cancelling must not be blocked by anything - unlike arming, it
+    never touches `revoked_at` either way."""
+    from muster import policy
+
+    root = tmp_path / "policy-reboot-called-off"
+    root.mkdir()
+    (root / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    state.policies = policy.Policies(root=root)
+    client, key, identity, key_id = _reboot_requested_device(state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{key_id}/reboot", json={"reboot": False}, cookies=ADMIN
+    ).status_code == 200
+
+    response = _fetch_config(client, key, identity)
+
+    assert response.status_code == 200
+    assert policy.REBOOT_FILE not in response.json()["files"], (
+        "the reboot was called off and the device was still told to reboot"
+    )
+
+
+def test_cancelling_a_reboot_is_never_blocked_by_revocation(state, tmp_path):
+    """The one place arming and cancelling deliberately behave differently -
+    see the reboot route's own docstring."""
+    client, key, identity, key_id = _reboot_requested_device(state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
+    ).status_code == 200
+
+    response = client.post(
+        f"/v1/kith/{key_id}/reboot", json={"reboot": False}, cookies=ADMIN
+    )
+
+    assert response.status_code == 200
+    assert client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"][
+        "reboot_requested_at"
+    ] is None
+
+
+def test_a_reboot_requested_device_can_acknowledge_it(state, tmp_path):
+    """THE SECOND HALF OF THE ORDERING (muster#58). Once acknowledged, the
+    flag clears - there is no second state to move into the way wipe moves
+    into `revoked_at`, because a rebooted device is expected back."""
+    client, key, identity, key_id = _reboot_requested_device(state, tmp_path)
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    response = client.post("/v1/device/reboot", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    })
+
+    assert response.status_code == 200
+    assert response.json() == {"key_id": key_id, "reboot_acknowledged": True}
+    assert client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"][
+        "reboot_requested_at"
+    ] is None
+
+
+def test_acknowledging_a_reboot_that_was_never_requested_is_a_409(state, tmp_path):
+    client, _apk = _published_and_proving(state, tmp_path)
+    _key_id, key = _enrolled_device(client, state, tmp_path)
+    identity = _collect_identity(client, state)
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    response = client.post("/v1/device/reboot", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    })
+
+    assert response.status_code == 409
+    assert "reboot" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("method,path", sorted(DEVICE_PROVEN))

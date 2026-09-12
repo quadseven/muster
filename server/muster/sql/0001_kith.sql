@@ -175,3 +175,19 @@ CREATE INDEX IF NOT EXISTS kith_device_wipe_pending_at_idx
 -- back to the device's own name needs a real way to say so.
 ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS admin_name text;
+
+-- WHEN AN ADMINISTRATOR ASKED FOR THIS DEVICE TO REBOOT (muster#58). NULL
+-- means no reboot is waiting. NULLABLE for the same reason `revoked_at` and
+-- `wipe_pending_at` are: a timestamp has no honest zero value.
+--
+-- DELIBERATELY INDEPENDENT OF `revoked_at` AND `wipe_pending_at`, and this is
+-- the one place this column's design departs from wipe's. Setting wipe-pending
+-- clears `revoked_at` because wipe supersedes revocation - muster#15 made that
+-- readmission correct on purpose, since an erase is the stronger action. A
+-- reboot is a much weaker, purely diagnostic action, and silently readmitting
+-- a device an administrator revoked on purpose just to reboot it would be a
+-- dangerous surprise rather than a convenience. So the API refuses to set this
+-- column on a currently-revoked device instead of clearing `revoked_at` for
+-- it - see `set_device_reboot` in api.py.
+ALTER TABLE kith_device
+    ADD COLUMN IF NOT EXISTS reboot_requested_at timestamptz;

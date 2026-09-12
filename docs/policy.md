@@ -115,6 +115,39 @@ Reaching a device that has gone dark requires the device to enforce a deadline
 on itself with no network, which is a different and considerably more dangerous
 mechanism - a phone whose router breaks for long enough would erase itself.
 
+## Rebooting a device, and what it is not for
+
+An administrator can ask a device to restart itself, the same two-step shape
+as wipe:
+
+    POST /v1/kith/{key_id}/reboot   {"reboot": true}
+
+It fills the gap between "do nothing" and "erase it" - a device that is stuck
+without having crashed outright had no lever between those two before this.
+
+**READ THIS BEFORE REACHING FOR IT, because getting the case wrong can make
+things worse rather than better.** Reboot fixes a crash loop or corrupted
+state. It does NOT obviously fix a foreground service Android killed for
+being backgrounded - "the app went quiet" is usually that shape, not a crash
+- and a phone with a lock screen may come back up unable to do anything that
+needs an unlocked keyguard. `CheckInSchedulePolicy.kt`'s own history is a
+phone that rebooted and could not announce itself again until someone
+physically unlocked it - the console write token is deliberately not cached
+before first unlock. Reaching for reboot on a service that merely went quiet
+can turn a recoverable state into one that needs a physical tap anyway. Try
+again, or wait for the fifteen-minute check-in to re-deliver configuration to
+the live process, before rebooting.
+
+**One deliberate difference from wipe: arming a reboot on a revoked device is
+refused, not served.** `{"wipe": true}` clears `revoked_at` because wipe
+supersedes revocation - erasing is the stronger action, so readmitting to
+deliver it is correct (D29, above). A reboot is the opposite: far weaker than
+revocation, and silently readmitting a device an administrator revoked on
+purpose, just to reboot it, would be a dangerous surprise instead of a
+convenience. `{"reboot": false}` (calling an undelivered instruction off) is
+never refused this way - cancelling never touches `revoked_at` either
+direction, so there is nothing to guard against.
+
 ## An absent restrictions file and an empty one mean different things
 
     no file        nothing has been configured; the device is left as it is

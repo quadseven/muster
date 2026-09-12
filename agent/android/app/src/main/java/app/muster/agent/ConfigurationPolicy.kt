@@ -74,6 +74,9 @@ object ConfigurationPolicy {
         // server; this half cannot make it less destructive, but it can ensure
         // the name is closed rather than a remote write primitive.
         "wipe",
+        // The instruction to reboot this device (muster#58). Same shape as
+        // wipe, one severity down, and read by RebootSteward.
+        "reboot",
     )
 
     /** How much of a name muster does not manage is worth putting in logcat. */

@@ -91,6 +91,16 @@ from dataclasses import dataclass
 WIPE_FILE = "wipe"
 WIPE_COMMAND = "wipe\n"
 
+# The same shape as WIPE_FILE, one severity down (muster#58): synthesized from
+# `reboot_requested_at`, not read from the policy directory, closed vocabulary
+# for the same reason - a reboot file one typo away from `kith` scope is a
+# fleet-wide reboot. UNLIKE wipe it does NOT short-circuit `for_device` below:
+# a reboot is not urgent enough to justify skipping the rest of policy, and a
+# device only one check-in away from its next chance to receive it costs
+# nothing a wipe-pending device's delay would.
+REBOOT_FILE = "reboot"
+REBOOT_COMMAND = "reboot\n"
+
 MANAGED_FILES: tuple[str, ...] = (
     "restrictions",
     "visible-apps",
@@ -108,6 +118,10 @@ MANAGED_FILES: tuple[str, ...] = (
     # it, but it is not read from the policy directory: `for_device` returns it
     # only when the kith says this device is wipe-pending.
     WIPE_FILE,
+    # The instruction to reboot the device (muster#58). Same closed-vocabulary
+    # reasoning as WIPE_FILE; RebootSteward reads it. `for_device` returns it
+    # only when the kith says this device is reboot-requested.
+    REBOOT_FILE,
 )
 
 # The half of that vocabulary a device may inherit from the kith.
@@ -163,11 +177,15 @@ ROLE_SCOPE_PREFIX = "role-"
 # trade, made deliberately - a role is a statement that these devices are
 # interchangeable, and interchangeable devices share what they run.
 #
-# `wipe` is excluded even though roles may carry every other managed file. A
-# role means "these devices are interchangeable", which is precisely the wrong
-# scope for an instruction that erases ONE device. Wipe is device scope only,
-# by construction, not by operator discipline.
-ROLE_FILES: tuple[str, ...] = tuple(name for name in MANAGED_FILES if name != WIPE_FILE)
+# `wipe` and `reboot` are excluded even though roles may carry every other
+# managed file. A role means "these devices are interchangeable", which is
+# precisely the wrong scope for an instruction that acts on ONE device - a
+# reboot typo'd into a role file restarts a fleet, not the one device that
+# needed it. Both are device scope only, by construction, not by operator
+# discipline.
+ROLE_FILES: tuple[str, ...] = tuple(
+    name for name in MANAGED_FILES if name not in (WIPE_FILE, REBOOT_FILE)
+)
 
 # Same shape as enroll._ROLE, and checked again here on purpose. By the time a
 # role reaches this module it is about to become half of a path.
@@ -333,11 +351,12 @@ class Policies:
                 if (
                     entry.is_file()
                     and entry.name.split(".", 1)[-1] in MANAGED_FILES
-                    # Wipe is synthesized from the kith, never read from here.
-                    # Counting a stray `kith.wipe` as policy would make a
-                    # directory holding only that dangerous typo look like a
-                    # live source and serve an empty configuration to devices.
-                    and entry.name.split(".", 1)[-1] != WIPE_FILE
+                    # Wipe and reboot are synthesized from the kith, never read
+                    # from here. Counting a stray `kith.wipe` or `kith.reboot`
+                    # as policy would make a directory holding only that
+                    # dangerous typo look like a live source and serve an
+                    # empty configuration to devices.
+                    and entry.name.split(".", 1)[-1] not in (WIPE_FILE, REBOOT_FILE)
                 )
             )
         except OSError:
@@ -360,7 +379,11 @@ class Policies:
         }
 
     def for_device(
-        self, key_id: str, role: str = "", wipe_pending: bool = False
+        self,
+        key_id: str,
+        role: str = "",
+        wipe_pending: bool = False,
+        reboot_requested: bool = False,
     ) -> Configuration:
         """What this device is told to be, most specific scope first.
 
@@ -376,6 +399,13 @@ class Policies:
         That is also why it cannot be authored as `kith.wipe` or `role-*.wipe`:
         the shared and role scopes are intentionally not consulted for this
         name.
+
+        REBOOT IS THE SAME SHAPE, ONE SEVERITY DOWN, WITH ONE DIFFERENCE
+        (muster#58): it does NOT short-circuit the rest of policy the way wipe
+        does. Wipe skips a broken policy volume because the device is about to
+        be erased and nothing else matters; a reboot instruction delayed one
+        check-in by an unrelated policy read failure costs nothing comparable,
+        so it is merged into the normal `files` map below instead.
         """
         _refuse_unusable_scope(key_id, role)
 
@@ -409,11 +439,12 @@ class Policies:
 
         files: dict[str, str] = {}
         for name in MANAGED_FILES:
-            # Wipe is not read here, even from `<key_id>.wipe`. It is the one
-            # managed name whose source is membership state, not an operator
-            # editing a Secret, because a wipe file must not be able to become
-            # a shared file through a filename typo.
-            if name == WIPE_FILE:
+            # Wipe and reboot are not read here, even from `<key_id>.wipe` or
+            # `<key_id>.reboot`. Both are managed names whose source is
+            # membership state, not an operator editing a Secret, because
+            # either file must not be able to become a shared file through a
+            # filename typo.
+            if name in (WIPE_FILE, REBOOT_FILE):
                 continue
             mine = self.root / f"{key_id}.{name}"
             if mine.is_file():
@@ -431,6 +462,10 @@ class Policies:
             theirs = self.root / f"{KITH_SCOPE}.{name}"
             if name in SHARED_FILES and theirs.is_file():
                 files[name] = _read(theirs)
+        # MERGED IN, NOT SHORT-CIRCUITED - see the docstring above for why this
+        # differs from wipe.
+        if reboot_requested:
+            files[REBOOT_FILE] = REBOOT_COMMAND
         return Configuration(
             key_id=key_id, files=files, revision=_revision(files), role=role
         )
