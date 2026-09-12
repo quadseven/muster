@@ -153,3 +153,25 @@ CREATE INDEX IF NOT EXISTS kith_device_revoked_at_idx
 -- scan behind the same question for revocation.
 CREATE INDEX IF NOT EXISTS kith_device_wipe_pending_at_idx
     ON kith_device (wipe_pending_at);
+
+-- WHAT AN ADMINISTRATOR CALLS THIS DEVICE, when `name` alone does not tell two
+-- of them apart (muster#29: three devices all vouched for as "Pixel 6a", one
+-- wipe confirmation dialog for all three). NULL means no override; the console
+-- falls back to `name`.
+--
+-- A SEPARATE COLUMN RATHER THAN OVERWRITING `name`, and this is the whole
+-- reason it exists apart from `name` at all: `record_issuance`'s upsert makes
+-- `name` follow the NEWER record on every write, renewal included, because
+-- that is correct for a device-reported field - a device that changes what it
+-- calls itself should show the new value. Renewal happens with nobody
+-- watching (#13, #22), so a rename WRITTEN INTO `name` would be silently
+-- reverted at the device's next check-in, weeks or months later, by a write
+-- the operator never sees. `name` keeps meaning "what the device says about
+-- itself"; this column is untouched by `record_issuance` and only an
+-- administrator ever writes it.
+--
+-- NULLABLE for the same reason `revoked_at` is: an empty string and "no
+-- override" would be the same value read two ways, and a rename that clears
+-- back to the device's own name needs a real way to say so.
+ALTER TABLE kith_device
+    ADD COLUMN IF NOT EXISTS admin_name text;

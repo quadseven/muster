@@ -185,6 +185,15 @@ class Device:
     # wipe file; it becomes `revoked_at` only after the device acknowledges the
     # instruction (muster#15).
     wipe_pending_at: dt.datetime | None = None
+    # What an ADMINISTRATOR calls this device, when `name` alone does not tell
+    # two of them apart (muster#29). None means no override: display `name`.
+    #
+    # NOT THE SAME FIELD AS `name`, deliberately. `name` follows the device's
+    # own report on every renewal (see `record_issuance`), so writing a rename
+    # into it would be silently reverted the next time the device checks in.
+    # This one is never touched by issuance and only ever set by an
+    # administrator, so it survives exactly the event that would erase it.
+    admin_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -243,6 +252,8 @@ class Records(Protocol):
     def record_seen(self, key_id: str, at: dt.datetime) -> None: ...
 
     def record_role(self, key_id: str, role: str) -> bool: ...
+
+    def record_admin_name(self, key_id: str, name: str | None) -> bool: ...
 
     def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool: ...
 
@@ -372,6 +383,17 @@ class MemoryRecords:
         # never overwrites, so a re-enrolment cannot silently strip a handset;
         # here an operator is saying so deliberately and needs a way back.
         self._devices[key_id] = replace(device, role=role)
+        return True
+
+    def record_admin_name(self, key_id: str, name: str | None) -> bool:
+        device = self._devices.get(key_id)
+        if device is None:
+            return False
+        # UNLIKE `name`, this field is never touched by `record_issuance`, so
+        # there is no ordering hazard here to guard against - only a plain
+        # write, `None` included, since clearing an override is a deliberate
+        # decision this method exists to allow.
+        self._devices[key_id] = replace(device, admin_name=name)
         return True
 
     def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool:
@@ -779,6 +801,19 @@ class PostgresRecords:
 
         return bool(self._run(work))
 
+    def record_admin_name(self, key_id: str, name: str | None) -> bool:
+        def work(cursor):
+            # NOT PART OF `record_issuance`'s upsert, and that is what makes
+            # this column different from `name`: nothing else ever writes it,
+            # so there is no ordering hazard to guard against here.
+            cursor.execute(
+                "UPDATE kith_device SET admin_name = %s WHERE key_id = %s",
+                (name, key_id),
+            )
+            return cursor.rowcount
+
+        return bool(self._run(work))
+
     def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool:
         def work(cursor):
             # ONE STATEMENT BOTH WAYS. `at=None` writes NULL, which is
@@ -876,7 +911,9 @@ class PostgresRecords:
         "       d.revoked_at,"
         # LAST, after revoked_at: `_member_from_row` reads by position, so
         # appending leaves every existing index meaning what it meant.
-        "       d.wipe_pending_at"
+        "       d.wipe_pending_at,"
+        # LAST OF ALL, same reason again.
+        "       d.admin_name"
         "  FROM kith_device d"
         "  LEFT JOIN kith_certificate c ON c.key_id = d.key_id"
     )
@@ -974,6 +1011,7 @@ def _member_from_row(row) -> Member:
             # fleet on a column-ordering mistake.
             revoked_at=row[9] if len(row) > 9 else None,
             wipe_pending_at=row[10] if len(row) > 10 else None,
+            admin_name=row[11] if len(row) > 11 else None,
         ),
         certificates=row[5],
         current_serial=row[6],
@@ -1128,6 +1166,22 @@ class Kith:
         from "done".
         """
         return bool(self._write_now(lambda records: records.record_role(key_id, role)))
+
+    def set_admin_name(self, key_id: str, name: str | None) -> bool:
+        """Give a device the label an administrator uses for it (muster#29).
+
+        SYNCHRONOUS FOR THE SAME REASON `set_role` IS: an operator is about to
+        go and act on a wipe or revoke confirmation carrying this name, so a
+        write that quietly joined a backlog would report success before it was
+        true.
+
+        `None` clears the override and falls back to the device-reported
+        `name`. Returns whether a device was actually changed, so a caller can
+        tell "no such key" from "done".
+        """
+        return bool(
+            self._write_now(lambda records: records.record_admin_name(key_id, name))
+        )
 
     def set_revoked(self, key_id: str, revoked: bool) -> bool:
         """Say this device is no longer ours, or that it is again.
