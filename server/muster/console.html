@@ -592,6 +592,8 @@
   <p class="muted confirm-lede" id="device-action-lede"></p>
   <p class="fp" id="device-action-fp"></p>
   <p class="muted" id="device-action-name"></p>
+  <input class="field-input breath" id="device-action-input" autocomplete="off"
+         spellcheck="false" hidden>
   <div class="actions">
     <button class="action" id="device-action-cancel">Cancel</button>
     <button class="action primary" id="device-action-confirm"></button>
@@ -786,13 +788,26 @@
     for (const device of devices) target.append(deviceRow(device));
   }
 
+  // WHAT AN OPERATOR CALLS THIS DEVICE (muster#29). `admin_name` overrides
+  // `name` when set - one place this precedence is decided, used everywhere
+  // a device's name reaches the page, so a row and its confirmation dialog
+  // cannot end up disagreeing about which name a device has.
+  function displayName(device) {
+    return device.admin_name || device.name;
+  }
+
   function deviceRow(device) {
     const row = document.createElement('div');
     row.className = 'row device-row';
     const left = document.createElement('div');
     left.className = 'device-meta';
+    const nameEl = element('div', '', displayName(device));
+    // THE DEVICE'S OWN REPORT, kept reachable rather than replaced. An
+    // operator who renamed a device still needs to see what it calls itself,
+    // the same field the console showed before the rename existed.
+    if (device.admin_name) nameEl.title = 'Device reports itself as: ' + device.name;
     left.append(
-      element('div', '', device.name),
+      nameEl,
       element('div', 'fp', device.fingerprint),
       element('div', 'muted shape', device.role ? 'role: ' + device.role : 'no role'),
     );
@@ -802,6 +817,12 @@
 
     const actions = document.createElement('div');
     actions.className = 'device-actions';
+    const rename = document.createElement('button');
+    rename.className = 'action';
+    rename.textContent = 'Rename';
+    rename.onclick = () => openDeviceAction(device, 'rename');
+    actions.append(rename);
+
     const wipe = document.createElement('button');
     wipe.className = 'action danger';
     wipe.textContent = device.wipe_pending_at ? 'Call off erase' : 'Queue erase';
@@ -896,6 +917,22 @@
 
   let deviceAction = null;
   const DEVICE_ACTIONS = {
+    // THE ONE ACTION HERE WITH A TEXT FIELD, held as data rather than a
+    // branch bolted onto the dialog, the same way SHAPES/CONFIRM above keep
+    // the row and the dialog from describing two different ceremonies.
+    // `hasInput` shows the field; `body` is a FUNCTION here instead of a
+    // plain object because what gets posted is whatever was just typed, not
+    // a fixed shape decided when the page loaded.
+    rename: {
+      question: 'Rename this device?',
+      lede: 'This is a label for the console only. It carries no policy and '
+        + 'the device never sees it. Leave it blank to fall back to what the '
+        + 'device reports about itself.',
+      confirm: 'Save name',
+      hasInput: true,
+      path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/name',
+      body: (input) => ({ name: input }),
+    },
     wipe: {
       question: 'Erase this device?',
       lede: 'This queues an erase for the named device. It will be erased at its next check-in. Do not revoke it first, or the instruction cannot arrive.',
@@ -932,8 +969,14 @@
     $('device-action-question').textContent = words.question;
     $('device-action-lede').textContent = words.lede;
     $('device-action-fp').textContent = device.fingerprint;
-    $('device-action-name').textContent = device.name;
+    $('device-action-name').textContent = displayName(device);
     $('device-action-confirm').textContent = words.confirm;
+    const input = $('device-action-input');
+    input.hidden = !words.hasInput;
+    // PRE-FILLED WITH THE CURRENT OVERRIDE, not the device-reported name -
+    // editing what is already shown, not replacing an unrelated value the
+    // operator would have to first clear.
+    if (words.hasInput) input.value = device.admin_name || '';
     $('device-action').showModal();
   }
 
@@ -946,10 +989,15 @@
     if (!deviceAction) return;
     const { device, action } = deviceAction;
     const words = DEVICE_ACTIONS[action];
+    // `body` IS A FUNCTION for the one action with a text field (rename); a
+    // plain object for every other one, decided when the page loaded.
+    const body = words.hasInput
+      ? words.body($('device-action-input').value.trim())
+      : words.body;
     const response = await api(words.path(device), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(words.body),
+      body: JSON.stringify(body),
     });
     $('device-action').close();
     if (!response.ok) alert('That action was refused: ' + (await response.text()));

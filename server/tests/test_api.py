@@ -1949,6 +1949,12 @@ ADMINISTRATOR_ONLY = {
     # device-proven, because a role selects which policy scope is served -
     # including app-config, which carries write tokens.
     ("POST", "/v1/kith/{key_id}/role"),
+    # muster#29: the label an administrator uses for a device, when `name`
+    # does not tell two of them apart. Administrator-only for the sharpest
+    # reason of any route in this set: this exists so an administrator can
+    # tell devices apart BEFORE acting on one, and a device that could rename
+    # itself could make that confirmation lie.
+    ("POST", "/v1/kith/{key_id}/name"),
     ("POST", "/v1/kith/{key_id}/revoke"),
     # muster#15: the separate state that must come BEFORE revocation, so the
     # wipe instruction can still travel to the device that will be refused
@@ -2534,6 +2540,91 @@ def test_a_role_that_is_not_a_role_is_a_400_here_too(state, tmp_path):
         assert client.post(
             f"/v1/kith/{key_id}/role", json={"role": bad}, cookies=ADMIN
         ).status_code == 400, bad
+
+
+# ---- naming a device, so a confirmation dialog names something (muster#29) -
+
+
+def test_an_administrator_can_rename_a_device(state, tmp_path):
+    """THE POINT OF THE TICKET. Three devices vouched for with the same model
+    name are indistinguishable in a wipe or revoke confirmation; renaming one
+    is the fix, and it must reach the roll without a re-enrolment."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+
+    assert client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"][
+        "admin_name"
+    ] is None
+
+    assert client.post(
+        f"/v1/kith/{key_id}/name", json={"name": "Evan's Pixel"}, cookies=ADMIN
+    ).status_code == 200
+
+    device = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"]
+    assert device["admin_name"] == "Evan's Pixel"
+    assert device["name"] == "pixel-6a", "the device-reported name must survive too"
+
+
+def test_renaming_does_not_touch_the_device_reported_name(state, tmp_path):
+    """`name` and `admin_name` are different columns for a reason: `name`
+    keeps meaning what the device itself reports, and only `admin_name` is
+    what a person typed."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+    client.post(f"/v1/kith/{key_id}/name", json={"name": "hall thermostat"}, cookies=ADMIN)
+    assert client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"][
+        "name"
+    ] == "pixel-6a"
+
+
+def test_an_empty_name_clears_the_override(state, tmp_path):
+    """The same shape as an empty role: a deliberate clear, not a no-op,
+    because there must be a way back from a rename typed in error."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+    client.post(f"/v1/kith/{key_id}/name", json={"name": "temp label"}, cookies=ADMIN)
+    client.post(f"/v1/kith/{key_id}/name", json={"name": ""}, cookies=ADMIN)
+    assert client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"][
+        "admin_name"
+    ] is None
+
+
+def test_a_name_with_only_whitespace_also_clears(state, tmp_path):
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+    client.post(f"/v1/kith/{key_id}/name", json={"name": "temp label"}, cookies=ADMIN)
+    client.post(f"/v1/kith/{key_id}/name", json={"name": "   "}, cookies=ADMIN)
+    assert client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"][
+        "admin_name"
+    ] is None
+
+
+def test_renaming_needs_an_administrator(state, tmp_path):
+    """The confirmation dialog this rename is meant to fix exists to stop an
+    action against the wrong device; a device that could set the label itself
+    could make that confirmation lie."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{key_id}/name", json={"name": "Evan's Pixel"}
+    ).status_code == 401
+
+
+def test_renaming_a_device_that_is_not_in_the_kith_is_a_404(state, tmp_path):
+    client, _apk = _published_and_proving(state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{'a' * 64}/name", json={"name": "Evan's Pixel"}, cookies=ADMIN
+    ).status_code == 404
+
+
+def test_a_name_over_the_cap_is_a_400(state, tmp_path):
+    """A device name is shown in a confirmation dialog, not stored as a
+    document."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+    assert client.post(
+        f"/v1/kith/{key_id}/name", json={"name": "x" * 201}, cookies=ADMIN
+    ).status_code == 400
 
 
 # ---- which agent is this? (muster#67 self-update) -------------------------

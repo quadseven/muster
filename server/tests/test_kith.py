@@ -1266,3 +1266,77 @@ def test_re_roling_a_device_the_kith_never_heard_of_says_so(kith):
 def test_re_roling_a_known_device_reports_that_it_happened(kith):
     kith.issued(a_device(), a_certificate("AAAA"))
     assert kith.set_role(a_device().key_id, "zippie") is True
+
+
+def test_an_administrator_can_rename_a_device_without_re_enrolling(kith):
+    """muster#29. Three devices named 'Pixel 6a' by the vouch made a wipe
+    confirmation dialog show the same words for three different handsets."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    assert kith.member(a_device().key_id).device.admin_name == "Evan's Pixel"
+
+
+def test_a_rename_does_not_touch_the_device_reported_name(kith):
+    """DIFFERENT FROM `name`, ON PURPOSE. `record_issuance` makes `name`
+    follow the device's own report on every renewal, so a rename written into
+    that column would be silently reverted at the device's next check-in."""
+    kith.issued(a_device(name="Pixel 6a"), a_certificate("AAAA"))
+    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    assert kith.member(a_device().key_id).device.name == "Pixel 6a"
+
+
+def test_a_rename_survives_a_renewal(kith, clock):
+    """THE WHOLE POINT OF THE SEPARATE COLUMN. `test_a_stale_replay_does_not_
+    revert_the_device_name` shows `name` is EXPECTED to follow the newer
+    record; this shows `admin_name` must not, because renewal happens with
+    nobody watching (#13, #22) and a rename that reverted itself weeks later
+    would look like it never happened."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    later = START + dt.timedelta(days=80)
+    kith.issued(a_device(at=later), a_certificate("BBBB", at=later))
+    assert kith.member(a_device().key_id).device.admin_name == "Evan's Pixel"
+
+
+def test_a_rename_can_be_cleared_back_to_the_device_reported_name(kith):
+    """The same shape as clearing a role: a deliberate action, with `None`
+    rather than an empty string, because an empty string and 'no override'
+    must not be the same value read two ways."""
+    kith.issued(a_device(name="Pixel 6a"), a_certificate("AAAA"))
+    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    kith.set_admin_name(a_device().key_id, None)
+    device = kith.member(a_device().key_id).device
+    assert device.admin_name is None
+    assert device.name == "Pixel 6a"
+
+
+def test_renaming_costs_a_device_nothing_else(kith):
+    """The general form, the same shape as `test_re_roling_costs_a_device_
+    nothing_else`: any field added to `Device` later is covered without
+    anybody remembering to extend this."""
+    from dataclasses import fields
+
+    kith.issued(a_device(), a_certificate("AAAA"))
+    before = kith.member(a_device().key_id).device
+    kith.set_admin_name(before.key_id, "Evan's Pixel")
+    after = kith.member(before.key_id).device
+    for field in fields(before):
+        if field.name == "admin_name":
+            continue
+        assert getattr(after, field.name) == getattr(before, field.name), field.name
+
+
+def test_renaming_a_device_the_kith_never_heard_of_says_so(kith):
+    assert kith.set_admin_name("z" * 64, "Evan's Pixel") is False
+
+
+def test_being_seen_does_not_cost_a_device_its_rename(kith, clock):
+    """THE SAME BUG CLASS `test_being_seen_does_not_cost_a_device_its_role`
+    GUARDS, for the field this ticket added. `_proven_device` calls `seen()`
+    on every proven request, so a hand-rolled field-by-field rebuild in
+    `record_seen` is exactly the kind of place a new column goes missing."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    clock.advance(60)
+    kith.seen(a_device().key_id)
+    assert kith.member(a_device().key_id).device.admin_name == "Evan's Pixel"

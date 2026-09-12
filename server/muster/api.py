@@ -1611,6 +1611,46 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         state.telemetry.count("kith.role.changed")
         return {"key_id": key_id, "role": role}
 
+    @app.post("/v1/kith/{key_id}/name", dependencies=[admin])
+    def set_device_name(key_id: str, name: str = Body(default="", embed=True)):
+        """Let an administrator label a device (muster#29).
+
+        WHY THIS EXISTS. `name` comes from the vouch, where an operator typed
+        the model - and three devices vouched for as "Pixel 6a" made the wipe
+        confirmation dialog show the same words for three different handsets,
+        which is exactly the disambiguation `$('device-action-name')` was built
+        to provide (muster#26). Nothing on the zippie side can fix this: leg
+        names are deliberately uncorrelated with device identity (`LegName.kt`).
+
+        WHY THIS IS NOT JUST `name`. That column is written by `record_issuance`
+        on every renewal and follows the device's own report, so a rename
+        stored there would be silently reverted the next time the device checks
+        in - see `admin_name` in kith.py and the schema comment beside it. This
+        writes the separate column that renewal never touches.
+
+        AN EMPTY NAME IS A DELIBERATE CLEAR, the same shape as an empty role
+        above: it removes the override and falls back to the device's own
+        reported name, rather than setting an empty label.
+
+        ADMINISTRATOR-ONLY, and for the sharpest possible reason: this exists
+        so an administrator can tell devices apart before acting on one. A
+        device that could rename itself could make that confirmation lie in
+        exactly the way this endpoint exists to stop.
+        """
+        cleaned = name.strip()
+        if len(cleaned) > 200:
+            raise HTTPException(
+                status_code=400,
+                detail="a device name is shown in a confirmation dialog, not "
+                       "stored as a document; 200 characters is the cap",
+            )
+        _changed_or_refused(
+            lambda: state.kith.set_admin_name(key_id, cleaned or None), _unreachable
+        )
+        telemetry.event("device renamed", key_id=key_id, name=cleaned or "(cleared)")
+        state.telemetry.count("kith.name.changed")
+        return {"key_id": key_id, "admin_name": cleaned or None}
+
     @app.post("/v1/kith/{key_id}/wipe", dependencies=[admin])
     def set_device_wipe(key_id: str, wipe: bool = Body(default=True, embed=True)):
         """Ask for this device to be erased, WITHOUT refusing it first.
@@ -1742,6 +1782,11 @@ def _member(member: kith_store.Member) -> dict:
         "key_id": member.device.key_id,
         "fingerprint": member.device.fingerprint,
         "name": member.device.name,
+        # WHAT AN ADMINISTRATOR CALLS IT (muster#29). null is the ordinary
+        # case, meaning no override - a console decides what to DISPLAY, this
+        # is not that decision made for it. Kept apart from `name` so the
+        # console can still show what the device itself reports.
+        "admin_name": member.device.admin_name,
         # WHAT IT IS FOR (muster#70). Absent until now, so a console could show
         # a fleet of devices and not one of them said which policy it was on -
         # and the answer is the difference between a handset that carries a
