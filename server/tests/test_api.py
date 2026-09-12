@@ -2882,6 +2882,60 @@ def test_a_wipe_can_be_called_off_before_the_device_comes_back(state, tmp_path):
     )
 
 
+def test_an_unreachable_store_refuses_a_wipe_acknowledgement_rather_than_crashing(
+    state, tmp_path,
+):
+    """muster#59. `_turn_wipe_pending_into_revoked` referenced `_unreachable`
+    as if it were module-level; it is actually a closure local to a different
+    function (`_register_kith_routes`). A kith outage landing on exactly this
+    read used to crash with `NameError` instead of answering 503 - the same
+    unhandled-exception shape a device gets for any unrelated bug, which
+    tells it nothing about whether to retry.
+    """
+    from muster import kith as kith_store
+
+    client, key, identity, key_id = _wipe_pending_device(state, tmp_path)
+
+    # THE FIRST CALL MUST SUCCEED: `_proven_device` reads `state.kith.member`
+    # too, before `_turn_wipe_pending_into_revoked` ever gets a turn, and it
+    # already handles `Unreachable` correctly. A blanket raise would return
+    # 503 from THAT call and never exercise the buggy line at all - which
+    # this test's first draft did, and which passed for the wrong reason.
+    real_member = state.kith.member
+    calls = {"n": 0}
+
+    def second_call_is_unreachable(key_id_arg):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_member(key_id_arg)
+        raise kith_store.Unreachable("the kith store cannot be read")
+
+    import unittest.mock
+
+    with unittest.mock.patch.object(
+        state.kith, "member", side_effect=second_call_is_unreachable
+    ):
+        nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+        response = client.post("/v1/device/wipe", json={
+            "nonce": nonce,
+            "signature_b64": base64.b64encode(
+                key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+            ).decode(),
+            "certificate_pem": identity.certificate_pem.decode(),
+        })
+
+    assert calls["n"] == 2, (
+        "expected exactly two state.kith.member calls (_proven_device, then "
+        f"_turn_wipe_pending_into_revoked); got {calls['n']} - this test is "
+        "not exercising the call site it claims to"
+    )
+    assert response.status_code == 503, (
+        f"got {response.status_code} - an unreachable store during a wipe "
+        "acknowledgement must be a clean 503, not whatever a NameError "
+        f"produces (key_id={key_id})"
+    )
+
+
 # ---- rebooting a device remotely (muster#58) -------------------------------
 
 
