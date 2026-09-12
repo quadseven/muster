@@ -218,6 +218,18 @@ now accounts for:
   it actually got from the share - within the bound, so it answers rather than
   hanging and getting the pod killed for it.
 
+**CONFIRMED ON A REAL STALL, 2026-09-12 07:45:41Z-07:47:48Z** (muster#47). The
+diagnosis behind `STORAGE_TIMEOUT_S = 2.0` (#42, revision 45) was written from
+the SHAPE of the access log on two earlier outages, never from a caught stall -
+118 in-pod samples had found nothing slower than 5ms, and the alternative
+(node CPU contention) was still live. This one settles it: the share stalled
+for real, 22 separate times inside two minutes, muster's `reachable()` logged
+`asset store did not answer` on every one of them - the telemetry #42 added
+for exactly this - and every `/readyz` request in the same two minutes still
+answered 200. Pod restart count: 0 across the whole 8-day window this was
+checked against. The bound worked under the exact condition it was sized for;
+the failure mode of the two prior outages did not recur.
+
 An asset the share cannot answer for is a **503**, never a 404. The agent
 removes a file absent from a SUCCESSFUL answer, so a 404 would tell a device its
 wallpaper had been withdrawn.
