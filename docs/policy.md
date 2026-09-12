@@ -143,12 +143,45 @@ is one that quietly undoes somebody else's decision.
 | `DISALLOW_SAFE_BOOT` | safe mode starts the device with admins disabled |
 | `DISALLOW_ADD_USER` | a second user is a second place policy does not apply |
 | `DISALLOW_CONFIG_DATE_TIME` | the clock is load-bearing; see below |
+| `DISALLOW_OUTGOING_CALLS` | a data-only appliance does not dial out (muster#43) |
+| `DISALLOW_SMS` | nor send or receive text (muster#43) |
 
 **The clock one is not housekeeping.** The agent decides whether to renew its
 certificate by comparing now against its own certificate's dates, and
 `IdentityLifecycle` is tested against exactly the state a wrong clock produces.
 A device whose time can be moved by hand can be talked out of renewing, or into
 believing it has already lapsed.
+
+## The ceiling on calls, texts and alerts
+
+This was learned the expensive way: the operator asked for calls and voicemail
+to stop on a data-only appliance, muster was the obvious lever to reach for,
+and it was the wrong one.
+
+**`DISALLOW_OUTGOING_CALLS` and `DISALLOW_SMS` stop origination, not
+receipt.** A device carrying both can still be called, and voicemail still
+gets recorded - AOSP has no user restriction that refuses an INCOMING call,
+and voicemail is a service the CARRIER'S network provides, not anything
+running on the handset. Neither of these is a muster gap; there is no lever
+here for either to pull. What actually stops incoming calls and voicemail is
+one of:
+
+- dropping voice from the line entirely at the carrier, for a data-only SIM
+- deactivating conditional call forwarding on the handset itself (the
+  `##004#` MMI code, or the carrier dial-in equivalent), which is what
+  routes an unanswered call to voicemail in the first place
+
+Both are outside muster's reach by design: the first is a carrier account
+action, the second is a per-device dialer setting with no `DISALLOW_*`
+equivalent muster could set even if it wanted to.
+
+**`DISALLOW_CONFIG_CELL_BROADCASTS` is a trap for the same reason, in the
+opposite direction.** It restricts CONFIGURING emergency alerts, not
+alerts themselves - so setting it FREEZES whichever state they are
+currently in, including ON, and removes the Settings toggle that would have
+turned them off. It is useful only AFTER alerts have already been turned off
+by hand on the device; set first, it locks them on rather than silencing
+them.
 
 ## Installing applications
 
