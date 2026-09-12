@@ -1056,6 +1056,56 @@ def _turn_wipe_pending_into_revoked(state: State, proven: str) -> None:
     telemetry.event("device wipe acknowledged", key_id=proven)
 
 
+def _turn_reboot_requested_into_acknowledged(state: State, proven: str) -> None:
+    """The reboot-requested -> acknowledged transition, or a 409 saying it does not apply.
+
+    SAME SHAPE AS `_turn_wipe_pending_into_revoked` ABOVE, with one deliberate
+    difference: the `Unreachable` case is handled INLINE, matching how every
+    other route inside `_register_device_routes` already does it (see
+    `device_config`'s own role lookup a little above this), rather than
+    reaching for `_register_kith_routes`'s `_unreachable` closure the way that
+    sibling function does. That closure is not in scope here, and
+    `_turn_wipe_pending_into_revoked` referencing it anyway is a real bug -
+    filed separately as muster#59 rather than fixed here, since fixing it is
+    not this ticket's job. Copying its shape into a new function would have
+    reproduced the same bug; this does not.
+
+    BOTH REFUSALS ARE THE SAME SENTENCE, for the same reason
+    `_turn_wipe_pending_into_revoked` gives: a device cannot act differently on
+    "never asked" versus "an administrator cancelled it between the proof and
+    this line", and telling it which one it lost would say something about a
+    state it is not entitled to know.
+    """
+    try:
+        member = state.kith.member(proven)
+    except kith_store.Unreachable as exc:
+        state.telemetry.count("kith.read.refused")
+        telemetry.event(
+            "muster cannot say whether a device was asked to reboot",
+            key_id=proven, error=str(exc),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"{exc}. The device is unaffected: nothing has acted on "
+                   "the reboot instruction, whichever state it turns out to "
+                   "be in.",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
+
+    not_pending = HTTPException(
+        status_code=409,
+        detail="this device was not asked to reboot",
+        headers={"Cache-Control": "no-store"},
+    )
+    if member is None or member.device.reboot_requested_at is None:
+        raise not_pending
+    if not state.kith.acknowledged_reboot(proven):
+        raise not_pending
+
+    state.telemetry.count("device.reboot.acknowledged")
+    telemetry.event("device reboot acknowledged", key_id=proven)
+
+
 def _register_device_routes(app: FastAPI, state: State) -> None:
     """What an enrolled device asks muster for, over the identity it holds.
 
@@ -1148,9 +1198,18 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         wipe_pending = (
             member is not None and member.device.wipe_pending_at is not None
         )
+        # REBOOT-REQUESTED IS SERVED THE SAME WAY, for the same reason: it must
+        # reach the device before anything could refuse it, and nothing does -
+        # `reboot_requested_at` never interacts with `revoked_at` (muster#58).
+        reboot_requested = (
+            member is not None and member.device.reboot_requested_at is not None
+        )
         try:
             configuration = state.policies.for_device(
-                proven, role=role, wipe_pending=wipe_pending
+                proven,
+                role=role,
+                wipe_pending=wipe_pending,
+                reboot_requested=reboot_requested,
             )
         except (policy.Unreadable, policy.NoSource) as cannot_say:
             # 503 AND NOT AN EMPTY ANSWER, and the difference is every managed
@@ -1213,6 +1272,27 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         proven = _proven_device(state, nonce, signature_b64, certificate_pem)
         _turn_wipe_pending_into_revoked(state, proven)
         return {"key_id": proven, "revoked": True}
+
+    @app.post("/v1/device/reboot")
+    def device_reboot(
+        response: Response,
+        nonce: str = Body(..., embed=True),
+        signature_b64: str = Body(..., embed=True),
+        certificate_pem: str = Body(..., embed=True),
+    ):
+        """A reboot-requested device says it has received the instruction and is acting on it.
+
+        THE SAME ORDERING ARGUMENT AS WIPE (muster#58): this acknowledgement
+        must land before `DevicePolicyManager.reboot()`, because that call is
+        not guaranteed to return control to the process that made it. Once
+        this arrives, `reboot_requested_at` clears - there is no second state
+        to transition into the way wipe moves into `revoked_at`, because a
+        rebooted device is expected back, not gone.
+        """
+        response.headers["Cache-Control"] = "no-store"
+        proven = _proven_device(state, nonce, signature_b64, certificate_pem)
+        _turn_reboot_requested_into_acknowledged(state, proven)
+        return {"key_id": proven, "reboot_acknowledged": True}
 
     @app.post("/v1/device/renew", status_code=201)
     def device_renew(
@@ -1677,6 +1757,73 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         )
         return {"key_id": key_id, "wipe_pending": wipe}
 
+    @app.post("/v1/kith/{key_id}/reboot", dependencies=[admin])
+    def set_device_reboot(key_id: str, reboot: bool = Body(default=True, embed=True)):
+        """Ask this device to reboot itself at its next check-in (muster#58).
+
+        WHY THIS EXISTS. A phone whose foreground service died mid-session, or
+        that is otherwise stuck without having crashed outright, had no remote
+        lever between "do nothing" and "erase it" - revoke and wipe are both
+        far stronger than the problem calls for.
+
+        NOT THE RIGHT TOOL FOR A LIVE SERVICE THAT DIED, and this belongs in
+        docs/policy.md as plainly as it belongs here. Reboot fixes a crash
+        loop or corrupted state; it does not obviously fix a foreground
+        service Android killed for being backgrounded, because a phone with a
+        lock screen may come back up unable to do anything requiring an
+        unlocked keyguard - `CheckInSchedulePolicy.kt`'s own history is a
+        phone that rebooted and could not announce itself again until someone
+        physically unlocked it. Reaching for this on "the app went quiet"
+        alone can turn a recoverable state into one that needs a physical tap
+        anyway.
+
+        REFUSES A REVOKED DEVICE OUTRIGHT WHEN ARMING, unlike wipe.
+        `set_wipe_pending` clears `revoked_at` because wipe supersedes
+        revocation (muster#15) - erasing is the stronger action, so
+        readmitting to deliver it is correct. A reboot is the opposite: far
+        weaker than revocation, and silently readmitting a device an
+        administrator revoked on purpose just to reboot it would be a
+        dangerous surprise rather than a convenience. This is a plain read
+        before the write rather than a database-level guard, matching
+        `_turn_wipe_pending_into_revoked`'s own use of a member-read for a
+        friendly refusal - accepted here because the race it leaves (revoking
+        and reboot-arming the same device in the same instant, from two admin
+        calls) leaves an inert flag on a device that already refuses every
+        request, not a security property like wipe's ordering protects.
+
+        `reboot: false` CANCELS AN UNDELIVERED INSTRUCTION, and is refused
+        nothing - cancelling never touches `revoked_at` either way, so there
+        is no surprise-readmission risk to guard against, and an operator
+        clearing a stale request should never be blocked by the device's
+        revocation state.
+
+        ADMINISTRATOR-ONLY, for the same reason as wipe: a device that could
+        reboot itself on request could be told to by whatever compromised it,
+        at a moment of the attacker's choosing.
+        """
+        if reboot:
+            try:
+                member = state.kith.member(key_id)
+            except kith_store.Unreachable as exc:
+                raise _unreachable(exc) from exc
+            if member is not None and member.device.revoked_at is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="this device is revoked; readmit it before "
+                           "asking it to reboot",
+                )
+        _changed_or_refused(
+            lambda: state.kith.set_reboot_requested(key_id, reboot), _unreachable
+        )
+        telemetry.event(
+            "device reboot requested" if reboot else "device reboot cancelled",
+            key_id=key_id,
+        )
+        state.telemetry.count(
+            "kith.reboot_requested.changed", tags=[f"reboot:{str(reboot).lower()}"]
+        )
+        return {"key_id": key_id, "reboot_requested": reboot}
+
     @app.post("/v1/kith/{key_id}/revoke", dependencies=[admin])
     def set_device_revoked(key_id: str, revoked: bool = Body(default=True, embed=True)):
         """This device is no longer ours - or, with `revoked: false`, it is again.
@@ -1787,6 +1934,13 @@ def _member(member: kith_store.Member) -> dict:
         # is not that decision made for it. Kept apart from `name` so the
         # console can still show what the device itself reports.
         "admin_name": member.device.admin_name,
+        # WHETHER A REBOOT IS WAITING (muster#58). null is the ordinary case.
+        # Same shape as wipe_pending_at below, one severity down.
+        "reboot_requested_at": (
+            member.device.reboot_requested_at.isoformat()
+            if member.device.reboot_requested_at is not None
+            else None
+        ),
         # WHAT IT IS FOR (muster#70). Absent until now, so a console could show
         # a fleet of devices and not one of them said which policy it was on -
         # and the answer is the difference between a handset that carries a

@@ -103,6 +103,23 @@ class BootPlanTest {
     }
 
     @Test
+    fun theRebootStewardRunsRightAfterWipeAndBeforeTheOtherStewards() {
+        // SAME ORDERING ARGUMENT AS WIPE, ONE SEVERITY DOWN (muster#58). A
+        // reboot instruction arrives as a managed file in the configuration
+        // step, so this must run after it and before restrictions, wallpaper
+        // and the rest - a reboot ends this process too, so reconciling less
+        // important policy immediately before it would be pointless.
+        assertTrue("reboot must be part of the shared reconcile", names.contains("reboot"))
+        assertTrue(names.indexOf("configuration") < names.indexOf("reboot"))
+        assertTrue(
+            "wipe must be checked before reboot, so a device told to do both " +
+                "in the same fetch erases itself rather than merely restarting",
+            names.indexOf("wipe") < names.indexOf("reboot"),
+        )
+        assertTrue(names.indexOf("reboot") < names.indexOf("restrictions"))
+    }
+
+    @Test
     fun appConfigurationIsReconciledAtBoot() {
         // The whole point of managed app configuration is that nobody has to
         // touch the phone. A steward that is written and never run leaves the

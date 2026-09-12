@@ -823,6 +823,23 @@
     rename.onclick = () => openDeviceAction(device, 'rename');
     actions.append(rename);
 
+    // BETWEEN RENAME AND WIPE ON PURPOSE - a troubleshooting action, lighter
+    // than either the destructive one after it or revoke (muster#58).
+    const reboot = document.createElement('button');
+    reboot.className = 'action';
+    reboot.textContent = device.reboot_requested_at ? 'Cancel reboot' : 'Reboot';
+    // ARMING is refused server-side on a revoked device; CANCELLING never is
+    // (see the reboot route's own docstring) - so only the arming direction
+    // disables here.
+    reboot.disabled = !device.reboot_requested_at && Boolean(device.revoked_at);
+    reboot.title = reboot.disabled
+      ? 'A revoked device cannot be told to reboot - readmit it first'
+      : '';
+    reboot.onclick = () => openDeviceAction(
+      device, device.reboot_requested_at ? 'cancel-reboot' : 'reboot',
+    );
+    actions.append(reboot);
+
     const wipe = document.createElement('button');
     wipe.className = 'action danger';
     wipe.textContent = device.wipe_pending_at ? 'Call off erase' : 'Queue erase';
@@ -960,6 +977,24 @@
       confirm: 'Readmit device',
       path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/revoke',
       body: { revoked: false },
+    },
+    reboot: {
+      question: 'Reboot this device?',
+      lede: 'This is for a crash loop or corrupted state, not a service that '
+        + 'went quiet - a phone with a lock screen may come back up unable to '
+        + 'announce itself again until someone unlocks it by hand. If the '
+        + 'device simply stopped responding, try again before reaching for '
+        + 'this.',
+      confirm: 'Reboot device',
+      path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/reboot',
+      body: { reboot: true },
+    },
+    'cancel-reboot': {
+      question: 'Call off this reboot?',
+      lede: 'The reboot is still pending. Calling it off leaves this device running.',
+      confirm: 'Call off reboot',
+      path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/reboot',
+      body: { reboot: false },
     },
   };
 

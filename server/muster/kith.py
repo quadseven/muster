@@ -194,6 +194,13 @@ class Device:
     # This one is never touched by issuance and only ever set by an
     # administrator, so it survives exactly the event that would erase it.
     admin_name: str | None = None
+    # When an administrator asked for this device to reboot (muster#58). None
+    # means no reboot is waiting. DELIBERATELY INDEPENDENT of `revoked_at` and
+    # `wipe_pending_at` - unlike wipe, setting this must NOT clear a
+    # revocation. Wipe superseding revocation is correct (muster#15: an erase
+    # is the stronger action); a reboot silently readmitting a device an
+    # administrator revoked on purpose would be a dangerous surprise instead.
+    reboot_requested_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +267,10 @@ class Records(Protocol):
     def record_wipe_pending(self, key_id: str, at: dt.datetime | None) -> bool: ...
 
     def record_wipe_acknowledged(self, key_id: str, at: dt.datetime) -> bool: ...
+
+    def record_reboot_requested(self, key_id: str, at: dt.datetime | None) -> bool: ...
+
+    def record_reboot_acknowledged(self, key_id: str) -> bool: ...
 
     def record_collected(self, request_id: str, at: dt.datetime) -> None: ...
 
@@ -433,6 +444,26 @@ class MemoryRecords:
         # call that set wipe-pending would starve the instruction; doing it
         # never would leave a wiped device readmitted as soon as it renewed.
         self._devices[key_id] = replace(device, revoked_at=at, wipe_pending_at=None)
+        return True
+
+    def record_reboot_requested(self, key_id: str, at: dt.datetime | None) -> bool:
+        device = self._devices.get(key_id)
+        if device is None:
+            return False
+        # NO REVOCATION SIDE EFFECT, unlike wipe. This is deliberately the one
+        # place this column's write path departs from `record_wipe_pending`
+        # above - see the field's own comment on `Device`.
+        self._devices[key_id] = replace(device, reboot_requested_at=at)
+        return True
+
+    def record_reboot_acknowledged(self, key_id: str) -> bool:
+        device = self._devices.get(key_id)
+        if device is None or device.reboot_requested_at is None:
+            return False
+        # THE DEVICE SAID IT IS ABOUT TO REBOOT, so now the instruction clears.
+        # No second state to transition into, unlike wipe's move into
+        # `revoked_at`: a rebooted device is expected back, not gone.
+        self._devices[key_id] = replace(device, reboot_requested_at=None)
         return True
 
     def record_collected(self, request_id: str, at: dt.datetime) -> None:
@@ -872,6 +903,34 @@ class PostgresRecords:
 
         return bool(self._run(work))
 
+    def record_reboot_requested(self, key_id: str, at: dt.datetime | None) -> bool:
+        def work(cursor):
+            # NO REVOCATION CLAUSE, unlike record_wipe_pending above - the one
+            # place this write path departs from it. See the field's comment
+            # on Device for why: wipe superseding revocation is correct, a
+            # reboot silently readmitting a revoked device is not.
+            cursor.execute(
+                "UPDATE kith_device SET reboot_requested_at = %s WHERE key_id = %s",
+                (at, key_id),
+            )
+            return cursor.rowcount
+
+        return bool(self._run(work))
+
+    def record_reboot_acknowledged(self, key_id: str) -> bool:
+        def work(cursor):
+            # ONLY FROM REBOOT-REQUESTED, and only once, same guard shape as
+            # record_wipe_acknowledged. No second column to write: a rebooted
+            # device is expected back, not moved into a terminal state.
+            cursor.execute(
+                "UPDATE kith_device SET reboot_requested_at = NULL"
+                " WHERE key_id = %s AND reboot_requested_at IS NOT NULL",
+                (key_id,),
+            )
+            return cursor.rowcount
+
+        return bool(self._run(work))
+
     def record_collected(self, request_id: str, at: dt.datetime) -> None:
         def work(cursor):
             cursor.execute(
@@ -913,7 +972,8 @@ class PostgresRecords:
         # appending leaves every existing index meaning what it meant.
         "       d.wipe_pending_at,"
         # LAST OF ALL, same reason again.
-        "       d.admin_name"
+        "       d.admin_name,"
+        "       d.reboot_requested_at"
         "  FROM kith_device d"
         "  LEFT JOIN kith_certificate c ON c.key_id = d.key_id"
     )
@@ -1012,6 +1072,7 @@ def _member_from_row(row) -> Member:
             revoked_at=row[9] if len(row) > 9 else None,
             wipe_pending_at=row[10] if len(row) > 10 else None,
             admin_name=row[11] if len(row) > 11 else None,
+            reboot_requested_at=row[12] if len(row) > 12 else None,
         ),
         certificates=row[5],
         current_serial=row[6],
@@ -1238,6 +1299,47 @@ class Kith:
             self._write_now(
                 lambda records: records.record_wipe_acknowledged(key_id, self._clock())
             )
+        )
+
+    def set_reboot_requested(self, key_id: str, requested: bool) -> bool:
+        """Ask a device to reboot itself at its next check-in (muster#58).
+
+        SYNCHRONOUS FOR THE SAME REASON `set_wipe_pending` IS: an operator is
+        about to go and expect the device back on the network shortly, and a
+        write that quietly joined a backlog would report success for
+        something that had not happened yet.
+
+        `requested: false` cancels an instruction that has not yet reached the
+        device. It cannot cancel one already acted on - a device that already
+        saw `true` may already be rebooting by the time this call lands, and
+        there is no way to un-ring that.
+
+        Returns whether a device was actually changed. Whether the target is
+        currently revoked is the caller's business (api.py refuses that case
+        outright, rather than this method silently readmitting it the way
+        `set_wipe_pending` deliberately does).
+        """
+        return bool(
+            self._write_now(
+                lambda records: records.record_reboot_requested(
+                    key_id, self._clock() if requested else None
+                )
+            )
+        )
+
+    def acknowledged_reboot(self, key_id: str) -> bool:
+        """The reboot-requested device has received the instruction and is acting on it.
+
+        SYNCHRONOUS, not deferred, for the same reason `acknowledged_wipe` is:
+        this write must land before the platform call, since `reboot()` is not
+        guaranteed to return control to the process that called it.
+
+        Returns whether a reboot-requested device was found and cleared. False
+        means there was no such device, or it was not reboot-requested - which
+        a caller must be able to tell apart from success.
+        """
+        return bool(
+            self._write_now(lambda records: records.record_reboot_acknowledged(key_id))
         )
 
     def collected(self, request_id: str) -> None:

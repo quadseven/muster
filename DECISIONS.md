@@ -1563,3 +1563,57 @@ that has gone dark needs the device to enforce a deadline on itself, which is
 hardware and it is not a call you run twice. The plan that decides to wipe is
 tested; the call is not, and nothing fakes it - a fake `wipeData` proves the
 plan and reads as if it proved the wipe.
+
+### D30. Reboot deliberately does not mirror wipe's revocation ordering
+
+**2026-09-12.** Evidence: `server/muster/api.py` (`set_device_reboot`,
+`/v1/device/reboot`), `server/muster/policy.py` (`REBOOT_FILE`),
+`server/muster/sql/0001_kith.sql` (`reboot_requested_at`), muster#58.
+
+**Context.** A live incident - a foreground service Android killed for being
+backgrounded, not a crash - prompted "muster should be able to reboot a
+device remotely, like a real MDM." It could not. Investigated before building
+anything: reboot does not obviously fix that class of problem, and this
+repo's own history says it can make it worse. `CheckInSchedulePolicy.kt`
+records two Pixels that drained flat, rebooted, and came up unable to
+announce themselves - the console write token is deliberately not cached
+before first unlock, so a locked phone stays silent after a reboot until
+someone physically unlocks it. Built anyway, for the case it IS the right
+tool (a crash loop, corrupted state), with that ceiling written down in
+`docs/policy.md` rather than discovered by trying it on the wrong problem.
+
+**The obvious design would have been "copy wipe."** D29's shape - a second
+state `_proven_device` does not refuse, delivered as a synthesized managed
+file, acknowledged before the platform call - transfers cleanly, and does.
+One piece of it does not: `set_wipe_pending` clears `revoked_at` when it
+arms, and that is correct FOR WIPE specifically, because erasing is a
+stronger action than revoking and superseding it is the point (D29). Reboot
+is not stronger than revocation. It is much weaker, purely diagnostic, and
+copying the readmit-to-deliver behavior would mean an administrator asking to
+reboot a device readmits one they revoked on purpose, silently, as a side
+effect neither the API response nor the console would call out.
+
+**Chosen. Arming refuses a revoked device outright (409); cancelling never
+does.** `reboot_requested_at` is independent of both `revoked_at` and
+`wipe_pending_at` in both storage layers - no write path touches more than
+one of the three. The refusal is a plain member-read before the write, not a
+database-level guard the way wipe's ordering is enforced: the race it leaves
+(revoking and reboot-arming the same device in the same instant, from two
+concurrent admin calls) lands an inert flag on a device that already refuses
+every request, not a security property. Cancelling an unarmed instruction is
+never blocked by revocation, because cancelling cannot readmit anything
+either way - there is nothing to guard against in that direction.
+
+**Boot order: right after `wipe`, before every other steward.** Same
+argument D29 already makes for wipe's position: whichever of the two fires
+ends the process, so anything queued ahead of it would be reconciled for no
+reason, and anything after it may never run at all. If a device carries both
+instructions in one fetch, wipe is checked first and always wins - the
+process ends before the reboot step is reached, so there is no separate
+precedence rule to get wrong.
+
+**`DevicePolicyManager.reboot()` has no test and cannot have one**, for the
+same reason `wipeData()` does not (D29). `IllegalStateException` on an
+ongoing call is the one documented failure mode; `RebootSteward` catches it
+the same way `WipeSteward` catches any failure from `wipeData` - the device
+stays running and reachable rather than half-acted-on.
