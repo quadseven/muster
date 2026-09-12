@@ -1034,11 +1034,32 @@ def _turn_wipe_pending_into_revoked(state: State, proven: str) -> None:
     between the proof and this line. A device cannot act differently on the two,
     and telling it which one it lost would say something about a state it is not
     entitled to know.
+
+    THE `Unreachable` CASE IS HANDLED INLINE, matching `_register_device_
+    routes`'s own convention (`device_config`'s role lookup, and
+    `_turn_reboot_requested_into_acknowledged` beside this function) -
+    NOT a bare `_unreachable` reference. That reference used to sit here and
+    resolved against nothing: `_unreachable` is a closure local to
+    `_register_kith_routes`, a different function this one is not nested
+    inside, so a kith outage landing on the read below crashed with
+    `NameError` instead of ever reaching this docstring's own reasoning about
+    which refusal to give (muster#59).
     """
     try:
         member = state.kith.member(proven)
-    except kith_store.Unreachable as unreachable:
-        raise _unreachable(unreachable) from unreachable
+    except kith_store.Unreachable as exc:
+        state.telemetry.count("kith.read.refused")
+        telemetry.event(
+            "muster cannot say whether a device was asked to wipe",
+            key_id=proven, error=str(exc),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"{exc}. The device is unaffected: nothing has acted on "
+                   "the wipe instruction, whichever state it turns out to be "
+                   "in.",
+            headers={"Cache-Control": "no-store"},
+        ) from exc
 
     not_pending = HTTPException(
         status_code=409,
