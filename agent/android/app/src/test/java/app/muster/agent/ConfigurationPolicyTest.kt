@@ -220,6 +220,7 @@ class ConfigurationPolicyTest {
             // install-apps -> AppInstallSteward.configFile(), read by BOTH the
             //                 install-apps and install-self steps (muster#81)
             // wipe         -> WipeSteward.configFile()
+            // reboot       -> RebootSteward.configFile() (muster#58)
             setOf(
                 "restrictions",
                 "visible-apps",
@@ -227,6 +228,7 @@ class ConfigurationPolicyTest {
                 "wallpaper",
                 "install-apps",
                 "wipe",
+                "reboot",
             ),
             ConfigurationPolicy.MANAGED,
         )
