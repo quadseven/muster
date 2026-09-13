@@ -32,8 +32,9 @@ package app.muster.agent
  *
  * THAT RECOVERY REACHES EXACTLY THE PACKAGES THIS CAN HIDE, and no further.
  * AppVisibilitySteward only ever enumerates things with a launcher icon, so
- * that is the whole set - which on a Pixel means Settings and muster itself,
- * and nothing else in [NEVER_HIDDEN]. `pm hide com.google.android.apps
+ * that is the whole set - which on a Pixel means Settings, muster itself, and
+ * `com.android.privatespace` (muster#46), and nothing else in [NEVER_HIDDEN].
+ * `pm hide com.google.android.apps
  * .nexuslauncher` from a shell is NOT walked back here, because the launcher
  * has no launcher entry of its own to be found by. Stated this way because the
  * first draft of this comment claimed the opposite, and a recovery mechanism
@@ -118,19 +119,23 @@ object AppVisibilityPolicy {
     /**
      * Packages muster will never hide, whatever the file says, and why.
      *
-     * READ THE REASONS, NOT THE NAMES. Each entry is here because hiding it
-     * takes away a way of fixing the device, and the reason is the argument for
-     * the entry. A name that turns out to be wrong on some handset costs
-     * nothing - it protects a package that is not there. A name that is MISSING
-     * costs a phone.
+     * READ THE REASONS, NOT THE NAMES. Almost every entry is here because
+     * hiding it takes away a way of fixing the device, and the reason is the
+     * argument for the entry. A name that turns out to be wrong on some
+     * handset costs nothing - it protects a package that is not there. A name
+     * that is MISSING costs a phone. `com.android.privatespace` (muster#46)
+     * is the one exception to "load-bearing": it is here because it cannot be
+     * hidden at all, not because hiding it would be dangerous - see its own
+     * entry.
      *
      * WHAT IS ACTUALLY REACHABLE FROM HERE, stated so this table is not
      * mistaken for the whole defense. AppVisibilitySteward only ever considers
      * packages that answer ACTION_MAIN + CATEGORY_LAUNCHER - that is, packages
      * with an icon a person can see and tap - so of everything below only
-     * Settings and muster itself can be reached by the hiding path at all. The
-     * rest are here against a later change that widens what gets enumerated,
-     * which is exactly the change that would strand a device silently.
+     * Settings, muster itself, and `com.android.privatespace` can be reached
+     * by the hiding path at all. The rest are here against a later change that
+     * widens what gets enumerated, which is exactly the change that would
+     * strand a device silently.
      *
      * PROVENANCE, because half of these cannot be checked from a laptop:
      *
@@ -142,6 +147,8 @@ object AppVisibilityPolicy {
      *     things. They are not in AOSP, they are widely documented, and NOTHING
      *     HERE HAS MEASURED THEM ON A HANDSET. They are declared anyway because
      *     a wrong name here is inert and a missing one is not.
+     *   * `com.android.privatespace` is the one entry actually measured on a
+     *     handset rather than read off a manifest - see its own comment.
      */
     val NEVER_HIDDEN: Map<String, String> = linkedMapOf(
         // The one that matters most, and the one the hiding path can actually
@@ -192,6 +199,31 @@ object AppVisibilityPolicy {
         // DELIBERATELY ABSENT: com.android.vending and com.google.android.gms.
         // The Play Store is the headline thing this policy exists to take off
         // the launcher, and neither is a route back into a device.
+        //
+        // THE ONE ENTRY HERE FOR A DIFFERENT REASON THAN EVERY OTHER (muster#46).
+        // Every package above is load-bearing: hiding it would strand the
+        // device, and that is why hiding is refused. This one is not load-
+        // bearing - it is simply IMPOSSIBLE TO HIDE, measured on a handset
+        // (2026-09-12): `dumpsys package com.android.privatespace` reports
+        // `User 0: ... installed=false hidden=false` for the primary user
+        // muster's Device Owner runs as. `setApplicationHidden` has nothing
+        // installed to act on - Private Space is architecturally a separate
+        // Android user profile (source.android.com), not a package this
+        // user's package manager ever considered present - yet its activity
+        // still answers ACTION_MAIN + CATEGORY_LAUNCHER and so is still a
+        // candidate every boot. Before this entry, that meant an attempt, a
+        // failure, and the same unresolvable concern reported forever: "apps:
+        // DID_NOT_HIDE [com.android.privatespace]" on every enrolled handset,
+        // at every check-in, with no action anyone could take that would ever
+        // clear it.
+        "com.android.privatespace" to
+            "measured on a handset (muster#46): the platform reports this " +
+                "package as not installed for the primary user at all - " +
+                "Private Space is a separate Android user profile, and " +
+                "setApplicationHidden has nothing installed here to act on. " +
+                "Attempting it produces the same unresolvable DID_NOT_HIDE " +
+                "concern forever, on every check-in, with no fix available " +
+                "to muster",
     )
 
     /**
