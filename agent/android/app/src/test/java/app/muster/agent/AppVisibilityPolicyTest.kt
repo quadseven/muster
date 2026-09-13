@@ -119,6 +119,42 @@ class AppVisibilityPolicyTest {
     }
 
     @Test
+    fun privateSpaceIsNeverAttemptedAndNeverAConcern() {
+        // muster#46, measured on a handset 2026-09-12: `dumpsys package
+        // com.android.privatespace` reports `installed=false` for the primary
+        // user, so setApplicationHidden has nothing installed to act on.
+        // Before this entry, every check-in on every enrolled handset
+        // attempted it, failed the read-back, and reported the same
+        // unresolvable concern forever - "apps: DID_NOT_HIDE
+        // [com.android.privatespace]" - with no configuration change able to
+        // clear it.
+        val plan = plan(
+            "app.zippie.companion",
+            installed = onThePhone + "com.android.privatespace",
+        )
+        assertFalse(
+            "muster must never attempt to hide a package the platform " +
+                "cannot hide",
+            "com.android.privatespace" in plan.hide,
+        )
+    }
+
+    @Test
+    fun thePrivateSpaceRefusalNamesWhyItIsDifferentFromEveryOtherEntry() {
+        // Every other NEVER_HIDDEN entry is refused because hiding it would
+        // strand the device. This one is refused because hiding it is
+        // impossible in the first place - a different claim, and the reason
+        // string must say so rather than borrow the "load-bearing" framing
+        // that would be false here.
+        val kept = plan(
+            "app.zippie.companion",
+            installed = onThePhone + "com.android.privatespace",
+        ).keptVisible.single { it.packageName == "com.android.privatespace" }
+        assertTrue(kept.why.contains("not installed"))
+        assertTrue(kept.why.contains("DID_NOT_HIDE"))
+    }
+
+    @Test
     fun aProtectedPackageTheAllowlistNamesIsNotWarnedAbout() {
         // keptVisible is muster overriding the file. A package the operator
         // wrote down is not an override, and warning about it every boot would
