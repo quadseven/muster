@@ -207,6 +207,26 @@ refusal, the response mapping and the durable agent state, but no handset has
 made a post-revoke request in this period. The next-request behavior, including
 the fifteen-minute periodic path, remains unmeasured on hardware.
 
+## Reboot (muster#58) is wired AND measured, 2026-09-13
+
+Unlike revocation above, this one has a handset trace. Armed from the console
+against the canary device (Dark Star, 29820666): `device configuration
+served` with `reboot` in `file_names`, `device reboot acknowledged` and
+`POST /v1/device/reboot` 200 one second later, then the device's adb
+wireless-debug transport going from `device` to `offline` - consistent with a
+real restart handing the wireless-debug daemon a fresh ephemeral port - and a
+fresh `device configuration served` 51 seconds after the ack with `reboot` no
+longer in `file_names`. The timing matches a boot-triggered `BootPlan` pass
+re-announcing on the same fifteen-minute reconcile, not the ordinary periodic
+schedule.
+
+Also armed against the other enrolled Pixel while it still carried 29807527
+(predates #60): the server served the `reboot` file and the OLD agent
+correctly REFUSED it rather than acting on it or crashing, per
+`ConfigurationPolicy`'s closed-vocabulary design - proof the forward-
+compatibility story in that class's own docstring holds on real hardware, not
+only in the JVM suite.
+
 ## OCSP and a CRL SERVE, and a third party has now verified both
 
 Rewritten 2026-09-07. **The version of this section written 2026-09-01 was
