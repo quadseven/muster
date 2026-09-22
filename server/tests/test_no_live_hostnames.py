@@ -81,9 +81,15 @@ ALLOWED = frozenset(
         # not ours to edit.
         "scripts.sil.org",
         "services.gradle.org",
+        # AOSP's own documentation, cited for the Private Space user-profile
+        # model in AppVisibilityPolicy.kt (muster#46).
+        "source.android.com",
         "support.google.com",
         "tags.datadoghq.com",
         "www.apache.org",
+        # Google Analytics loader on the splash page (muster#64). A vendor
+        # script host, not one of ours.
+        "www.googletagmanager.com",
         "www.w3.org",
         # RFC 2606 documentation domain, explicitly fine
         "example.com",

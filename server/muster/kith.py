@@ -789,8 +789,8 @@ class PostgresRecords:
             cursor.execute(
                 "INSERT INTO kith_certificate"
                 " (serial, key_id, request_id, not_before, not_after, issued_at,"
-                "  certificate_pem)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                "  certificate_pem, collected_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
                 " ON CONFLICT (serial) DO NOTHING",
                 (
                     certificate.serial,
@@ -800,6 +800,11 @@ class PostgresRecords:
                     certificate.not_after,
                     certificate.issued_at,
                     certificate.certificate_pem,
+                    # A renewal arrives already collected - its bytes went out
+                    # in the same response. Leaving this out stored every
+                    # renewal as never picked up (muster#65). Enrollment passes
+                    # None and `record_collected` fills it in later.
+                    certificate.collected_at,
                 ),
             )
 

@@ -839,6 +839,48 @@ def test_a_renewal_upserts_the_device_and_leaves_first_seen_alone():
     assert "CASE WHEN EXCLUDED.last_seen >= kith_device.last_seen" in updates
 
 
+def test_a_renewed_certificate_is_stored_as_collected():
+    """muster#65. Renewal hands the certificate over in its own response, so
+    `/v1/device/renew` builds it with `collected_at` already set. The INSERT
+    used to leave the column out, so every renewal landed as never collected
+    in Postgres while MemoryRecords, which keeps the whole dataclass, passed.
+    """
+    import dataclasses
+
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    collected = START + dt.timedelta(seconds=1)
+    renewed = dataclasses.replace(a_certificate("BBBB"), collected_at=collected)
+    records.record_issuance(a_device(), renewed)
+
+    sql, params = next(
+        (sql, params) for sql, params in connection.log
+        if "INSERT INTO kith_certificate" in sql
+    )
+    columns = sql.split("(", 1)[1].split(")", 1)[0].replace(" ", "").split(",")
+    assert "collected_at" in columns
+    assert params[columns.index("collected_at")] == collected
+
+
+def test_an_enrollment_certificate_is_stored_uncollected():
+    """The other direction: enrollment issues before the device collects, and
+    `record_collected` sets the column later. NULL must still go in as NULL."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    records.record_issuance(a_device(), a_certificate("CCCC"))
+
+    sql, params = next(
+        (sql, params) for sql, params in connection.log
+        if "INSERT INTO kith_certificate" in sql
+    )
+    columns = sql.split("(", 1)[1].split(")", 1)[0].replace(" ", "").split(",")
+    assert params[columns.index("collected_at")] is None
+
+
 def test_the_roll_settles_which_certificate_is_current():
     """BOTH subqueries, or one line describes two certificates.
 
