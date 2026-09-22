@@ -821,7 +821,8 @@
     const recent = minutesSince(device.last_seen) <= CHECK_IN_WINDOW_MIN;
     if (recent) mark.classList.add('recent');
     mark.title = recent
-      ? 'Checked in within its 15-minute cycle'
+      ? 'Checked in within the last ' + CHECK_IN_WINDOW_MIN
+        + ' minutes (it asks every 15)'
       : 'Quiet since ' + exactTime(device.last_seen);
     nameEl.append(mark, element('span', '', displayName(device)));
     // THE DEVICE'S OWN REPORT, kept reachable rather than replaced. An
