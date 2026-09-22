@@ -4090,3 +4090,71 @@ def test_renewal_needs_a_csr_but_asks_for_the_proof_first(state):
     assert "csr" not in response.text.lower(), (
         f"the CSR was judged before the identity was: {response.text}"
     )
+
+
+# ---- reported check-in interval (muster#77) ------------------------------
+
+
+def _in_the_kith(state, key_id_):
+    """Record the device the way an issuance would, with a last_seen in the
+    past so the proof's `seen` write is newer and applies."""
+    from muster import kith as kith_store
+
+    long_ago = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    state.kith.issued(
+        kith_store.Device(
+            key_id=key_id_, fingerprint="x", name="pixel",
+            first_seen=long_ago, last_seen=long_ago,
+        ),
+        kith_store.Certificate(
+            serial="AB", request_id="r", not_before=long_ago,
+            not_after=long_ago, issued_at=long_ago, certificate_pem="x",
+        ),
+    )
+
+
+def _fetch_config_reporting(client, key, identity, interval):
+    import base64
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    body = {
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    }
+    if interval is not None:
+        body["check_in_interval_s"] = interval
+    return client.post("/v1/device/config", json=body)
+
+
+def test_a_device_reports_how_often_it_checks_in(state, tmp_path):
+    """The console judges "inside its cycle" from what the device says, not a
+    page constant: the agent asks every 15 minutes, the travel router hourly."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state)
+    _in_the_kith(state, key_id_)
+
+    assert _fetch_config_reporting(client, key, identity, 3600).status_code == 200
+    assert state.kith.member(key_id_).device.check_in_interval_s == 3600
+
+    # A fetch that carries no interval (an older agent, or another route) says
+    # nothing about cadence and must not erase what was reported.
+    assert _fetch_config_reporting(client, key, identity, None).status_code == 200
+    assert state.kith.member(key_id_).device.check_in_interval_s == 3600
+
+
+@pytest.mark.parametrize("nonsense", [0, 5, 86_401, -900])
+def test_an_implausible_interval_is_ignored_not_refused(state, tmp_path, nonsense):
+    """A cosmetic field must never cost a device its configuration."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state)
+    _in_the_kith(state, key_id_)
+
+    assert _fetch_config_reporting(client, key, identity, nonsense).status_code == 200
+    assert state.kith.member(key_id_).device.check_in_interval_s is None

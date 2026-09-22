@@ -753,4 +753,7 @@ def test_each_device_row_says_when_it_last_checked_in():
     html = _console_html()
     assert "'Checked in ' + sinceText(device.last_seen)" in html
     assert "checked.title = exactTime(device.last_seen)" in html
-    assert "CHECK_IN_WINDOW_MIN = 20" in html
+    assert "const seconds = device.check_in_interval_s;" in html, (
+        "the window must come from what the device reported (muster#77)"
+    )
+    assert "CHECK_IN_WINDOW_MIN" not in html, "a page-wide constant is back"

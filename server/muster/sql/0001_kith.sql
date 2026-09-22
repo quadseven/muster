@@ -191,3 +191,12 @@ ALTER TABLE kith_device
 -- it - see `set_device_reboot` in api.py.
 ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS reboot_requested_at timestamptz;
+
+-- HOW OFTEN THE DEVICE SAYS IT CHECKS IN, in seconds (muster#77). NULL until
+-- the device reports it on a configuration fetch. The console reads it to judge
+-- whether a device is inside its own cycle: the Android agent reconciles every
+-- fifteen minutes and the travel router hourly, so one page-wide constant was
+-- wrong for one of them. Reported by the device and never set by an operator,
+-- so it cannot drift from the schedule the device actually keeps.
+ALTER TABLE kith_device
+    ADD COLUMN IF NOT EXISTS check_in_interval_s integer;

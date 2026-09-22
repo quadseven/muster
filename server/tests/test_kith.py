@@ -69,9 +69,9 @@ class Breakable(MemoryRecords):
         self._check()
         super().record_issuance(device, certificate)
 
-    def record_seen(self, key_id_, at) -> None:
+    def record_seen(self, key_id_, at, interval_s=None) -> None:
         self._check()
-        super().record_seen(key_id_, at)
+        super().record_seen(key_id_, at, interval_s)
 
     def record_collected(self, request_id, at) -> None:
         self._check()
@@ -839,6 +839,23 @@ def test_a_renewal_upserts_the_device_and_leaves_first_seen_alone():
     assert "CASE WHEN EXCLUDED.last_seen >= kith_device.last_seen" in updates
 
 
+def test_a_seen_write_keeps_the_reported_interval_unless_it_carries_one():
+    """muster#77, the SQL half. COALESCE is what keeps a proof on a route that
+    reports no interval from wiping the one the configuration fetch reported."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    records.record_seen("abc", START, 900)
+
+    sql, params = next(
+        (sql, params) for sql, params in connection.log
+        if sql.startswith("UPDATE kith_device SET last_seen")
+    )
+    assert "check_in_interval_s = COALESCE(%s, check_in_interval_s)" in sql
+    assert params == (START, 900, "abc", START)
+
+
 def test_a_renewed_certificate_is_stored_as_collected():
     """muster#65. Renewal hands the certificate over in its own response, so
     `/v1/device/renew` builds it with `collected_at` already set. The INSERT
@@ -1169,9 +1186,50 @@ def test_the_schema_keeps_the_serial_out_of_an_integer_column():
         line for line in kith_store.SCHEMA.read_text().splitlines()
         if not line.lstrip().startswith("--")
     )
-    assert "serial" in statements
-    assert "bigint" not in statements
-    assert "integer" not in statements
+    # THE SERIAL COLUMN ITSELF, not the whole file. This used to forbid the
+    # words anywhere in the schema, which held until a column that really is a
+    # small integer arrived (muster#77) and the guard stopped meaning "the
+    # serial is text" and started meaning "no table may count anything".
+    serial = [
+        line.split() for line in statements.splitlines()
+        if line.split()[:1] == ["serial"]
+    ]
+    assert serial, "no serial column declared"
+    # Loud when the declaration is not "serial <type> ..." on one line, rather
+    # than checking whichever word happens to be second (Grug Elder on #78).
+    assert all(len(words) >= 2 for words in serial), (
+        f"serial declared without a type on its line: {serial}"
+    )
+    assert all(words[1] == "text" for words in serial), serial
+
+
+def test_the_roll_selects_exactly_the_columns_member_from_row_reads():
+    """`_member_from_row` reads by POSITION, so the SELECT and the parser are a
+    pair that nothing else holds together. A column added anywhere but the end,
+    or dropped, would hand every later field a neighbour's value with no error
+    (Grug Elder on #78). This pins the list, so either change fails here.
+    """
+    sql = kith_store.PostgresRecords._ROLL
+    body = sql.split("SELECT", 1)[1].split("  FROM kith_device d", 1)[0]
+    columns, depth, current = [], 0, ""
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            columns.append(" ".join(current.split()))
+            current = ""
+        else:
+            current += ch
+    columns.append(" ".join(current.split()))
+
+    assert [c if not c.startswith("(") else "<subquery>" for c in columns] == [
+        "d.key_id", "d.fingerprint", "d.name", "d.first_seen", "d.last_seen",
+        "count(c.serial)", "<subquery>", "<subquery>",
+        "d.role", "d.revoked_at", "d.wipe_pending_at", "d.admin_name",
+        "d.reboot_requested_at", "d.check_in_interval_s",
+    ]
 
 
 # ---- roles (muster#70) ---------------------------------------------------

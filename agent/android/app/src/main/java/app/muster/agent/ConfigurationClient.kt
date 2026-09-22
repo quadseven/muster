@@ -116,6 +116,10 @@ class ConfigurationClient(
             .put("nonce", nonce)
             .put("signature_b64", signature)
             .put("certificate_pem", certificate)
+            // HOW OFTEN THIS DEVICE ASKS (muster#77), so the console judges
+            // "inside its cycle" from the schedule this agent really keeps
+            // rather than a constant that is wrong for the travel router.
+            .put("check_in_interval_s", CheckInSchedulePolicy.INTERVAL_MS / 1000)
             .toString()
 
         val reply = try {
