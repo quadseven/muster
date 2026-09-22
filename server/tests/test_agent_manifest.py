@@ -193,3 +193,18 @@ def test_the_launcher_icon_is_declared():
                 ref in values.read_text() for values in res.glob("values/*.xml")
             )
             assert defined, f"{name} -> @color/{ref} is not defined"
+
+
+def test_a_self_update_runs_the_plan_straight_away():
+    """install-self ends the agent's own process, so something must start the
+    plan on the new build. BOOT_COMPLETED will not come round until the next
+    reboot and the interrupted periodic job was measured at over thirty minutes
+    late, twice. MY_PACKAGE_REPLACED arrives the moment the update lands."""
+    manifest = MANIFEST.read_text()
+    receiver = manifest.split('android:name=".BootReceiver"', 1)[1].split("</receiver>", 1)[0]
+    for action in (
+        "android.intent.action.BOOT_COMPLETED",
+        "android.intent.action.LOCKED_BOOT_COMPLETED",
+        "android.intent.action.MY_PACKAGE_REPLACED",
+    ):
+        assert f'<action android:name="{action}" />' in receiver, action
