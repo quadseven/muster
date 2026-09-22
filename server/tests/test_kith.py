@@ -1195,7 +1195,41 @@ def test_the_schema_keeps_the_serial_out_of_an_integer_column():
         if line.split()[:1] == ["serial"]
     ]
     assert serial, "no serial column declared"
+    # Loud when the declaration is not "serial <type> ..." on one line, rather
+    # than checking whichever word happens to be second (Grug Elder on #78).
+    assert all(len(words) >= 2 for words in serial), (
+        f"serial declared without a type on its line: {serial}"
+    )
     assert all(words[1] == "text" for words in serial), serial
+
+
+def test_the_roll_selects_exactly_the_columns_member_from_row_reads():
+    """`_member_from_row` reads by POSITION, so the SELECT and the parser are a
+    pair that nothing else holds together. A column added anywhere but the end,
+    or dropped, would hand every later field a neighbour's value with no error
+    (Grug Elder on #78). This pins the list, so either change fails here.
+    """
+    sql = kith_store.PostgresRecords._ROLL
+    body = sql.split("SELECT", 1)[1].split("  FROM kith_device d", 1)[0]
+    columns, depth, current = [], 0, ""
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            columns.append(" ".join(current.split()))
+            current = ""
+        else:
+            current += ch
+    columns.append(" ".join(current.split()))
+
+    assert [c if not c.startswith("(") else "<subquery>" for c in columns] == [
+        "d.key_id", "d.fingerprint", "d.name", "d.first_seen", "d.last_seen",
+        "count(c.serial)", "<subquery>", "<subquery>",
+        "d.role", "d.revoked_at", "d.wipe_pending_at", "d.admin_name",
+        "d.reboot_requested_at", "d.check_in_interval_s",
+    ]
 
 
 # ---- roles (muster#70) ---------------------------------------------------
