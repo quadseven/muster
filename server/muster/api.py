@@ -388,7 +388,11 @@ _PROOF_STATUS = {
 
 
 def _proven_device(
-    state: State, nonce: str, signature_b64: str, certificate_pem: str
+    state: State,
+    nonce: str,
+    signature_b64: str,
+    certificate_pem: str,
+    check_in_interval_s: int | None = None,
 ) -> str:
     """Which device sent this, or an HTTPException saying why it is nobody.
 
@@ -502,8 +506,22 @@ def _proven_device(
     # Only after Verdict.OK, so a failed proof cannot be used to keep a device
     # looking alive; and deferred like every other write, so a store outage
     # cannot turn a good proof into a 500.
-    state.kith.seen(proven)
+    state.kith.seen(proven, _plausible_interval(check_in_interval_s))
     return proven
+
+
+# A DAY AT MOST, A MINUTE AT LEAST. Anything outside is a bug or a lie, and the
+# answer is to not record it rather than to refuse the request: this value only
+# decides how a console row is drawn, and a configuration fetch must never fail
+# over something cosmetic (muster#77).
+_INTERVAL_BOUNDS_S = (60, 86_400)
+
+
+def _plausible_interval(interval_s: int | None) -> int | None:
+    if interval_s is None:
+        return None
+    low, high = _INTERVAL_BOUNDS_S
+    return interval_s if low <= interval_s <= high else None
 
 
 def _cache_headers(artifact: revocation.Artifact) -> dict[str, str]:
@@ -1161,6 +1179,8 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         nonce: str = Body(..., embed=True),
         signature_b64: str = Body(..., embed=True),
         certificate_pem: str = Body(..., embed=True),
+        # OPTIONAL and last, so every agent build before muster#77 still fetches.
+        check_in_interval_s: int | None = Body(None, embed=True),
     ):
         """The configuration for the device that signed this nonce.
 
@@ -1186,7 +1206,9 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         # the same URL. Nothing is supposed to cache a POST, which is exactly
         # the sort of thing that holds until an intermediary decides otherwise.
         response.headers["Cache-Control"] = "no-store"
-        proven = _proven_device(state, nonce, signature_b64, certificate_pem)
+        proven = _proven_device(
+            state, nonce, signature_b64, certificate_pem, check_in_interval_s
+        )
         # WHAT THIS DEVICE IS FOR, read from the kith and NEVER sent by the
         # device (muster#70). A role selects which policy scope is served -
         # including `app-config`, which carries write tokens - so a device that
@@ -2002,6 +2024,8 @@ def _member(member: kith_store.Member) -> dict:
             if member.device.reboot_requested_at is not None
             else None
         ),
+        # What the device reported, or null (muster#77).
+        "check_in_interval_s": member.device.check_in_interval_s,
         # WHAT IT IS FOR (muster#70). Absent until now, so a console could show
         # a fleet of devices and not one of them said which policy it was on -
         # and the answer is the difference between a handset that carries a

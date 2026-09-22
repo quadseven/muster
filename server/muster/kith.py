@@ -201,6 +201,11 @@ class Device:
     # is the stronger action); a reboot silently readmitting a device an
     # administrator revoked on purpose would be a dangerous surprise instead.
     reboot_requested_at: dt.datetime | None = None
+    # HOW OFTEN THIS DEVICE SAYS IT CHECKS IN, in seconds (muster#77). Reported
+    # by the device on its configuration fetch, never set by an operator, so
+    # it cannot drift from the schedule the device actually keeps. None until
+    # a device reports one.
+    check_in_interval_s: int | None = None
 
 
 @dataclass(frozen=True)
@@ -256,7 +261,9 @@ class Records(Protocol):
 
     def record_issuance(self, device: Device, certificate: Certificate) -> None: ...
 
-    def record_seen(self, key_id: str, at: dt.datetime) -> None: ...
+    def record_seen(
+        self, key_id: str, at: dt.datetime, interval_s: int | None = None
+    ) -> None: ...
 
     def record_role(self, key_id: str, role: str) -> bool: ...
 
@@ -368,7 +375,9 @@ class MemoryRecords:
             return
         held.append(certificate)
 
-    def record_seen(self, key_id: str, at: dt.datetime) -> None:
+    def record_seen(
+        self, key_id: str, at: dt.datetime, interval_s: int | None = None
+    ) -> None:
         device = self._devices.get(key_id)
         # Unknown key: nothing to touch. Not an error - a device can hold a
         # valid certificate this store has never heard of, which is exactly what
@@ -383,7 +392,15 @@ class MemoryRecords:
         # that needed it, and the SQL store - a plain `UPDATE ... SET last_seen`
         # - kept it. The two disagreed, and only the in-memory one is exercised
         # by the tests.
-        self._devices[key_id] = replace(device, last_seen=at)
+        # An interval is kept until the device reports a different one: a
+        # proof on a route that does not carry it says nothing about cadence.
+        self._devices[key_id] = replace(
+            device,
+            last_seen=at,
+            check_in_interval_s=(
+                interval_s if interval_s is not None else device.check_in_interval_s
+            ),
+        )
 
     def record_role(self, key_id: str, role: str) -> bool:
         device = self._devices.get(key_id)
@@ -810,14 +827,19 @@ class PostgresRecords:
 
         self._run(work)
 
-    def record_seen(self, key_id: str, at: dt.datetime) -> None:
+    def record_seen(
+        self, key_id: str, at: dt.datetime, interval_s: int | None = None
+    ) -> None:
         def work(cursor):
             # `last_seen < %s` makes replay order-independent: a deferred touch
             # that drains after a newer one cannot drag last_seen backwards.
+            # COALESCE keeps the reported interval when this proof carried none
+            # (muster#77), the same rule MemoryRecords applies.
             cursor.execute(
-                "UPDATE kith_device SET last_seen = %s"
+                "UPDATE kith_device SET last_seen = %s,"
+                " check_in_interval_s = COALESCE(%s, check_in_interval_s)"
                 " WHERE key_id = %s AND last_seen < %s",
-                (at, key_id, at),
+                (at, interval_s, key_id, at),
             )
 
         self._run(work)
@@ -978,7 +1000,9 @@ class PostgresRecords:
         "       d.wipe_pending_at,"
         # LAST OF ALL, same reason again.
         "       d.admin_name,"
-        "       d.reboot_requested_at"
+        "       d.reboot_requested_at,"
+        # muster#77, appended for the same positional reason.
+        "       d.check_in_interval_s"
         "  FROM kith_device d"
         "  LEFT JOIN kith_certificate c ON c.key_id = d.key_id"
     )
@@ -1078,6 +1102,7 @@ def _member_from_row(row) -> Member:
             wipe_pending_at=row[10] if len(row) > 10 else None,
             admin_name=row[11] if len(row) > 11 else None,
             reboot_requested_at=row[12] if len(row) > 12 else None,
+            check_in_interval_s=row[13] if len(row) > 13 else None,
         ),
         certificates=row[5],
         current_serial=row[6],
@@ -1124,9 +1149,10 @@ class _Issuance:
 class _Seen:
     key_id: str
     at: dt.datetime
+    interval_s: int | None = None
 
     def apply(self, records: Records) -> None:
-        records.record_seen(self.key_id, self.at)
+        records.record_seen(self.key_id, self.at, self.interval_s)
 
 
 @dataclass(frozen=True)
@@ -1213,8 +1239,10 @@ class Kith:
     def issued(self, device: Device, certificate: Certificate) -> None:
         self._defer(_Issuance(device=device, certificate=certificate), "issued")
 
-    def seen(self, key_id: str) -> None:
-        self._defer(_Seen(key_id=key_id, at=self._clock()), "seen")
+    def seen(self, key_id: str, interval_s: int | None = None) -> None:
+        self._defer(
+            _Seen(key_id=key_id, at=self._clock(), interval_s=interval_s), "seen"
+        )
 
     def set_role(self, key_id: str, role: str) -> bool:
         """Change what a device is for, without re-enrolling it.

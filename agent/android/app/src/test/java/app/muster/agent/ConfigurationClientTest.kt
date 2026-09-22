@@ -248,6 +248,18 @@ class ConfigurationClientTest {
     }
 
     @Test
+    fun theFetchReportsHowOftenThisAgentChecksIn() {
+        // muster#77: the console reads this to decide whether a device is
+        // inside its own cycle. It must be the schedule the job really uses.
+        val transport = FakeTransport(config = Reply(200, served(emptyMap())))
+        ConfigurationClient(transport, FakeIdentity()).fetch()
+
+        val sent = JSONObject(transport.bodies.last())
+        assertEquals(900L, sent.getLong("check_in_interval_s"))
+        assertEquals(CheckInSchedulePolicy.INTERVAL_MS / 1000, sent.getLong("check_in_interval_s"))
+    }
+
+    @Test
     fun theServersNonceIsWhatGetsSigned() {
         // A client-chosen challenge is not a challenge: an attacker replays a
         // signature they already have. See server/muster/proof.py.

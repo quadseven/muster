@@ -69,9 +69,9 @@ class Breakable(MemoryRecords):
         self._check()
         super().record_issuance(device, certificate)
 
-    def record_seen(self, key_id_, at) -> None:
+    def record_seen(self, key_id_, at, interval_s=None) -> None:
         self._check()
-        super().record_seen(key_id_, at)
+        super().record_seen(key_id_, at, interval_s)
 
     def record_collected(self, request_id, at) -> None:
         self._check()
@@ -839,6 +839,23 @@ def test_a_renewal_upserts_the_device_and_leaves_first_seen_alone():
     assert "CASE WHEN EXCLUDED.last_seen >= kith_device.last_seen" in updates
 
 
+def test_a_seen_write_keeps_the_reported_interval_unless_it_carries_one():
+    """muster#77, the SQL half. COALESCE is what keeps a proof on a route that
+    reports no interval from wiping the one the configuration fetch reported."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    records.record_seen("abc", START, 900)
+
+    sql, params = next(
+        (sql, params) for sql, params in connection.log
+        if sql.startswith("UPDATE kith_device SET last_seen")
+    )
+    assert "check_in_interval_s = COALESCE(%s, check_in_interval_s)" in sql
+    assert params == (START, 900, "abc", START)
+
+
 def test_a_renewed_certificate_is_stored_as_collected():
     """muster#65. Renewal hands the certificate over in its own response, so
     `/v1/device/renew` builds it with `collected_at` already set. The INSERT
@@ -1169,9 +1186,16 @@ def test_the_schema_keeps_the_serial_out_of_an_integer_column():
         line for line in kith_store.SCHEMA.read_text().splitlines()
         if not line.lstrip().startswith("--")
     )
-    assert "serial" in statements
-    assert "bigint" not in statements
-    assert "integer" not in statements
+    # THE SERIAL COLUMN ITSELF, not the whole file. This used to forbid the
+    # words anywhere in the schema, which held until a column that really is a
+    # small integer arrived (muster#77) and the guard stopped meaning "the
+    # serial is text" and started meaning "no table may count anything".
+    serial = [
+        line.split() for line in statements.splitlines()
+        if line.split()[:1] == ["serial"]
+    ]
+    assert serial, "no serial column declared"
+    assert all(words[1] == "text" for words in serial), serial
 
 
 # ---- roles (muster#70) ---------------------------------------------------
