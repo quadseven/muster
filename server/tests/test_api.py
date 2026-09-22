@@ -4018,6 +4018,46 @@ def test_renewal_keeps_the_device_and_its_role_rather_than_making_a_new_one(
     ).json()["device"]["certificates"] == 2
 
 
+def test_a_proof_names_the_certificate_that_made_it(state, tmp_path, monkeypatch):
+    """muster#66. After a renewal the old certificate stays valid for months,
+    so a device still proving with it looks exactly like one using the new
+    one. The only way to tell from the server is for each proof to say which
+    serial it was made with - and for that to be the serial actually presented,
+    not the newest one the kith holds.
+    """
+    import io
+    import json as _json
+    import types
+
+    from muster import telemetry as _telemetry
+
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state)
+    _past_renew_after(state, monkeypatch, identity)
+    renewed_pem = _renew(client, key, identity).json()["certificate_pem"]
+    renewed = types.SimpleNamespace(certificate_pem=renewed_pem.encode())
+
+    def serial_of(pem: bytes) -> str:
+        return f"{x509.load_pem_x509_certificate(pem).serial_number:X}"
+
+    stream = io.StringIO()
+    _telemetry.configure_logging(stream)
+    assert _fetch_config(client, key, renewed).status_code == 200
+    assert _fetch_config(client, key, identity).status_code == 200
+
+    proven = [
+        _json.loads(line) for line in stream.getvalue().splitlines()
+        if _json.loads(line)["message"] == "device proven"
+    ]
+    assert [p["serial"] for p in proven] == [
+        serial_of(renewed.certificate_pem),
+        serial_of(identity.certificate_pem),
+    ]
+    assert {p["key_id"] for p in proven} == {key_id_}
+
+
 def test_renewal_needs_a_csr_but_asks_for_the_proof_first(state):
     """A required Body field is answered by FastAPI's own validation BEFORE the
     endpoint runs, so a caller with no identity would learn the shape of this

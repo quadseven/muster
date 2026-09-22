@@ -183,6 +183,14 @@ def _spki_der(public_key) -> bytes:
     )
 
 
+def _serial_of(certificate_pem: bytes) -> str:
+    """A certificate's serial in the form the kith stores it: uppercase hex,
+    which is also what `openssl x509 -serial` prints."""
+    from cryptography import x509
+
+    return f"{x509.load_pem_x509_certificate(certificate_pem).serial_number:X}"
+
+
 def _key_id_of(certificate_pem: bytes) -> str:
     """Which device in the kith a certificate belongs to.
 
@@ -425,6 +433,14 @@ def _proven_device(
 
     state.telemetry.count("proof.verified", tags=["verdict:ok"])
     proven = _key_id_of(certificate_pem.encode())
+    # WHICH CERTIFICATE, NOT ONLY WHICH DEVICE (muster#66). After a renewal
+    # the previous certificate stays valid for months, so "this key proved" is
+    # the same line whether the device moved to its new certificate or never
+    # did. The serial of the one actually presented is what tells them apart,
+    # and it is public - it is printed on every certificate and served by OCSP.
+    telemetry.event(
+        "device proven", key_id=proven, serial=_serial_of(certificate_pem.encode())
+    )
 
     # STILL OURS? A valid signature over a valid certificate proves the device
     # is who it says. It does not prove anybody still wants to hear from it, and
