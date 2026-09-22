@@ -51,6 +51,9 @@
   be five colors nobody has chosen, and inventing brand is exactly what the
   last section of docs/brand.md warns about.
 
+  WHEN A DEVICE LAST CHECKED IN IS HERE, as a per-row fact with a quiet mark:
+  filled inside the fifteen-minute cycle, hollow after, never red.
+
   WHAT IS NOT HERE, AND WHY, also from docs/brand.md: no total/online/offline
   counts, because muster has no concept of a device being online - and it does
   not need one, because nothing is ever pushed at a device. Enforcement happens
@@ -217,6 +220,18 @@
   .device-meta { min-width: 0; }
   .device-meta .fp { overflow-wrap: anywhere; }
   .device-status { margin-top: .2rem; }
+  /* WHEN IT LAST ASKED, as a fact rather than a verdict (docs/brand.md: muster
+     has no concept of a device being online). The mark is filled while the
+     device is inside its fifteen-minute check-in cycle and hollow after, in
+     charcoal both ways: quiet is normal here, so it never turns red. */
+  .device-name { display: flex; align-items: center; gap: .5rem; font-weight: 500; }
+  .mark {
+    width: .55rem; height: .55rem; border-radius: 50%; flex: none;
+    border: 1.5px solid var(--charcoal);
+  }
+  .mark.recent { background: var(--charcoal); }
+  .facts { font-size: .85rem; color: var(--stone); margin-top: .25rem; }
+  .facts span + span::before { content: "\00b7"; margin: 0 .45rem; }
   .device-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
   .action.danger { border-color: var(--charcoal); }
   .action.danger:hover { background: var(--charcoal); color: var(--warm-white); }
@@ -801,7 +816,14 @@
     row.className = 'row device-row';
     const left = document.createElement('div');
     left.className = 'device-meta';
-    const nameEl = element('div', '', displayName(device));
+    const nameEl = element('div', 'device-name', '');
+    const mark = element('span', 'mark', '');
+    const recent = minutesSince(device.last_seen) <= CHECK_IN_WINDOW_MIN;
+    if (recent) mark.classList.add('recent');
+    mark.title = recent
+      ? 'Checked in within its 15-minute cycle'
+      : 'Quiet since ' + exactTime(device.last_seen);
+    nameEl.append(mark, element('span', '', displayName(device)));
     // THE DEVICE'S OWN REPORT, kept reachable rather than replaced. An
     // operator who renamed a device still needs to see what it calls itself,
     // the same field the console showed before the rename existed.
@@ -813,7 +835,7 @@
     );
     const status = element('div', 'device-status', deviceStatus(device));
     status.classList.add('muted');
-    left.append(status);
+    left.append(status, deviceFacts(device));
 
     const actions = document.createElement('div');
     actions.className = 'device-actions';
@@ -871,7 +893,55 @@
   function deviceStatus(device) {
     if (device.revoked_at) return 'Revoked';
     if (device.wipe_pending_at) return 'Erase queued - waiting for check-in';
+    if (device.reboot_requested_at) return 'Reboot queued - waiting for check-in';
     return 'Active';
+  }
+
+  // The agent reconciles every fifteen minutes (CheckInSchedulePolicy); five
+  // more absorbs scheduler jitter so an on-time device does not flicker.
+  const CHECK_IN_WINDOW_MIN = 20;
+
+  function minutesSince(iso) {
+    return (Date.now() - Date.parse(iso)) / 60000;
+  }
+
+  function sinceText(iso) {
+    const minutes = Math.max(0, Math.floor(minutesSince(iso)));
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return minutes + ' min ago';
+    const hours = Math.floor(minutes / 60);
+    if (hours < 48) return hours + ' h ago';
+    return Math.floor(hours / 24) + ' days ago';
+  }
+
+  function exactTime(iso) {
+    return new Date(iso).toLocaleString(undefined, {
+      dateStyle: 'medium', timeStyle: 'short',
+    });
+  }
+
+  function shortDate(iso) {
+    return new Date(iso).toLocaleDateString(undefined, {
+      day: 'numeric', month: 'short', year: 'numeric',
+    });
+  }
+
+  // The facts an operator asks first, each with its exact value on hover.
+  function deviceFacts(device) {
+    const facts = document.createElement('div');
+    facts.className = 'facts';
+    const checked = element('span', '', 'Checked in ' + sinceText(device.last_seen));
+    checked.title = exactTime(device.last_seen);
+    facts.append(checked);
+    if (device.not_after) {
+      const cert = element('span', '', 'Certificate to ' + shortDate(device.not_after));
+      cert.title = device.certificates + ' issued; current serial ' + device.serial;
+      facts.append(cert);
+    }
+    const since = element('span', '', 'Enrolled ' + shortDate(device.first_seen));
+    since.title = exactTime(device.first_seen);
+    facts.append(since);
+    return facts;
   }
 
   function element(tag, className, text) {

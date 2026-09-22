@@ -743,3 +743,14 @@ def test_the_bar_is_two_rows_on_a_phone():
     phone = body[body.index("@media (max-width: 46rem)"):]
     assert "nav { order: 3; flex: 1 0 100%;" in phone
     assert ".bar { flex-wrap: wrap;" in phone
+
+
+def test_each_device_row_says_when_it_last_checked_in():
+    """The first question an operator asks of a device list. `last_seen` has
+    been in the kith payload all along; the row now shows it, with the exact
+    time on hover, and marks the fifteen-minute cycle without calling any
+    device offline (docs/brand.md)."""
+    html = _console_html()
+    assert "'Checked in ' + sinceText(device.last_seen)" in html
+    assert "checked.title = exactTime(device.last_seen)" in html
+    assert "CHECK_IN_WINDOW_MIN = 20" in html
