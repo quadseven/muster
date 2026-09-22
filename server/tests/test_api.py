@@ -3949,12 +3949,21 @@ def test_renewal_will_not_swap_the_key(state, monkeypatch):
     assert "different public key" in response.json()["detail"]
 
 
-def test_a_device_cannot_renew_before_muster_said_it_may(state):
+def test_a_device_cannot_renew_before_muster_said_it_may(state, monkeypatch):
     """`renew_after` was advisory - a number handed to devices with nothing
     enforcing it. Enforced here it bounds kith_certificate against a client
-    looping, and keeps "when may a device renew" in one place: ca.Identity."""
+    looping, and keeps "when may a device renew" in one place: ca.Identity.
+
+    THE CLOCK IS PINNED, for the reason `_past_renew_after` gives. The test CA
+    dates its certificates from a fixed day, and this test used to read the
+    wall clock instead - so it passed until real time crossed that
+    certificate's renew_after (2026-09-16) and failed on every run after.
+    """
     client = _proof_client(state)
-    key, identity, _key_id = _enrolled(state)   # issued just now, so far too early
+    key, identity, _key_id = _enrolled(state)
+    _past_renew_after(state, monkeypatch, identity)
+    one_minute_early = state.kith.now() - dt.timedelta(minutes=2)
+    monkeypatch.setattr(state.kith, "now", lambda: one_minute_early)
 
     response = _renew(client, key, identity)
 
