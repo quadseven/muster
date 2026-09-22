@@ -232,6 +232,9 @@
   .mark.recent { background: var(--charcoal); }
   .facts { font-size: .85rem; color: var(--stone); margin-top: .25rem; }
   .facts span + span::before { content: "\00b7"; margin: 0 .45rem; }
+  /* Wrap BETWEEN facts, never inside one: "Aug 23," and "2026" on separate
+     lines read as two facts. */
+  .facts span { white-space: nowrap; }
   .device-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
   .action.danger { border-color: var(--charcoal); }
   .action.danger:hover { background: var(--charcoal); color: var(--warm-white); }
