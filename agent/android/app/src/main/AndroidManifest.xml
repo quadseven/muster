@@ -168,6 +168,12 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <!-- The agent updating itself ends its own process mid-plan
+                     (install-self is the last step), and without this nothing
+                     ran the plan again until JobScheduler got round to it -
+                     measured at over thirty minutes, twice. Delivered only to
+                     this app, needs no permission. -->
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
