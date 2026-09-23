@@ -10,6 +10,14 @@ not. Then `ARCHITECTURE.md` for the tour, and `DECISIONS.md` when you want to
 know why something has the shape it has. Every entry there names the failure
 that caused it.
 
+**Never write a bare `@grug` anywhere on GitHub** - issues, PRs, comments,
+commit messages. That handle belongs to a real GitHub user unrelated to this
+project; each mention notifies them and subscribes them to the thread, and
+neither can be undone. It happened twice here (#62, #69). The review bot is
+`grug-tribe[bot]` and takes slash commands: `/grug improve` re-runs the code
+review, `/grug recheck` re-runs only the plan check. In prose write `grug` in
+backticks. Check any text for `@grug` before posting it.
+
 ## Six things that will bite you
 
 **1. muster does not use mTLS. Do not "fix" that.**
