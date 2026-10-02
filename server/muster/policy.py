@@ -144,6 +144,23 @@ SHARED_FILES: tuple[str, ...] = (
     "install-apps",
 )
 
+# The one managed file that merges across scopes instead of falling back per
+# file (muster#109). Every other file is replaced wholesale by the most
+# specific scope that names it, and for most files that is right. For
+# `install-apps` it has a sharp consequence: the moment a device has a role,
+# `role-<name>.install-apps` REPLACES `kith.install-apps`, so "every device
+# runs the current agent" cannot be expressed at the kith level at all. The
+# line has to be repeated in every role file, forever, and the failure mode
+# when someone forgets is a device that never updates and says nothing.
+#
+# So `install-apps` merges BY PACKAGE NAME, most specific scope winning per
+# package: the kith says "everyone runs agent N" and a role pins its own apps,
+# and the per-file rule stands everywhere else. The merge emits one line per
+# package because the agent REFUSES a file that names a package twice
+# (AppInstallPolicy.read): two lines for one package is an unfinished edit,
+# and silently picking one installs software nobody chose.
+INSTALL_APPS_FILE = "install-apps"
+
 # The scope every device in the kith reads from, when it has no file of its own.
 # CONTEXT.md's word for "the set of devices muster recognizes", used here rather
 # than "default" so the directory says which devices it applies to.
@@ -305,6 +322,51 @@ def _refuse_unusable_scope(key_id: str, role: str) -> None:
         )
 
 
+def _merge_install_apps(scoped: list[str]) -> str:
+    """Merge `install-apps` file texts, least specific scope first.
+
+    Lines whose first word is `install` are keyed by package name (the second
+    word, exactly as the agent reads it - the keyword is case-insensitive
+    there, the package is not); the most specific scope naming a package wins
+    it. Everything else - comments, blank lines, and lines the device will
+    refuse - passes through untouched, in scope order, so the served file keeps
+    its comments and the device still gets the last word on what it can parse.
+
+    Pure text: this deliberately does not validate the lines. The agent is the
+    validator, and a server that second-guessed the grammar would be a second
+    vocabulary nobody asked for.
+    """
+
+    def package_of(line: str) -> str | None:
+        words = line.split()
+        if len(words) >= 2 and words[0].lower() == "install":
+            return words[1]
+        return None
+
+    # Most specific first: the first scope naming a package wins it.
+    winners: dict[str, str] = {}
+    for text in reversed(scoped):
+        for line in text.splitlines():
+            package = package_of(line)
+            if package is not None and package not in winners:
+                winners[package] = line
+
+    # Least specific first, so the served file still reads kith, then role,
+    # then device. A package is emitted once: the identical-line case (kith
+    # and role carrying the same line) must not reach the device twice.
+    emitted: set[str] = set()
+    out: list[str] = []
+    for text in scoped:
+        for line in text.splitlines():
+            package = package_of(line)
+            if package is None:
+                out.append(line)
+            elif package not in emitted and winners[package] == line:
+                emitted.add(package)
+                out.append(line)
+    return "\n".join(out) + ("\n" if out else "")
+
+
 @dataclass
 class Policies:
     """The directory, read on demand.
@@ -445,6 +507,27 @@ class Policies:
             # either file must not be able to become a shared file through a
             # filename typo.
             if name in (WIPE_FILE, REBOOT_FILE):
+                continue
+            if name == INSTALL_APPS_FILE:
+                # muster#109: merged by package across scopes, most specific
+                # winning per package, instead of the per-file fallback every
+                # other file uses below. Absent everywhere stays absent: a
+                # merged-from-nothing empty file would read as "withdraw every
+                # install", and an absent file and an empty file mean different
+                # things to the agent.
+                scoped: list[str] = []
+                theirs = self.root / f"{KITH_SCOPE}.{name}"
+                if name in SHARED_FILES and theirs.is_file():
+                    scoped.append(_read(theirs))
+                if role and name in ROLE_FILES:
+                    ours = self.root / f"{ROLE_SCOPE_PREFIX}{role}.{name}"
+                    if ours.is_file():
+                        scoped.append(_read(ours))
+                mine = self.root / f"{key_id}.{name}"
+                if mine.is_file():
+                    scoped.append(_read(mine))
+                if scoped:
+                    files[name] = _merge_install_apps(scoped)
                 continue
             mine = self.root / f"{key_id}.{name}"
             if mine.is_file():

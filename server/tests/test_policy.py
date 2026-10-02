@@ -491,3 +491,123 @@ def test_a_role_with_a_trailing_newline_is_refused(value):
     [-._a-zA-Z0-9] - so a newline that passes validation here is a write that
     fails much later, somewhere with far less context."""
     assert policy._ROLE.match(value) is None
+
+
+# ---- install-apps merges across scopes (muster#109) ------------------------
+
+
+KITH_APPS = (
+    "install app.muster.agent agent-76.apk sha256 "
+    "3f2a000000000000000000000000000000000000000000000000000000000000 version 76\n"
+    "install app.zippie.companion zippie-0.1.0.apk sha256 "
+    "9b1c000000000000000000000000000000000000000000000000000000000000 version 72\n"
+)
+ROLE_APPS = (
+    "install app.muster.agent agent-77.apk sha256 "
+    "7aa9000000000000000000000000000000000000000000000000000000000000 version 77\n"
+)
+DEVICE_APPS = (
+    "install app.muster.agent agent-78.apk sha256 "
+    "c41d000000000000000000000000000000000000000000000000000000000000 version 78\n"
+)
+
+
+def test_install_apps_merges_by_package_with_most_specific_scope_winning(tmp_path):
+    """muster#109: the kith says "everyone runs agent 76" and the role pins
+    agent 77. The role's file must REPLACE the agent line, not the whole
+    file - the companion line from the kith has to survive, or "every device
+    should run the current agent" cannot be expressed at the kith level."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _role(tmp_path, "zippie", "install-apps").write_text(ROLE_APPS)
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+
+    assert "agent-77.apk" in served, "the role's agent line wins for its package"
+    assert "agent-76.apk" not in served, "the kith's agent line is shadowed"
+    assert "zippie-0.1.0.apk" in served, "the kith's other packages survive"
+    assert served.count("install app.muster.agent") == 1, (
+        "one line per package: the agent refuses a file that names a package twice"
+    )
+
+
+def test_install_apps_device_scope_beats_role_and_kith(tmp_path):
+    """Most specific wins, per package, all the way down."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _role(tmp_path, "zippie", "install-apps").write_text(ROLE_APPS)
+    _own(tmp_path, A, "install-apps").write_text(DEVICE_APPS)
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+
+    assert "agent-78.apk" in served
+    assert "agent-77.apk" not in served
+    assert "agent-76.apk" not in served
+    assert "zippie-0.1.0.apk" in served
+
+
+def test_install_apps_with_no_role_file_is_served_unchanged(tmp_path):
+    """No role, no merge: the kith file reaches the device exactly as written."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+
+    assert served == KITH_APPS
+
+
+def test_install_apps_keeps_comments_and_blank_lines(tmp_path):
+    """The merge keys on `install <package>` lines; comments and blanks are
+    not packages and pass through in scope order."""
+    _shared(tmp_path, "install-apps").write_text(
+        "# the fleet baseline\n" + KITH_APPS
+    )
+    _role(tmp_path, "zippie", "install-apps").write_text(
+        "# zippie pins the agent\n" + ROLE_APPS
+    )
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+
+    assert "# the fleet baseline" in served
+    assert "# zippie pins the agent" in served
+    assert served.count("install app.muster.agent") == 1
+
+
+def test_install_apps_identical_lines_across_scopes_are_not_duplicated(tmp_path):
+    """The same line in kith and role must reach the device once. Twice would
+    be a duplicate package, which the agent refuses rather than dedupes."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _role(tmp_path, "zippie", "install-apps").write_text(KITH_APPS)
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+
+    assert served.count("install app.muster.agent") == 1
+    assert served.count("install app.zippie.companion") == 1
+
+
+def test_install_apps_absent_everywhere_is_absent_not_empty(tmp_path):
+    """An absent file and an empty file mean different things to the agent;
+    the merge must not conjure an empty install-apps out of nothing."""
+    _shared(tmp_path, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie")
+
+    assert "install-apps" not in served.files
+
+
+def test_other_files_still_replace_rather_than_merge(tmp_path):
+    """The merge is install-apps ONLY. Every other file keeps the per-file
+    fallback the agent's own reconcilers already follow."""
+    _shared(tmp_path, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _role(tmp_path, "zippie", "restrictions").write_text("DISALLOW_ADD_USER\n")
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie")
+
+    assert served.files["restrictions"] == "DISALLOW_ADD_USER\n"
