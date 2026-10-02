@@ -680,18 +680,23 @@ def create_app(state: State) -> FastAPI:
     # stays: it describes the API and runs nothing.
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
-        """Start the thing that retries deferred kith writes, and stop it.
+        """Start the things that must run without a request, and stop them.
 
-        WITHOUT THIS THE BACKLOG IS DECORATION. Deferred writes are otherwise
-        replayed only by the next enrollment, proof or console load, and muster
-        is quiet by design - devices renew every ninety days. A store that comes
-        back an hour after it went away would keep the rows in memory until
-        something happened to knock on it, and a pod restarted first loses them.
+        The kith flusher retries deferred writes; the enrollment sweeper bounds
+        the pairing-code table. WITHOUT EITHER, the mechanism is decoration:
+        deferred writes are otherwise replayed only by the next enrollment,
+        proof or console load, and muster is quiet by design - devices renew
+        every ninety days. A store that comes back an hour after it went away
+        would keep the rows in memory until something happened to knock on it,
+        and a pod restarted first loses them; codes minted by every drawn QR
+        would accumulate on the CA process for the life of the pod.
         """
         state.kith.start_flushing()
+        state.enrollment.start_sweeping()
         try:
             yield
         finally:
+            state.enrollment.stop_sweeping()
             state.kith.stop_flushing()
 
     app = FastAPI(

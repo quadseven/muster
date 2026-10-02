@@ -64,6 +64,7 @@ import hashlib
 import hmac
 import re
 import secrets
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -131,6 +132,26 @@ DEFAULT_CODE_TTL_S = 300.0
 # and then this code is gone", which is the difference between a background
 # attack and one that has to race a human.
 MAX_ATTEMPTS = 5
+
+# How long a dead pairing code stays in `codes` past its window, so a replay is
+# still answered CODE_USED (or CODE_EXPIRED for one that was never used) instead
+# of NO_SUCH_CODE.
+#
+# Sweeping a code the moment it dies would lose exactly the refusal muster#48
+# was asked to preserve: telling a stale QR from a replayed one apart. A replay
+# answered NO_SUCH_CODE reads as "never existed", which is the one answer that
+# helps nobody - not the operator holding a stale QR, and not anyone watching
+# for a second presentation of a spent code.
+#
+# A multiple of the TTL so the two windows stay proportional if the TTL ever
+# moves (see muster#113 for why it might), and deliberately generous: keeping a
+# dead code is a bounded dict entry, while dropping one early is a lost refusal.
+CODE_RETENTION_S = 4 * DEFAULT_CODE_TTL_S
+
+# How often the sweeper runs. Codes live minutes and retention is twenty of
+# them; a one-minute pass is frequent enough that the bound is real and cheap
+# enough that the scan is noise.
+SWEEP_INTERVAL_S = 60.0
 
 
 class Shape(str, Enum):
@@ -346,6 +367,15 @@ class Enrollment:
     clock: object
     codes: dict = field(default_factory=dict)
     pending: dict = field(default_factory=dict)
+    # The sweeper thread, if the app lifespan started one. Kept off the
+    # dataclass's public surface: it is lifecycle, not state.
+    _sweeper: threading.Thread | None = field(default=None, repr=False)
+    _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    # Guards `codes`. The sweeper thread deletes from it while request threads
+    # mint, look up and charge attempts against it; an unguarded delete landing
+    # mid-iteration tears the dict (RuntimeError). The lock is never held across
+    # a call into another method, so it cannot deadlock with itself.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def _now(self) -> float:
         return self.clock()  # type: ignore[operator]
@@ -379,9 +409,10 @@ class Enrollment:
                 "dot in one would silently address a different scope."
             )
         code = _mint_code(shape)
-        self.codes[code] = PairingCode(
-            code=code, created_at=self._now(), ttl_s=ttl_s, shape=shape, role=role
-        )
+        with self._lock:
+            self.codes[code] = PairingCode(
+                code=code, created_at=self._now(), ttl_s=ttl_s, shape=shape, role=role
+            )
         return code
 
     # ---- present ---------------------------------------------------------
@@ -445,10 +476,15 @@ class Enrollment:
         """
         record = None
         if code.isascii() and len(code) <= MAX_CODE_LENGTH:
-            for candidate, held in self.codes.items():
-                if hmac.compare_digest(candidate, code):
-                    record = held
-                    break
+            # The lookup holds the lock; the refusal checks below only read
+            # fields off the record we are holding, so they run outside it.
+            # `_charge_attempts` takes the lock itself, which is why it is
+            # called after this block exits rather than inside it.
+            with self._lock:
+                for candidate, held in self.codes.items():
+                    if hmac.compare_digest(candidate, code):
+                        record = held
+                        break
         if record is None:
             self._charge_attempts()
             raise Refused(Outcome.NO_SUCH_CODE)
@@ -477,9 +513,10 @@ class Enrollment:
         service against the whole point of the QR, available to the open
         internet, in five requests.
         """
-        for held in self.codes.values():
-            if not held.used and held.shape is Shape.TYPED:
-                held.attempts += 1
+        with self._lock:
+            for held in self.codes.values():
+                if not held.used and held.shape is Shape.TYPED:
+                    held.attempts += 1
 
     # ---- vouch -----------------------------------------------------------
 
@@ -520,29 +557,58 @@ class Enrollment:
     # ---- housekeeping ----------------------------------------------------
 
     def sweep(self) -> int:
-        """Drop expired codes. Returns how many went.
+        """Drop codes whose window closed long enough ago to stop being evidence.
 
-        Used codes are dropped too: keeping them would let CODE_USED be reported
-        forever, which reads as a replay attempt long after it is just an old
-        code. Expiry is the honest answer once the window has passed.
+        A code becomes sweep-eligible at `created_at + ttl_s + CODE_RETENTION_S`:
+        until then a used code is still answered CODE_USED and an unused expired
+        one CODE_EXPIRED, so a replay and a stale QR stay distinguishable. Past
+        that, expiry is the honest answer and NO_SUCH_CODE is what a replay gets.
 
-        NOTHING IN muster/ CALLS THIS, and that is written down here rather than
-        left to be rediscovered. `codes` therefore only grows, which matters more
-        since muster#48 made minting page-view driven - every provisioning QR the
-        console draws mints one. The two costs are `_claimable`'s comparison loop
-        and `_charge_attempts`' full scan, both reachable unauthenticated.
+        Wired to the app lifespan (`start_sweeping`, beside the kith flusher) -
+        muster#103. A sweep that only runs when something else happens to run is
+        decoration on a fleet this quiet, and `codes` would grow without bound.
 
-        IT IS NOT WIRED HERE BECAUSE DOING IT NAIVELY LOSES A REFUSAL. Sweeping
-        on mint would drop a code that was used SECONDS ago but is still inside
-        its window, so a device replaying it would be told NO_SUCH_CODE instead
-        of CODE_USED - and telling those two apart is exactly what muster#48 was
-        asked to preserve. What this wants is a retention period longer than the
-        TTL, which is a decision about how long a replay stays worth reporting.
-        Tracked as muster#53.
+        Returns how many went.
         """
-        now = self._now()
-        dead = [c for c, held in self.codes.items()
-                if held.used or held.expired_at(now)]
-        for code in dead:
-            del self.codes[code]
-        return len(dead)
+        with self._lock:
+            now = self._now()
+            dead = [
+                c
+                for c, held in self.codes.items()
+                if now - held.created_at >= held.ttl_s + CODE_RETENTION_S
+            ]
+            for code in dead:
+                del self.codes[code]
+            return len(dead)
+
+    def start_sweeping(self, interval_s: float = SWEEP_INTERVAL_S) -> None:
+        """Sweep dead codes on a timer, because nothing else may ever run.
+
+        Pairing codes are minted by administrators drawing QRs, which on a quiet
+        fleet can be weeks apart - and every QR mints one. Without a timer,
+        `codes` grows for the life of the pod, and the two scans that touch
+        every live code (`_claimable`, `_charge_attempts`) grow with it, on the
+        process that holds the CA private key. Daemon thread, so it can never
+        hold a shutdown open. Started and stopped by the app lifespan.
+        """
+        if self._sweeper is not None:
+            return
+        self._stop.clear()
+
+        def loop() -> None:
+            while not self._stop.wait(interval_s):
+                self.sweep()
+
+        self._sweeper = threading.Thread(
+            target=loop, name="enroll-sweeper", daemon=True
+        )
+        self._sweeper.start()
+
+    def stop_sweeping(self) -> None:
+        """Stop the sweeper. One last sweep on the way out is pointless - codes
+        are minutes-lived and die with the process anyway - so this just stops
+        the thread."""
+        self._stop.set()
+        sweeper, self._sweeper = self._sweeper, None
+        if sweeper is not None:
+            sweeper.join(timeout=5.0)
