@@ -44,6 +44,18 @@ class EnrollActivity : Activity() {
             deviceName = android.os.Build.MODEL ?: "android",
         )
 
+        if (flow.isEnrolled()) {
+            // muster#105: an enrolled device is told what it is, not offered
+            // a form that can only re-present a spent code. The form is
+            // disabled rather than hidden so the screen still reads as the
+            // enrollment screen, and the back button still leaves - nothing
+            // here traps the operator the way the retry loop did.
+            say("This device is already enrolled.")
+            findViewById<EditText>(R.id.code).isEnabled = false
+            findViewById<Button>(R.id.enroll).isEnabled = false
+            return
+        }
+
         findViewById<Button>(R.id.enroll).setOnClickListener {
             val code = findViewById<EditText>(R.id.code).text.toString().trim()
             if (code.isEmpty()) return@setOnClickListener
