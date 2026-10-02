@@ -611,3 +611,49 @@ def test_other_files_still_replace_rather_than_merge(tmp_path):
     served = policy.Policies(root=tmp_path).for_device(A, role="zippie")
 
     assert served.files["restrictions"] == "DISALLOW_ADD_USER\n"
+
+
+def test_install_apps_treats_package_case_exactly_like_the_agent(tmp_path):
+    """The agent keys its table by the raw package string (AppInstallPolicy.read),
+    so `App.foo` and `app.foo` are two packages to it, not one. The merge must
+    key the same way: normalizing case here would merge what the agent keeps
+    apart, and the served file would no longer mean what the device reads."""
+    _shared(tmp_path, "install-apps").write_text(
+        "install app.foo a.apk sha256 "
+        "3f2a000000000000000000000000000000000000000000000000000000000000 version 1\n"
+    )
+    _role(tmp_path, "zippie", "install-apps").write_text(
+        "install App.foo b.apk sha256 "
+        "9b1c000000000000000000000000000000000000000000000000000000000000 version 2\n"
+    )
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+
+    assert "a.apk" in served and "b.apk" in served, (
+        "different case is a different package, like the agent reads it"
+    )
+
+
+def test_install_apps_keyword_is_case_insensitive_like_the_agent(tmp_path):
+    """AppInstallPolicy.read lowercases the keyword before comparing, so
+    `INSTALL` is an install line to the device - and therefore a package line
+    to the merge, not a comment that slips past it."""
+    _shared(tmp_path, "install-apps").write_text(
+        "INSTALL app.foo a.apk sha256 "
+        "3f2a000000000000000000000000000000000000000000000000000000000000 version 1\n"
+    )
+    _role(tmp_path, "zippie", "install-apps").write_text(
+        "install app.foo b.apk sha256 "
+        "9b1c000000000000000000000000000000000000000000000000000000000000 version 2\n"
+    )
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+
+    assert served.count("app.foo") == 1, (
+        "the kith's INSTALL line and the role's install line name one package"
+    )
+    assert "b.apk" in served, "the role's line wins for the package"

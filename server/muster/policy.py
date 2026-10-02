@@ -338,6 +338,12 @@ def _merge_install_apps(scoped: list[str]) -> str:
     """
 
     def package_of(line: str) -> str | None:
+        # The keyword is case-insensitive, exactly like the agent reads it
+        # (AppInstallPolicy.read: `words[0].lowercase() != INSTALL`). The
+        # package is NOT normalized: the agent keys its own table by the raw
+        # package string, so `App.foo` and `app.foo` are two packages to it,
+        # not one. Normalizing case here would merge what the agent keeps
+        # apart - the one drift this merge must never introduce.
         words = line.split()
         if len(words) >= 2 and words[0].lower() == "install":
             return words[1]
@@ -440,6 +446,28 @@ class Policies:
             "files": self.files_held(),
         }
 
+    def _install_apps_scopes(self, key_id: str, role: str) -> list[str]:
+        """The `install-apps` file texts present, least specific scope first.
+
+        Extracted from `for_device`: the merge needs every scope that names
+        the file, and collecting them inline tripled the branch's nesting.
+        The SHARED_FILES / ROLE_FILES memberships are the same gates the
+        per-file fallback below applies - a scope that may not carry this
+        file may not merge into it either.
+        """
+        scoped: list[str] = []
+        theirs = self.root / f"{KITH_SCOPE}.{INSTALL_APPS_FILE}"
+        if INSTALL_APPS_FILE in SHARED_FILES and theirs.is_file():
+            scoped.append(_read(theirs))
+        if role and INSTALL_APPS_FILE in ROLE_FILES:
+            ours = self.root / f"{ROLE_SCOPE_PREFIX}{role}.{INSTALL_APPS_FILE}"
+            if ours.is_file():
+                scoped.append(_read(ours))
+        mine = self.root / f"{key_id}.{INSTALL_APPS_FILE}"
+        if mine.is_file():
+            scoped.append(_read(mine))
+        return scoped
+
     def for_device(
         self,
         key_id: str,
@@ -515,17 +543,7 @@ class Policies:
                 # merged-from-nothing empty file would read as "withdraw every
                 # install", and an absent file and an empty file mean different
                 # things to the agent.
-                scoped: list[str] = []
-                theirs = self.root / f"{KITH_SCOPE}.{name}"
-                if name in SHARED_FILES and theirs.is_file():
-                    scoped.append(_read(theirs))
-                if role and name in ROLE_FILES:
-                    ours = self.root / f"{ROLE_SCOPE_PREFIX}{role}.{name}"
-                    if ours.is_file():
-                        scoped.append(_read(ours))
-                mine = self.root / f"{key_id}.{name}"
-                if mine.is_file():
-                    scoped.append(_read(mine))
+                scoped = self._install_apps_scopes(key_id, role)
                 if scoped:
                     files[name] = _merge_install_apps(scoped)
                 continue
