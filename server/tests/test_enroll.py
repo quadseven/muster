@@ -19,6 +19,8 @@ from __future__ import annotations
 import pytest
 
 from muster.enroll import (
+    CODE_RETENTION_S,
+    DEFAULT_CODE_TTL_S,
     MAX_ATTEMPTS,
     MAX_CODE_LENGTH,
     Enrollment,
@@ -199,18 +201,62 @@ def test_a_request_can_only_be_vouched_once(enroll):
 # ---- housekeeping --------------------------------------------------------
 
 
-def test_sweep_drops_expired_and_used_codes(enroll):
+def test_sweep_drops_only_codes_past_retention(enroll):
+    """muster#103 changed this test's contract on purpose: a used code used to
+    drop on the first sweep, which is exactly what lost the CODE_USED refusal.
+    Now a used code stays reportable through retention, and only a code past
+    TTL + retention goes."""
     live = enroll.mint(ttl_s=300.0)
     spent = enroll.mint()
     _present(enroll, spent)
     enroll.clock.advance(10.0)
 
-    assert enroll.sweep() == 1, "the used one goes, the live one stays"
+    assert enroll.sweep() == 0, "the used code is still evidence inside retention"
     assert live in enroll.codes
+    assert spent in enroll.codes
 
-    enroll.clock.advance(300.0)
-    assert enroll.sweep() == 1
+    enroll.clock.advance(DEFAULT_CODE_TTL_S + CODE_RETENTION_S)
+    assert enroll.sweep() == 2
     assert enroll.codes == {}
+
+
+def test_sweep_keeps_a_used_code_reportable_through_retention(enroll):
+    """muster#103: a replay inside the retention window must still be CODE_USED,
+    not NO_SUCH_CODE. Sweeping a code the moment it dies loses the refusal
+    muster#48 was asked to preserve: telling a stale QR from a replay apart."""
+    spent = enroll.mint()
+    _present(enroll, spent)
+    enroll.clock.advance(DEFAULT_CODE_TTL_S + 10.0)  # past the TTL, inside retention
+
+    assert enroll.sweep() == 0, "a used code inside retention is still evidence"
+    with pytest.raises(Refused) as caught:
+        _present(enroll, spent)
+    assert caught.value.outcome is Outcome.CODE_USED
+
+
+def test_an_unused_expired_code_stays_reportable_through_retention(enroll):
+    """muster#103: the same for CODE_EXPIRED - the honest answer until retention
+    ends, after which the code is gone and NO_SUCH_CODE is honest."""
+    code = enroll.mint(ttl_s=300.0)
+    enroll.clock.advance(301.0)
+
+    assert enroll.sweep() == 0
+    with pytest.raises(Refused) as caught:
+        _present(enroll, code)
+    assert caught.value.outcome is Outcome.CODE_EXPIRED
+
+
+def test_sweep_drops_codes_only_after_retention(enroll):
+    """muster#103: past TTL + retention the code is gone for good, and a replay
+    is NO_SUCH_CODE - expiry is the honest answer once the window has passed."""
+    spent = enroll.mint()
+    _present(enroll, spent)
+    enroll.clock.advance(DEFAULT_CODE_TTL_S + CODE_RETENTION_S + 1.0)
+
+    assert enroll.sweep() == 1
+    with pytest.raises(Refused) as caught:
+        _present(enroll, spent)
+    assert caught.value.outcome is Outcome.NO_SUCH_CODE
 
 
 # ---- the code nobody types -----------------------------------------------
@@ -400,7 +446,7 @@ def test_an_absurdly_long_code_is_refused_before_anything_is_compared(
     """The comparison loop costs one pass per live code, and `code` arrives in a
     JSON body from the open internet. Without a ceiling, one POST carrying a
     megabyte buys an attacker that work for free, over and over - and the loop
-    grows with every code ever minted, because nothing sweeps them (muster#53).
+    only stays cheap because the lifespan sweeps dead codes (muster#103).
 
     COUNTING THE COMPARISONS IS THE WHOLE TEST. The outcome is NO_SUCH_CODE
     either way - a long string matches nothing - so asserting the refusal would

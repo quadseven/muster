@@ -1834,6 +1834,21 @@ def test_the_flusher_runs_for_the_life_of_the_app_and_no_longer():
     assert "kith-flusher" not in {t.name for t in threading.enumerate()}
 
 
+def test_the_sweeper_runs_for_the_life_of_the_app_and_no_longer():
+    """muster#103: sweep() has to be STARTED, and a test suite is where that gets
+    forgotten: nothing else in this file enters the lifespan, so a
+    `start_sweeping` that was never wired would pass every other test here."""
+    import threading
+
+    state, _ = _kith_state()
+    app = create_app(state)
+
+    assert "enroll-sweeper" not in {t.name for t in threading.enumerate()}
+    with TestClient(app):
+        assert "enroll-sweeper" in {t.name for t in threading.enumerate()}
+    assert "enroll-sweeper" not in {t.name for t in threading.enumerate()}
+
+
 def test_nothing_secret_reaches_the_kith():
     """muster#34: nothing is stored that is not already in the certificate.
 
