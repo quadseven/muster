@@ -371,6 +371,11 @@ class Enrollment:
     # dataclass's public surface: it is lifecycle, not state.
     _sweeper: threading.Thread | None = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    # Guards `codes`. The sweeper thread deletes from it while request threads
+    # mint, look up and charge attempts against it; an unguarded delete landing
+    # mid-iteration tears the dict (RuntimeError). The lock is never held across
+    # a call into another method, so it cannot deadlock with itself.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def _now(self) -> float:
         return self.clock()  # type: ignore[operator]
@@ -404,9 +409,10 @@ class Enrollment:
                 "dot in one would silently address a different scope."
             )
         code = _mint_code(shape)
-        self.codes[code] = PairingCode(
-            code=code, created_at=self._now(), ttl_s=ttl_s, shape=shape, role=role
-        )
+        with self._lock:
+            self.codes[code] = PairingCode(
+                code=code, created_at=self._now(), ttl_s=ttl_s, shape=shape, role=role
+            )
         return code
 
     # ---- present ---------------------------------------------------------
@@ -470,10 +476,15 @@ class Enrollment:
         """
         record = None
         if code.isascii() and len(code) <= MAX_CODE_LENGTH:
-            for candidate, held in self.codes.items():
-                if hmac.compare_digest(candidate, code):
-                    record = held
-                    break
+            # The lookup holds the lock; the refusal checks below only read
+            # fields off the record we are holding, so they run outside it.
+            # `_charge_attempts` takes the lock itself, which is why it is
+            # called after this block exits rather than inside it.
+            with self._lock:
+                for candidate, held in self.codes.items():
+                    if hmac.compare_digest(candidate, code):
+                        record = held
+                        break
         if record is None:
             self._charge_attempts()
             raise Refused(Outcome.NO_SUCH_CODE)
@@ -502,9 +513,10 @@ class Enrollment:
         service against the whole point of the QR, available to the open
         internet, in five requests.
         """
-        for held in self.codes.values():
-            if not held.used and held.shape is Shape.TYPED:
-                held.attempts += 1
+        with self._lock:
+            for held in self.codes.values():
+                if not held.used and held.shape is Shape.TYPED:
+                    held.attempts += 1
 
     # ---- vouch -----------------------------------------------------------
 
@@ -558,15 +570,16 @@ class Enrollment:
 
         Returns how many went.
         """
-        now = self._now()
-        dead = [
-            c
-            for c, held in self.codes.items()
-            if now - held.created_at >= held.ttl_s + CODE_RETENTION_S
-        ]
-        for code in dead:
-            del self.codes[code]
-        return len(dead)
+        with self._lock:
+            now = self._now()
+            dead = [
+                c
+                for c, held in self.codes.items()
+                if now - held.created_at >= held.ttl_s + CODE_RETENTION_S
+            ]
+            for code in dead:
+                del self.codes[code]
+            return len(dead)
 
     def start_sweeping(self, interval_s: float = SWEEP_INTERVAL_S) -> None:
         """Sweep dead codes on a timer, because nothing else may ever run.

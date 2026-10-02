@@ -479,6 +479,52 @@ def test_an_absurdly_long_code_is_refused_before_anything_is_compared(
     assert enroll.codes[live].attempts == 2
 
 
+def test_sweep_racing_requests_does_not_tear_the_table(enroll, monkeypatch):
+    """Elder's review on PR #117: the sweeper thread deletes from `codes` while
+    request threads mint, look up and charge attempts against it. An unguarded
+    delete (or store) landing mid-iteration tears the dict (RuntimeError).
+
+    The race only bites when the iteration is long, so the table is
+    pre-populated with twenty thousand codes that are NOT sweep-eligible: every
+    sweep then walks a large dict while the minter threads keep storing into
+    it. Without the lock this raises RuntimeError within seconds."""
+    import threading
+
+    import muster.enroll as module  # noqa: PLC0415
+
+    monkeypatch.setattr(module, "CODE_RETENTION_S", 0.0)
+    for _ in range(20_000):
+        enroll.mint(ttl_s=3600.0)  # live long past the test; never sweep-eligible
+    stop = threading.Event()
+    errors = []
+
+    def sweep_hammer():
+        try:
+            while not stop.is_set():
+                enroll.sweep()
+        except Exception as e:  # any exception at all fails the test
+            errors.append(e)
+
+    def mint_hammer():
+        try:
+            while not stop.is_set():
+                enroll.mint(ttl_s=0.0)
+        except Exception as e:  # any exception at all fails the test
+            errors.append(e)
+
+    threads = [threading.Thread(target=sweep_hammer) for _ in range(4)]
+    threads += [threading.Thread(target=mint_hammer) for _ in range(4)]
+    for t in threads:
+        t.start()
+    stop.wait(5.0)
+    stop.set()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    assert not errors, f"the race tore the table: {errors!r}"
+    assert all(not t.is_alive() for t in threads)
+
+
 def test_sweeping_does_not_disturb_pending_requests(enroll):
     """A device that has presented is waiting on a HUMAN, who may be asleep.
     Expiring the pairing code must not expire the request it created."""
