@@ -22,7 +22,7 @@ dependencies = [
     # httpx was already installed as a test dependency (the test client imports
     # it); it moves here because the sign-in flow talks to the identity provider
     # over HTTPS at runtime.
-    "pyjwt>=2.10",
+    "pyjwt>=2.14",
     "httpx>=0.28",
     # The kith store. ONE dependency, and deliberately not a heavier Postgres
     # stack: sqlalchemy + asyncpg + alembic is three libraries and a migration
