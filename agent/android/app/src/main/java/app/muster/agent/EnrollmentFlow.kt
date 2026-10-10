@@ -63,6 +63,16 @@ class EnrollmentFlow(
     private var failures = 0
 
     /**
+     * Whether this device already holds an identity, by any route.
+     *
+     * The enrollment screen asks this before offering the form, and both
+     * loops ask it before each attempt: a certificate that arrives while the
+     * screen is open ends the loop, instead of the loop re-presenting a spent
+     * code until somebody force-quits (muster#105).
+     */
+    fun isEnrolled(): Boolean = store.hasIdentity()
+
+    /**
      * Present this device against a pairing code.
      *
      * Returns what the caller should do next. Note that a refusal which the
@@ -71,6 +81,11 @@ class EnrollmentFlow(
      * to act, and telling them so is more useful than a spinner.
      */
     fun present(code: String): Step {
+        // Presenting when the device already holds an identity is how a spent
+        // code gets back on the wire: the first presentation used it, and this
+        // one can only be told so. Refused before the keystore is even
+        // touched, let alone the network.
+        if (store.hasIdentity()) return Step.Enrolled
         val material = keys.ensure()
         val csr = CertificateRequest.toPem(
             CertificateRequest.build(deviceName, material.publicKey, material.signer)
@@ -115,8 +130,14 @@ class EnrollmentFlow(
      * backoff. Counting it would push the poll interval out to an hour while
      * the operator is standing there wondering why nothing happens.
      */
-    fun collect(requestId: String): Step =
-        when (val outcome = client.collect(requestId)) {
+    fun collect(requestId: String): Step {
+        // A certificate that arrived by any route ends the loop: the poll is
+        // waiting on the server, but the device already has what it was
+        // waiting for. Checked before the network so a stray poll landing
+        // after enrollment cannot overwrite "Enrolled" with "this enrollment
+        // is no longer available".
+        if (store.hasIdentity()) return Step.Enrolled
+        return when (val outcome = client.collect(requestId)) {
             is EnrollmentClient.Collected.Issued -> {
                 store.save(
                     outcome.certificatePem,
@@ -143,6 +164,7 @@ class EnrollmentFlow(
                 )
             }
         }
+    }
 
     companion object {
         /**

@@ -212,4 +212,40 @@ class EnrollmentFlowTest {
         assertTrue("backoff should have grown before the reset", grown > afterReset)
         assertEquals(IdentityLifecycle.backoffSeconds(1), afterReset)
     }
+
+    // ---- muster#105: the already-enrolled device ---------------------------
+
+    @Test
+    fun anAlreadyEnrolledDeviceIsToldSoInsteadOfPresenting() {
+        // The enrollment screen must refuse to present when the device already
+        // holds an identity, by any route. The transport script is empty, so
+        // any network touch would throw (surfaced as Unreachable) - returning
+        // Enrolled without a single request is the whole assertion, and it is
+        // also what keeps a spent code off the wire.
+        val store = RecordingStore().also {
+            it.saved = listOf("CERT", "CA", "not-after", "renew-after")
+        }
+        val (subject, _, _) = flow(mutableListOf(), store = store)
+
+        assertSame(EnrollmentFlow.Step.Enrolled, subject.present("714908"))
+    }
+
+    @Test
+    fun aCertificateArrivingByAnotherRouteEndsThePoll() {
+        // The retry loop re-checks identity before each attempt, so a
+        // certificate that arrives while the screen is open ends the loop
+        // instead of the loop presenting a spent code forever.
+        val store = RecordingStore()
+        val (subject, _, _) = flow(
+            mutableListOf(accepted(), EnrollmentClient.Transport.Reply(202, "{}")),
+            store = store,
+        )
+
+        val presented = subject.present("714908") as EnrollmentFlow.Step.AwaitingVouch
+        // The certificate arrives by another route: provisioning finishes, a
+        // second screen enrolls, the setup wizard hands over.
+        store.saved = listOf("CERT", "CA", "not-after", "renew-after")
+
+        assertSame(EnrollmentFlow.Step.Enrolled, subject.collect(presented.requestId))
+    }
 }
