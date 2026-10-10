@@ -468,6 +468,35 @@ class Policies:
             scoped.append(_read(mine))
         return scoped
 
+    def _text_for(self, name: str, key_id: str, role: str) -> str | None:
+        """One managed file's served text for this device, or None when no scope
+        holds it. Extracted from `for_device`'s loop so the per-file fallback and
+        the one merged file read as two short cases instead of one tall one."""
+        if name == INSTALL_APPS_FILE:
+            # muster#109: merged by package across scopes, most specific
+            # winning per package, instead of the per-file fallback every
+            # other file uses below. Absent everywhere stays absent: a
+            # merged-from-nothing empty file would read as "withdraw every
+            # install", and an absent file and an empty file mean different
+            # things to the agent.
+            scoped = self._install_apps_scopes(key_id, role)
+            return _merge_install_apps(scoped) if scoped else None
+        mine = self.root / f"{key_id}.{name}"
+        if mine.is_file():
+            return _read(mine)
+        # Then the role, if this device has one. Role files include
+        # `app-config` where the kith's does not - see ROLE_FILES.
+        if role and name in ROLE_FILES:
+            ours = self.root / f"{ROLE_SCOPE_PREFIX}{role}.{name}"
+            if ours.is_file():
+                return _read(ours)
+        # Falling through to the shared scope is what makes one edit reach a
+        # fleet. `app-config` never gets here - see SHARED_FILES.
+        theirs = self.root / f"{KITH_SCOPE}.{name}"
+        if name in SHARED_FILES and theirs.is_file():
+            return _read(theirs)
+        return None
+
     def for_device(
         self,
         key_id: str,
@@ -536,33 +565,9 @@ class Policies:
             # filename typo.
             if name in (WIPE_FILE, REBOOT_FILE):
                 continue
-            if name == INSTALL_APPS_FILE:
-                # muster#109: merged by package across scopes, most specific
-                # winning per package, instead of the per-file fallback every
-                # other file uses below. Absent everywhere stays absent: a
-                # merged-from-nothing empty file would read as "withdraw every
-                # install", and an absent file and an empty file mean different
-                # things to the agent.
-                scoped = self._install_apps_scopes(key_id, role)
-                if scoped:
-                    files[name] = _merge_install_apps(scoped)
-                continue
-            mine = self.root / f"{key_id}.{name}"
-            if mine.is_file():
-                files[name] = _read(mine)
-                continue
-            # Then the role, if this device has one. Role files include
-            # `app-config` where the kith's does not - see ROLE_FILES.
-            if role and name in ROLE_FILES:
-                ours = self.root / f"{ROLE_SCOPE_PREFIX}{role}.{name}"
-                if ours.is_file():
-                    files[name] = _read(ours)
-                    continue
-            # Falling through to the shared scope is what makes one edit reach a
-            # fleet. `app-config` never gets here - see SHARED_FILES.
-            theirs = self.root / f"{KITH_SCOPE}.{name}"
-            if name in SHARED_FILES and theirs.is_file():
-                files[name] = _read(theirs)
+            text = self._text_for(name, key_id, role)
+            if text is not None:
+                files[name] = text
         # MERGED IN, NOT SHORT-CIRCUITED - see the docstring above for why this
         # differs from wipe.
         if reboot_requested:
