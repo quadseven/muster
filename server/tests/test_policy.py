@@ -578,6 +578,41 @@ def test_install_apps_keeps_comments_and_blank_lines(tmp_path):
     assert served.count("install app.muster.agent") == 1
 
 
+def test_install_apps_malformed_lines_are_keyed_by_package_like_any_other(tmp_path):
+    """Review on #118: `install <package>` is keyed whether or not the rest of
+    the line parses. A malformed line from the WINNING scope reaches the device,
+    which refuses it loudly rather than falling back to a broader scope; one in
+    a broader scope that a more specific line shadows is dropped. Lines that are
+    not `install <package>` at all pass through."""
+    _shared(tmp_path, "install-apps").write_text(
+        "install app.broken\nstray words here\n" + KITH_APPS
+    )
+    _role(tmp_path, "zippie", "install-apps").write_text(
+        "install app.muster.agent muster-agent-9.apk sha256 " + "a" * 64 + " version 9\n"
+    )
+
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+
+    # Only one app.muster.agent line, and it is the role's (most specific).
+    assert served.count("install app.muster.agent") == 1
+    assert "muster-agent-9.apk" in served
+    # The malformed line is the only line for its package, so it is kept and
+    # the device will refuse it; a non-install line passes through untouched.
+    assert "install app.broken" in served
+    assert "stray words here" in served
+
+    # And a malformed line in the MOST specific scope beats a good broader one:
+    # the device is the one to refuse it.
+    _role(tmp_path, "zippie", "install-apps").write_text("install app.muster.agent\n")
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+    assert "install app.muster.agent\n" in served
+    assert "agent-76.apk" not in served  # the broader scope's good line lost it
+
+
 def test_install_apps_identical_lines_across_scopes_are_not_duplicated(tmp_path):
     """The same line in kith and role must reach the device once. Twice would
     be a duplicate package, which the agent refuses rather than dedupes."""

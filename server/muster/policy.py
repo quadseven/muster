@@ -325,12 +325,17 @@ def _refuse_unusable_scope(key_id: str, role: str) -> None:
 def _merge_install_apps(scoped: list[str]) -> str:
     """Merge `install-apps` file texts, least specific scope first.
 
-    Lines whose first word is `install` are keyed by package name (the second
-    word, exactly as the agent reads it - the keyword is case-insensitive
-    there, the package is not); the most specific scope naming a package wins
-    it. Everything else - comments, blank lines, and lines the device will
-    refuse - passes through untouched, in scope order, so the served file keeps
-    its comments and the device still gets the last word on what it can parse.
+    Lines whose first word is `install` and that have a second word are keyed
+    by package name (that word, exactly as the agent reads it - the keyword is
+    case-insensitive there, the package is not), whether or not the rest of the
+    line parses: the most specific scope naming a package wins it, and every
+    other line for that package is dropped. So a malformed `install <package>`
+    from the winning scope reaches the device, which refuses it loudly instead
+    of quietly falling back to a broader scope; a malformed one in a broader
+    scope that a more specific line shadows is dropped with the rest.
+    Everything else - comments, blank lines, and lines that are not
+    `install <package>` at all - passes through untouched, in scope order, so
+    the served file keeps its comments.
 
     Pure text: this deliberately does not validate the lines. The agent is the
     validator, and a server that second-guessed the grammar would be a second
