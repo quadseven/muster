@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 import threading
@@ -132,6 +133,8 @@ DEFAULT_CODE_TTL_S = 300.0
 # and then this code is gone", which is the difference between a background
 # attack and one that has to race a human.
 MAX_ATTEMPTS = 5
+
+log = logging.getLogger("muster.enroll")
 
 # How long a dead pairing code stays in `codes` past its window, so a replay is
 # still answered CODE_USED (or CODE_EXPIRED for one that was never used) instead
@@ -597,7 +600,20 @@ class Enrollment:
 
         def loop() -> None:
             while not self._stop.wait(interval_s):
-                self.sweep()
+                try:
+                    self.sweep()
+                except Exception as exc:  # noqa: BLE001 - see below
+                    # ONE BAD PASS MUST NOT END THE BOUND. An exception escaping
+                    # here would unwind the loop and kill this daemon thread
+                    # without a sound, and `codes` would be unbounded again - the
+                    # exact failure this thread exists to prevent. Logged so the
+                    # next pass is not the only evidence anything went wrong.
+                    log.error(
+                        "enrollment sweep failed",
+                        extra={"fields": {
+                            "error_type": type(exc).__name__, "error": str(exc),
+                        }},
+                    )
 
         self._sweeper = threading.Thread(
             target=loop, name="enroll-sweeper", daemon=True

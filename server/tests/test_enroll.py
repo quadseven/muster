@@ -528,6 +528,42 @@ def test_sweep_racing_requests_does_not_tear_the_table(enroll, monkeypatch):
     assert all(not t.is_alive() for t in threads)
 
 
+def test_a_failing_sweep_does_not_end_the_sweeper(enroll, monkeypatch):
+    """Review on #117: an exception escaping `sweep()` would unwind the loop and
+    kill the daemon thread silently, leaving `codes` unbounded again. One bad
+    pass is logged and the next one still runs."""
+    import time
+
+    import muster.enroll as module  # noqa: PLC0415
+
+    calls = []
+    logged = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return 0
+
+    class RecordingLog:
+        def error(self, message, extra=None):
+            logged.append((message, extra))
+
+    monkeypatch.setattr(enroll, "sweep", flaky)
+    monkeypatch.setattr(module, "log", RecordingLog())
+    enroll.start_sweeping(interval_s=0.01)
+    try:
+        deadline = time.monotonic() + 5.0
+        while len(calls) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        enroll.stop_sweeping()
+
+    assert len(calls) >= 3, "the sweeper stopped after the first failure"
+    assert logged and logged[0][0] == "enrollment sweep failed"
+    assert logged[0][1]["fields"]["error_type"] == "RuntimeError"
+
+
 def test_sweeping_does_not_disturb_pending_requests(enroll):
     """A device that has presented is waiting on a HUMAN, who may be asleep.
     Expiring the pairing code must not expire the request it created."""
