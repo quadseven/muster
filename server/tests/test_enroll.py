@@ -485,9 +485,12 @@ def test_sweep_racing_requests_does_not_tear_the_table(enroll, monkeypatch):
     delete (or store) landing mid-iteration tears the dict (RuntimeError).
 
     The race only bites when the iteration is long, so the table is
-    pre-populated with twenty thousand codes that are NOT sweep-eligible: every
-    sweep then walks a large dict while the minter threads keep storing into
-    it. Without the lock this raises RuntimeError within seconds."""
+    pre-populated with twenty thousand codes that stay in it: a one-hour TTL on
+    a clock that never moves keeps them sweep-INELIGIBLE, so every sweep walks a
+    large dict. Retention is set to zero so the codes the minter threads add
+    (TTL zero) ARE eligible the moment they exist: that makes each sweep delete
+    from the table while minters store into it, which is the collision the lock
+    prevents. Without the lock this raises RuntimeError within seconds."""
     import threading
 
     import muster.enroll as module  # noqa: PLC0415
