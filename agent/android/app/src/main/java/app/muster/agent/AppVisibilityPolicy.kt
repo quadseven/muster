@@ -391,11 +391,13 @@ object AppVisibilityPolicy {
         val loadBearing = loadBearing(resolved)
         val keep = desired.visible + loadBearing.keys
 
-        // A named package that is not on the device is refused rather than
-        // ignored, because it is indistinguishable from a typo - and a typo in
-        // this file is not a package that stays visible by accident, it is a
-        // package that gets hidden. `app.zippie.compainon` reads exactly like
-        // an allowlist that is working.
+        // A named package that is not on the device is refused and reported on
+        // the status screen (legacy no. 60) so typos remain visible. Unlike a
+        // line that failed to parse (desired.refused), an absent package is
+        // skipped as a no-op and does not withhold hiding the remaining
+        // packages (muster#143): an allowlist is kith-wide, and a package muster
+        // delivers cannot be named in the allowlist ahead of time if an absent
+        // package on un-updated devices withheld their entire hiding plan.
         //
         // The message names the OTHER cause too. If MATCH_UNINSTALLED_PACKAGES
         // ever stops keeping hidden packages in the enumeration - the one
@@ -419,9 +421,9 @@ object AppVisibilityPolicy {
         val refused = desired.refused + unknown
 
         val withheldWhy = mutableListOf<String>()
-        if (refused.isNotEmpty()) {
+        if (desired.refused.isNotEmpty()) {
             withheldWhy.add(
-                "${refused.size} line(s) of the allowlist could not be acted " +
+                "${desired.refused.size} line(s) of the allowlist could not be acted " +
                     "on, and every line this file loses is an application it " +
                     "hides - so nothing is hidden until the file reads clean"
             )
