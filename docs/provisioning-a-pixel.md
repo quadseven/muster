@@ -300,7 +300,12 @@ enroll.
 uv run --group dev python -m muster.cli wallpaper <serial> --image ~/some.png
 ```
 
-The agent applies it at the next boot, once, keyed on a hash of the image bytes.
+The command writes both `wallpaper.png` and a `wallpaper` policy file naming its
+SHA-256 digest. The agent needs both to apply the image at the next boot, once,
+keyed on that digest. On an enrolled device, a successful configuration fetch
+can replace the local policy, so publish the same wallpaper policy to the
+control plane for a lasting change.
+
 Both this and the server URL go into the agent's DEVICE-PROTECTED files
 directory - `/data/user_de/0/...`, not the `/data/user/0/...` one - because the
 agent reads them before first unlock. Pushing to the wrong one succeeds, leaves
@@ -312,9 +317,10 @@ an expiry date on it.** The agent's directory is `drwx------` owned by the app's
 uid, so `adb push` and a `cp` from `/data/local/tmp` cannot reach it - measured
 on <device-serial>, 2026-08-19, and that is what these commands used to do.
 `run-as` can reach it, but only while the agent is debug-signed: after the
-signing ceremony it refuses with `package not debuggable` and all four commands
-stop working. They fail loudly rather than silently. What replaces them is open
-- see #20.
+signing ceremony it refuses with `package not debuggable` and the file-push
+commands stop working. They fail loudly rather than silently. Enrolled release builds
+fetch policy and wallpaper assets over their own authenticated device channel;
+the cable commands remain a debug-build bootstrap route.
 
 ### B4b. Restrictions, if this is an appliance
 

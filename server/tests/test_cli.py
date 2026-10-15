@@ -12,6 +12,7 @@ writes into the app's directory because a real one does.
 from __future__ import annotations
 
 import argparse
+import hashlib
 
 import pytest
 
@@ -36,6 +37,10 @@ def test_a_wallpaper_the_device_took_exits_zero(device, tmp_path):
 
     assert cli.main(["wallpaper", "fake-serial", "--image", str(image)]) == 0
     assert device.stored[f"{AGENT_FILES}/wallpaper.png"] == image.read_bytes()
+    digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    assert device.stored[f"{AGENT_FILES}/wallpaper"] == (
+        f"image wallpaper.png sha256 {digest}\n".encode()
+    )
 
 
 def test_a_wallpaper_the_device_refused_exits_three(monkeypatch, tmp_path, capsys):
@@ -49,6 +54,21 @@ def test_a_wallpaper_the_device_refused_exits_three(monkeypatch, tmp_path, capsy
 
     assert cli.main(["wallpaper", "fake-serial", "--image", str(image)]) == 3
     assert "not debuggable" in capsys.readouterr().err
+
+
+def test_wallpaper_policy_that_did_not_land_exits_three(monkeypatch, tmp_path, capsys):
+    class NoPolicy(RunAsAdb):
+        def write_as(self, serial, package, remote, data, timeout=300.0):
+            if remote.endswith("/wallpaper"):
+                return 0, ""
+            return super().write_as(serial, package, remote, data, timeout)
+
+    monkeypatch.setattr(cli, "Adb", lambda binary="adb": NoPolicy())
+    image = tmp_path / "kitchen.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    assert cli.main(["wallpaper", "fake-serial", "--image", str(image)]) == 3
+    assert "cannot prove" in capsys.readouterr().err
 
 
 def test_restrictions_the_device_did_not_take_exit_three(monkeypatch, tmp_path, capsys):
@@ -76,6 +96,14 @@ def test_an_empty_restrictions_file_reaches_the_device(device, tmp_path):
 
     assert cli.main(["restrictions", "fake-serial", "--file", str(policy)]) == 0
     assert device.stored[f"{AGENT_FILES}/restrictions"] == b""
+
+
+def test_restrictions_reach_the_device(device, tmp_path):
+    policy = tmp_path / "kitchen.restrictions"
+    policy.write_text("DISALLOW_SAFE_BOOT\n")
+
+    assert cli.main(["restrictions", "fake-serial", "--file", str(policy)]) == 0
+    assert device.stored[f"{AGENT_FILES}/restrictions"] == policy.read_bytes()
 
 
 def test_a_file_that_is_not_there_is_refused_before_the_device_is_touched(
