@@ -128,6 +128,27 @@ MAX_CODE_LENGTH = 256
 # administrator generates a code because they are holding the device now.
 DEFAULT_CODE_TTL_S = 300.0
 
+# A scanned pairing code travels inside a provisioning QR and must survive the
+# entire hands-free provisioning run: factory reset, Wi-Fi association, downloading
+# the 12.6MB agent APK, package verification, device admin activation, setup
+# wizard progression, and presenting the CSR to muster.
+#
+# A measured Pixel 6a provisioning run (factory reset to presenting the QR) took
+# 332s (muster#149, refs muster#113). The 300s default caused immediate 410 Gone
+# refusals on the scanned path.
+#
+# 600.0s (10 minutes) covers the measured 332s run with ~4.5 minutes of headroom
+# for slower Wi-Fi / download speeds and human pauses during setup, without
+# racing a timer.
+#
+# WHY IT STAYS MINUTES, NOT HOURS: A scanned code is 192 bits (24 bytes url-safe
+# base64) so it cannot be guessed by a network racer. The only attack surface is
+# an observer in the room photographing the QR off the administrator's monitor.
+# 10 minutes strictly bounds that physical exposure window to minutes rather
+# than leaving an unspent QR alive for hours.
+DEFAULT_SCANNED_CODE_TTL_S = 600.0
+
+
 # How many wrong guesses a single code tolerates before it is burned. Not the
 # primary defense, but it turns "seconds to brute force" into "you get 5 tries
 # and then this code is gone", which is the difference between a background
@@ -387,18 +408,20 @@ class Enrollment:
 
     def mint(
         self,
-        ttl_s: float = DEFAULT_CODE_TTL_S,
+        ttl_s: float | None = None,
         shape: Shape = Shape.TYPED,
         role: str = "",
     ) -> str:
         """An administrator asks for a pairing code.
 
-        The TTL is the same either way and deliberately so. A scanned code has a
-        whole provisioning run to survive - download, install, setup wizard -
-        which is a real argument for a longer window, and it is refused here: a
-        code in a QR is a code on a screen in a room, and the window is the only
-        thing bounding how long that screen is worth photographing. A device
-        that misses the window falls back to the typed path, which still works.
+        The TTL defaults to DEFAULT_SCANNED_CODE_TTL_S (600s) for scanned codes
+        and DEFAULT_CODE_TTL_S (300s) for typed codes. The scanned window is
+        the one that must survive a full provisioning run - on a measured
+        Pixel 6a run that was 332s (muster#149), so 600s is headroom, not
+        margin. Both stay in minutes precisely because a QR on a monitor is a
+        screen in a room, and minutes is the only thing bounding how long it
+        is worth photographing - see the constant block above for the full
+        attack surface.
         """
         # REFUSED HERE, at the only door a role comes through, rather than
         # where it is used. By the time a role reaches `policy.py` it is half a
@@ -410,6 +433,12 @@ class Enrollment:
                 "starting with a letter, at most 31 characters. A role becomes "
                 "half of a policy file name and a Kubernetes Secret key, and a "
                 "dot in one would silently address a different scope."
+            )
+        if ttl_s is None:
+            ttl_s = (
+                DEFAULT_SCANNED_CODE_TTL_S
+                if shape is Shape.SCANNED
+                else DEFAULT_CODE_TTL_S
             )
         code = _mint_code(shape)
         with self._lock:

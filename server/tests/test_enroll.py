@@ -21,6 +21,7 @@ import pytest
 from muster.enroll import (
     CODE_RETENTION_S,
     DEFAULT_CODE_TTL_S,
+    DEFAULT_SCANNED_CODE_TTL_S,
     MAX_ATTEMPTS,
     MAX_CODE_LENGTH,
     Enrollment,
@@ -382,6 +383,38 @@ def test_minting_a_scanned_code_is_the_vouch(enroll):
     # administrator to approve what they already approved - and clicking it is
     # what enrolled a second device.
     assert pending.request_id not in enroll.pending
+
+
+def test_a_scanned_code_survives_a_measured_pixel_provisioning_run(enroll):
+    """muster#149: A Pixel 6a real provisioning run from factory reset to presenting
+    the QR takes 332s. The scanned code default TTL (600s) must comfortably survive
+    this without racing a timer or expiring at 300s."""
+    code = enroll.mint(shape=Shape.SCANNED)
+    enroll.clock.advance(332.0)
+    pending = _present(enroll, code)
+    assert pending.self_vouched
+    assert pending.device_name == "pixel-6a"
+
+
+def test_scanned_code_default_ttl_is_longer_than_typed(enroll):
+    """Typed codes remain at 300s because a human types them in hand. Scanned
+    codes default to 600s to cover the measured 332s provisioning run with headroom."""
+    typed_code = enroll.mint(shape=Shape.TYPED)
+    scanned_code = enroll.mint(shape=Shape.SCANNED)
+    assert enroll.codes[typed_code].ttl_s == DEFAULT_CODE_TTL_S == 300.0
+    assert enroll.codes[scanned_code].ttl_s == DEFAULT_SCANNED_CODE_TTL_S == 600.0
+
+
+def test_scanned_code_expires_after_its_own_ttl(enroll):
+    """The scanned window is 600s, not infinite. It bounds physical exposure of the
+    QR on a screen to minutes, not hours."""
+    code = enroll.mint(shape=Shape.SCANNED)
+    enroll.clock.advance(DEFAULT_SCANNED_CODE_TTL_S)
+    with pytest.raises(Refused) as caught:
+        _present(enroll, code)
+    assert caught.value.outcome is Outcome.CODE_EXPIRED
+    assert caught.value.shape is Shape.SCANNED
+
 
 
 def test_a_typed_device_still_has_to_be_vouched_for(enroll):

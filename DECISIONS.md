@@ -211,8 +211,24 @@ that panel.
 photographs the QR off a monitor within the code's few-minute life can provision
 a device of their own against it, and it will look exactly like the real one.
 That is why the endpoint is administrator-only, why the code is spent by the
-first device to use it, and why the window was not widened to make provisioning
-more comfortable.
+first device to use it, and why the window is bounded to minutes rather than
+widened to hours.
+
+**Amendment: pairing code TTL measured on hardware (2026-10-15, muster#149).**
+The original design kept `DEFAULT_CODE_TTL_S = 300.0` for all codes. On a real
+Pixel 6a, provisioning from factory reset to presenting the QR takes 332s:
+Wi-Fi connection, downloading the 12.6MB agent APK, package verification,
+device-owner activation, setup wizard progression, and presenting the CSR to muster.
+Because 332s exceeded the 300s window, the scanned path failed with an immediate
+410 Gone refusal (`Outcome.CODE_EXPIRED`).
+
+The scanned-path TTL was increased to 600s (10 minutes,
+`DEFAULT_SCANNED_CODE_TTL_S`). 600s covers the measured 332s run with ~4.5 minutes
+of headroom for network variance and setup pacing without racing a timer.
+The security argument is preserved: a scanned code is 192 bits (un-guessable),
+so the only exposure is an observer photographing the monitor; 10 minutes strictly
+bounds that physical exposure window to minutes rather than hours. Typed pairing
+codes remain at 300s.
 
 ---
 
