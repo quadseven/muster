@@ -132,14 +132,7 @@ def cmd_verify(args) -> int:
 
 
 def cmd_asset(args) -> int:
-    """Prepare an image for the asset store, and say exactly how to put it there.
-
-    WHY THIS PRINTS A COMMAND RATHER THAN UPLOADING (muster#45). The store is a
-    Secret, and there is no upload endpoint yet - a console for that is
-    muster#36. Inventing one here would be a second way to write policy that no
-    operator asked for and no test covers on a handset. What an operator
-    actually needs is the two things they cannot work out by hand: the digest
-    the device will check, and the exact policy stanza that names it.
+    """Print an asset digest and the policy stanza that names it.
 
     THE DIGEST IS COMPUTED FROM THE FILE ON DISK, which is the whole point.
     Typing a digest by hand into a policy file is how a wallpaper never applies
@@ -173,42 +166,16 @@ def cmd_asset(args) -> int:
     surfaces = " ".join(args.surfaces)
     print(f"{name}  {len(body)} bytes  sha256 {digest}")
     print()
-    print("Put the bytes in the store:")
-    print()
-    print("  kubectl -n muster create secret generic muster-assets \\")
-    print(f"    --from-file={name}={source} \\")
-    # `--server-side`, AND IT IS NOT A STYLE CHOICE. A client-side `kubectl
-    # apply` stores the ENTIRE object in a
-    # `kubectl.kubernetes.io/last-applied-configuration` annotation, and
-    # annotations are capped at 262144 bytes. An asset is base64 in the Secret,
-    # so anything over about 190KB of real bytes is refused with
-    # "metadata.annotations: Too long" - which names the annotation and not the
-    # file, and says nothing about what to do instead. A 247KB wallpaper hits
-    # this, so the FIRST asset anybody publishes hits it.
-    print("    --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f -")
-    print()
-    print(
-        "  (--server-side is required, not tidiness: a client-side apply keeps a"
-    )
-    print(
-        "   copy of the whole object in an annotation, and annotations stop at"
-    )
-    print(
-        "   262144 bytes - which a wallpaper-sized asset exceeds once base64ed.)"
-    )
+    print("Upload the bytes with an administrator session:")
+    print(f"  PUT /v1/assets/{name} (raw request body)")
+    print("  The response includes the sha256 digest to put in policy.")
     print()
     print(f"Then write this as the '{args.scope}.wallpaper' policy file:")
     print()
     print(f"  image {name} sha256 {digest}")
     print(f"  surfaces {surfaces}")
     print()
-    # NAMED OUT LOUD, because a Secret update reaches a running pod's filesystem
-    # on kubelet's schedule and an operator who does not know that concludes the
-    # feature is broken about ninety seconds too early.
-    print(
-        "A Secret change reaches the pod's filesystem within a minute or so; "
-        "the device applies it at its next check-in."
-    )
+    print("The device fetches it at its next check-in.")
     return 0
 
 

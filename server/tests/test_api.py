@@ -2038,6 +2038,7 @@ DEVICE_PROVEN = {
 }
 
 ADMINISTRATOR_ONLY = {
+    ("PUT", "/v1/assets/{name}"),
     ("POST", "/v1/enroll/codes"),
     ("GET", "/v1/enroll/requests"),
     ("POST", "/v1/enroll/requests/{request_id}/vouch"),
@@ -2115,7 +2116,7 @@ def _registered(app):
 
 
 def _walkable(path):
-    for name in ("{request_id}", "{code}", "{key_id}"):
+    for name in ("{request_id}", "{code}", "{key_id}", "{name}"):
         path = path.replace(name, "x")
     return path
 
@@ -2414,6 +2415,40 @@ def test_an_enrolled_device_fetches_an_asset_and_its_digest(state, tmp_path):
     # check inherits exactly that bug.
     assert response.headers["X-Muster-Digest"] == hashlib.sha256(response.content).hexdigest()
     assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_an_administrator_uploads_an_asset_for_a_device(state, tmp_path):
+    """An operator can publish from anywhere with the admin session."""
+    import hashlib
+
+    state.assets = _asset_store(tmp_path)
+    client = _proof_client(state)
+    client.cookies.update(ADMIN)
+    content = b"new operator asset"
+
+    uploaded = client.put(
+        "/v1/assets/new.png", content=content,
+        headers={"Content-Type": "application/octet-stream"},
+    )
+
+    assert uploaded.status_code == 200
+    assert uploaded.json() == {
+        "name": "new.png",
+        "bytes": len(content),
+        "digest": hashlib.sha256(content).hexdigest(),
+    }
+    key, identity, _ = _enrolled(state)
+    fetched = _fetch_asset(client, key, identity, "new.png")
+    assert fetched.status_code == 200
+    assert fetched.content == content
+    assert fetched.headers["X-Muster-Digest"] == hashlib.sha256(content).hexdigest()
+    assert fetched.headers["Cache-Control"] == "no-store"
+
+
+def test_asset_upload_requires_an_administrator_session(state, tmp_path):
+    state.assets = _asset_store(tmp_path)
+    response = TestClient(create_app(state)).put("/v1/assets/new.png", content=b"x")
+    assert response.status_code == 401
 
 
 def test_an_asset_is_not_served_to_a_caller_with_no_identity(state, tmp_path):

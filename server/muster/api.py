@@ -9,7 +9,8 @@ WHO CAN REACH WHAT, because this is the part that gets it wrong:
                                GET  /agent.apk, /agent.json
     device, proven             POST /v1/device/config
                                POST /v1/device/diagnostics
-    administrator, signed in   POST /v1/enroll/codes
+    administrator, signed in   PUT  /v1/assets/{name}
+                               POST /v1/enroll/codes
                                GET  /v1/enroll/requests
                                POST /v1/enroll/requests/{id}/vouch
                                GET  /v1/provision/qr.svg
@@ -737,6 +738,50 @@ def create_app(state: State) -> FastAPI:
     admin = Depends(_require_admin(state))
 
     # ---- administrator ---------------------------------------------------
+
+    @app.put("/v1/assets/{name}", dependencies=[admin])
+    async def upload_asset(name: str, request: Request):
+        """Publish one asset from an authenticated operator session."""
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > asset_store.MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="asset is too large")
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400, detail="invalid content length"
+                ) from exc
+
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > asset_store.MAX_BYTES:
+                raise HTTPException(status_code=413, detail="asset is too large")
+            chunks.append(chunk)
+        try:
+            asset = state.assets.put(name, b"".join(chunks))
+        except asset_store.Unknown as unknown:
+            raise HTTPException(status_code=400, detail=str(unknown)) from unknown
+        except asset_store.TooLarge as too_large:
+            raise HTTPException(status_code=413, detail=str(too_large)) from too_large
+        except asset_store.NoSource as no_store:
+            raise HTTPException(status_code=503, detail=str(no_store)) from no_store
+        except asset_store.Unavailable as unavailable:
+            raise HTTPException(status_code=503, detail=str(unavailable)) from unavailable
+
+        state.telemetry.count("admin.asset.uploaded")
+        telemetry.event(
+            "asset uploaded",
+            name=asset.name,
+            bytes=len(asset.content),
+            digest=asset.digest,
+        )
+        return {
+            "name": asset.name,
+            "bytes": len(asset.content),
+            "digest": asset.digest,
+        }
 
     @app.post("/v1/enroll/codes", status_code=201, dependencies=[admin])
     def mint_code(ttl_s: float = Body(default=DEFAULT_CODE_TTL_S, embed=True)):

@@ -302,19 +302,9 @@ def _asset_output(capsys, tmp_path, **kwargs) -> str:
     return out
 
 
-def test_asset_prints_a_publish_command_that_actually_works(capsys, tmp_path):
-    """THE TEST THIS EXISTS FOR, and it cost a failed deploy to learn.
-
-    A client-side `kubectl apply` stores the whole object in a
-    `last-applied-configuration` annotation, and annotations stop at 262144
-    bytes - so an asset over roughly 190KB of real bytes is refused with
-    "metadata.annotations: Too long", which names the annotation and not the
-    file. A wallpaper is bigger than that, so the FIRST asset anybody publishes
-    hits it. Printing a command that fails is worse than printing none.
-    """
+def test_asset_prints_the_control_plane_upload_route(capsys, tmp_path):
     out = _asset_output(capsys, tmp_path)
-    assert "--server-side" in out
-    assert "kubectl apply -f -" not in out
+    assert "PUT /v1/assets/wall.png" in out
 
 
 def test_asset_prints_the_policy_stanza_the_device_will_read(capsys, tmp_path):

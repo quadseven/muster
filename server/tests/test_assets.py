@@ -46,6 +46,23 @@ def test_a_changed_file_changes_the_digest(store, tmp_path):
     assert store.fetch("wall.png").digest != before
 
 
+def test_an_operator_upload_replaces_an_asset_atomically(store, tmp_path):
+    content = b"new bytes"
+    uploaded = store.put("wall.png", content)
+
+    assert uploaded.content == content
+    assert uploaded.digest == hashlib.sha256(content).hexdigest()
+    assert store.fetch("wall.png") == uploaded
+    assert not list(tmp_path.glob(".upload-*"))
+
+
+def test_an_operator_upload_uses_the_same_name_and_size_limits(store):
+    with pytest.raises(assets.Unknown):
+        store.put("../outside", b"x")
+    with pytest.raises(assets.TooLarge):
+        store.put("large.apk", b"x" * (assets.MAX_BYTES + 1))
+
+
 @pytest.mark.parametrize(
     "name",
     [

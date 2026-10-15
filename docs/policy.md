@@ -673,8 +673,12 @@ To say "assert nothing" deliberately, write an **empty** `kith.restrictions`.
 That is the vocabulary the agent already speaks: an absent file leaves a device
 alone, an empty one withdraws.
 
-**A wallpaper cannot travel this way yet.** It is a PNG, and serving one means
-asset hosting (#45). It stays an adb step.
+**A wallpaper is an operator asset.** Upload it to Muster with the authenticated
+`PUT /v1/assets/{name}` endpoint, then name it and its SHA-256 digest in the
+managed `wallpaper` policy. A managed device fetches it from Muster over its
+proven identity; the travel router does not serve managed assets. See
+[`what-is-deployed.md`](what-is-deployed.md#the-asset-store-and-how-to-put-something-in-it)
+for upload and recovery instructions.
 
 ### What happens when muster is unreachable
 
