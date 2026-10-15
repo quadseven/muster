@@ -420,6 +420,7 @@ def _proven_device(
     signature_b64: str,
     certificate_pem: str,
     check_in_interval_s: int | None = None,
+    expired_detail: str = "certificate expired",
 ) -> str:
     """Which device sent this, or an HTTPException saying why it is nobody.
 
@@ -460,11 +461,7 @@ def _proven_device(
         state.telemetry.count("proof.refused", tags=[f"verdict:{verdict.value}"])
         raise HTTPException(
             status_code=_PROOF_STATUS[verdict],
-            detail=(
-                "certificate expired; enroll again with a pairing code"
-                if verdict is Verdict.CERT_EXPIRED
-                else verdict.value
-            ),
+            detail=(expired_detail if verdict is Verdict.CERT_EXPIRED else verdict.value),
             headers=uncached,
         )
 
@@ -1490,7 +1487,13 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         from cryptography.x509.oid import NameOID
 
         response.headers["Cache-Control"] = "no-store"
-        proven = _proven_device(state, nonce, signature_b64, certificate_pem)
+        proven = _proven_device(
+            state,
+            nonce,
+            signature_b64,
+            certificate_pem,
+            expired_detail="certificate expired; enroll again with a pairing code",
+        )
 
         # A certificate signed by this CA proves its key, but renewal belongs
         # only to a device already recorded in the kith. A missing row is normal

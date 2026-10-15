@@ -4200,7 +4200,7 @@ def test_a_proof_names_the_certificate_that_made_it(state, tmp_path, monkeypatch
     state.policies = _policy_root(tmp_path)
     (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
     client = _proof_client(state)
-    key, identity, key_id_ = _enrolled(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
     _past_renew_after(state, monkeypatch, identity)
     renewed_pem = _renew(client, key, identity).json()["certificate_pem"]
     renewed = types.SimpleNamespace(certificate_pem=renewed_pem.encode())
