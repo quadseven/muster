@@ -41,6 +41,8 @@ agent at `status.hostIP:8125`.
     proof.refused                   #verdict:<why>
     device.config.served            a device fetched its own configuration
     device.config.refused           #reason:no-source|unreadable
+    device.diagnostics.received     a proven device uploaded its check-in report
+    device.diagnostics.refused      #reason:rate-limit
     agent.apk.served                a device downloaded the agent
     auth.signin.completed           an administrator signed in
     auth.signin.refused             #reason:<why>
@@ -84,6 +86,16 @@ metric is cardinality, and the `key_id` is in the log line beside it, with the
 `revision` that says which policy that device is now on. Neither the metric nor
 the log ever carries the configuration itself - `app-config` holds write tokens,
 and `telemetry._NEVER_LOG` refuses the field one would arrive in.
+
+`device.diagnostics.received` accompanies one structured log per accepted
+report. The report is the agent's bounded check-in steps, not raw logcat. The
+device proves its identity with the same signed nonce as configuration fetches;
+there is no bearer token or Android telemetry SDK. Before the report reaches
+the logger, `telemetry.sanitize_diagnostic()` removes credential assignments,
+bearer values and private-key blocks, and caps each line. The route caps the
+bundle at 16 lines and 4 KiB and accepts at most one report per device per
+minute. Search Datadog logs for `message:"device diagnostics received"` and
+facet on `key_id` or `diagnostics` to inspect a device's report.
 
 **`shape` is the same argument one level out.** A QR whose code expired before a
 phone finished downloading and installing the agent, and an operator mistyping
