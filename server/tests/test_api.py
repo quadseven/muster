@@ -495,6 +495,93 @@ def _fetch_config(client, key, identity):
     )
 
 
+def _send_diagnostics(client, key, identity, diagnostics):
+    import base64
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    signature = key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+    return client.post(
+        "/v1/device/diagnostics",
+        json={
+            "nonce": nonce,
+            "signature_b64": base64.b64encode(signature).decode(),
+            "certificate_pem": identity.certificate_pem.decode(),
+            "diagnostics": diagnostics,
+        },
+    )
+
+
+def test_device_sends_bounded_diagnostics_over_its_proven_identity(state):
+    import io
+    import json
+    from muster import telemetry as telemetry_module
+
+    stream = io.StringIO()
+    telemetry_module.configure_logging(stream)
+    client = _proof_client(state)
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = x509.CertificateSigningRequestBuilder().subject_name(
+        x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "device")])
+    ).sign(key, hashes.SHA256())
+    identity = state.authority.issue(
+        csr.public_bytes(serialization.Encoding.DER), "device"
+    )
+
+    response = _send_diagnostics(
+        client, key, identity,
+        ["configuration: refused password=NEVER_EMIT_SENTINEL", "apps: healthy"],
+    )
+
+    assert response.status_code == 202
+    assert state.telemetry.sent[-1] == "custom.muster.device.diagnostics.received:1|c"
+    assert "NEVER_EMIT_SENTINEL" not in stream.getvalue()
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    report = next(
+        event for event in events
+        if event["message"] == "device diagnostics received"
+    )
+    assert "[REDACTED]" in report["diagnostics"][0]
+
+
+def test_diagnostic_upload_rejects_over_limit_bundle(state):
+    client = _proof_client(state)
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = x509.CertificateSigningRequestBuilder().subject_name(
+        x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "device")])
+    ).sign(key, hashes.SHA256())
+    identity = state.authority.issue(
+        csr.public_bytes(serialization.Encoding.DER), "device"
+    )
+    response = _send_diagnostics(client, key, identity, ["x" * 513])
+    assert response.status_code == 413
+
+
+def test_diagnostic_upload_rejects_bundle_over_total_byte_limit(state):
+    client = _proof_client(state)
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = x509.CertificateSigningRequestBuilder().subject_name(
+        x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "device")])
+    ).sign(key, hashes.SHA256())
+    identity = state.authority.issue(
+        csr.public_bytes(serialization.Encoding.DER), "device"
+    )
+    response = _send_diagnostics(client, key, identity, ["x" * 512] * 9)
+    assert response.status_code == 413
+
+
+def test_diagnostic_upload_is_rate_limited_per_device(state):
+    client = _proof_client(state)
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = x509.CertificateSigningRequestBuilder().subject_name(
+        x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "device")])
+    ).sign(key, hashes.SHA256())
+    identity = state.authority.issue(
+        csr.public_bytes(serialization.Encoding.DER), "device"
+    )
+    assert _send_diagnostics(client, key, identity, ["one"]).status_code == 202
+    assert _send_diagnostics(client, key, identity, ["two"]).status_code == 429
+
+
 def _policy_root(tmp_path):
     from muster import policy
 
@@ -1931,6 +2018,7 @@ OPEN_TO_ANYONE = {
 # route with a comment.
 DEVICE_PROVEN = {
     ("POST", "/v1/device/config"),
+    ("POST", "/v1/device/diagnostics"),
     # muster#45: the bytes an operator put in the store, for the device that
     # was told to expect them. Not open, because the store is where an APK is
     # about to live; not administrator-only, because a phone in a cupboard has
@@ -2119,6 +2207,7 @@ def test_a_device_route_refuses_a_well_formed_request_with_no_proof(client, meth
             "nonce": "a-nonce-nobody-issued",
             "signature_b64": "",
             "certificate_pem": "not a certificate",
+            "diagnostics": [],
         },
     )
     assert response.status_code in (400, 503), response.text
@@ -3143,6 +3232,7 @@ def test_a_revoked_device_is_refused_on_every_route_it_can_reach(
             key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
         ).decode(),
         "certificate_pem": identity.certificate_pem.decode(),
+        "diagnostics": [],
     })
 
     assert response.status_code == 403, (

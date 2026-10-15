@@ -247,3 +247,22 @@ def test_uvicorn_logs_are_not_duplicated():
     import logging
     logging.getLogger("uvicorn.error").info("started")
     assert stream.getvalue().count('"message":"started"') == 1
+
+
+def test_diagnostic_sanitizer_removes_secret_values_in_one_place():
+    unsafe = (
+        'configuration: {"password": "NEVER_EMIT_SENTINEL"}',
+        "request: Authorization: Bearer NEVER_EMIT_SENTINEL",
+        'configuration: {"ddClientToken":"NEVER_EMIT_SENTINEL"}',
+        "key: -----BEGIN PRIVATE KEY-----NEVER_EMIT_SENTINEL",
+        "endpoint: https://operator:NEVER_EMIT_SENTINEL@example.invalid/path",
+    )
+    for line in unsafe:
+        safe = telemetry.sanitize_diagnostic(line)
+        assert "NEVER_EMIT_SENTINEL" not in safe
+        assert "[REDACTED" in safe
+
+
+def test_diagnostic_sanitizer_bounds_the_output():
+    safe = telemetry.sanitize_diagnostic("x" * (telemetry.DIAGNOSTIC_LINE_CHARS + 20))
+    assert len(safe) <= telemetry.DIAGNOSTIC_LINE_CHARS

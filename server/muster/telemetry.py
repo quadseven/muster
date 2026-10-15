@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import sys
 import time
@@ -46,6 +47,26 @@ from contextlib import contextmanager
 PREFIX = "custom.muster"
 
 log = logging.getLogger("muster")
+
+DIAGNOSTIC_LINE_CHARS = 512
+_DIAGNOSTIC_SECRET = re.compile(
+    r"(?i)(\b(?:password|passwd|token|secret|authorization|api[_-]?key|"
+    r"client[_-]?secret|private[_-]?key|announce[_-]?token|dd[_-]?client[_-]?token|"
+    r"access[_-]?token|refresh[_-]?token)\b['\"]?\s*[:=]\s*).*"
+)
+_DIAGNOSTIC_BEARER = re.compile(r"(?i)\bBearer\s+\S+")
+_DIAGNOSTIC_PRIVATE_KEY = re.compile(r"-----BEGIN [^-]*PRIVATE KEY-----.*")
+_DIAGNOSTIC_URL_CREDENTIAL = re.compile(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@")
+
+
+def sanitize_diagnostic(line: str) -> str:
+    """Remove credential-shaped values and bound one untrusted report line."""
+    printable = "".join(char if char.isprintable() else " " for char in line)
+    safe = _DIAGNOSTIC_SECRET.sub("[REDACTED]", printable)
+    safe = _DIAGNOSTIC_BEARER.sub("Bearer [REDACTED]", safe)
+    safe = _DIAGNOSTIC_PRIVATE_KEY.sub("[REDACTED PRIVATE KEY]", safe)
+    safe = _DIAGNOSTIC_URL_CREDENTIAL.sub(r"\1[REDACTED]@", safe)
+    return safe[:DIAGNOSTIC_LINE_CHARS]
 
 
 def configure_logging(stream=None) -> None:

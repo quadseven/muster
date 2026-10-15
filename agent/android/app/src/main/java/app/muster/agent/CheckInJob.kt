@@ -44,6 +44,7 @@ class CheckInJob : JobService() {
                 )
             }
             val report = SyncReport.of(steps)
+            Log.i(TAG, "check-in diagnostics upload: ${DiagnosticsSteward(this).send(report)}")
             report.detail.forEach { Log.i(TAG, "check-in $it") }
             // AT ERROR, so `logcat -s muster:E` on a device that is behaving
             // oddly shows the reason rather than a wall of successful steps.

@@ -8,6 +8,7 @@ WHO CAN REACH WHAT, because this is the part that gets it wrong:
                                POST /v1/auth/verify
                                GET  /agent.apk, /agent.json
     device, proven             POST /v1/device/config
+                               POST /v1/device/diagnostics
     administrator, signed in   POST /v1/enroll/codes
                                GET  /v1/enroll/requests
                                POST /v1/enroll/requests/{id}/vouch
@@ -83,6 +84,8 @@ import hashlib
 import io
 import os
 import pathlib
+import threading
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Callable
@@ -242,6 +245,8 @@ class State:
     # sites is a dozen chances to forget one, and the one that gets forgotten
     # is always the failure path nobody exercises.
     telemetry: telemetry.Telemetry = field(default_factory=telemetry.Telemetry)
+    diagnostic_lock: threading.Lock = field(default_factory=threading.Lock)
+    diagnostic_last_sent: dict[str, float] = field(default_factory=dict)
 
 
 
@@ -279,6 +284,28 @@ def enroll_role_pattern():
     from muster.enroll import _ROLE
 
     return _ROLE
+
+
+DIAGNOSTIC_MAX_BYTES = 4096
+DIAGNOSTIC_MAX_LINES = 16
+DIAGNOSTIC_INTERVAL_S = 60
+
+
+def _take_diagnostic_slot(state: "State", key_id: str) -> bool:
+    """Allow one report per device per minute; discard expired identities."""
+    now = time.monotonic()
+    with state.diagnostic_lock:
+        expired = [
+            device for device, sent_at in state.diagnostic_last_sent.items()
+            if now - sent_at >= DIAGNOSTIC_INTERVAL_S
+        ]
+        for device in expired:
+            del state.diagnostic_last_sent[device]
+        last = state.diagnostic_last_sent.get(key_id)
+        if last is not None and now - last < DIAGNOSTIC_INTERVAL_S:
+            return False
+        state.diagnostic_last_sent[key_id] = now
+        return True
 
 
 def _issue(state: "State", request_id: str, pending) -> dict:
@@ -1315,6 +1342,38 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
             "revision": configuration.revision,
             "files": configuration.files,
         }
+
+    @app.post("/v1/device/diagnostics", status_code=202)
+    def device_diagnostics(
+        response: Response,
+        nonce: str = Body(..., embed=True),
+        signature_b64: str = Body(..., embed=True),
+        certificate_pem: str = Body(..., embed=True),
+        diagnostics: list[str] = Body(..., embed=True, max_items=DIAGNOSTIC_MAX_LINES),
+    ):
+        """Accept a small device report after proving its enrolled identity."""
+        response.headers["Cache-Control"] = "no-store"
+        proven = _proven_device(state, nonce, signature_b64, certificate_pem)
+        byte_count = sum(len(line.encode("utf-8")) for line in diagnostics)
+        if any(len(line) > telemetry.DIAGNOSTIC_LINE_CHARS for line in diagnostics):
+            raise HTTPException(status_code=413, detail="diagnostic line is too large")
+        if byte_count > DIAGNOSTIC_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="diagnostic report is too large")
+        if not _take_diagnostic_slot(state, proven):
+            state.telemetry.count("device.diagnostics.refused", tags=["reason:rate-limit"])
+            raise HTTPException(
+                status_code=429,
+                detail="diagnostics may be sent once per minute",
+                headers={"Retry-After": str(DIAGNOSTIC_INTERVAL_S)},
+            )
+        safe_diagnostics = [telemetry.sanitize_diagnostic(line) for line in diagnostics]
+        telemetry.event(
+            "device diagnostics received",
+            key_id=proven,
+            diagnostics=safe_diagnostics,
+        )
+        state.telemetry.count("device.diagnostics.received")
+        return {"accepted": True}
 
     @app.post("/v1/device/wipe", status_code=200)
     def device_wipe(

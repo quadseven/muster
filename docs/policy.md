@@ -556,10 +556,14 @@ proof that depended on the transport would never reach the pod. A device token
 would also be a credential that can be copied off a device, which is exactly
 what the key in the Android Keystore cannot be.
 
-**The same channel diagnostics (#27) and inventory (#42) will use.** They are
-sibling `POST /v1/device/...` routes carrying the same three fields;
-`api._proven_device` is the one place a device is authenticated and it hands
-back the `key_id` those reports would be filed under.
+**Diagnostics use the same channel.** After a check-in, the agent sends its
+bounded step report to `POST /v1/device/diagnostics` with the same three proof
+fields. `api._proven_device` authenticates it and returns the `key_id` used to
+file the report. The server removes credential-shaped values in one telemetry
+sanitizer before writing the report as a structured log for Datadog. The report
+is limited to 16 lines and 4 KiB, and each proven device may send once per
+minute. This is the check-in report, not raw logcat: raw logs can contain
+configuration values and are not uploaded.
 
 **It writes the same files this document already describes**, into the same
 device-protected directory, so everything the stewards do - reconciling both
