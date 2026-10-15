@@ -200,3 +200,25 @@ ALTER TABLE kith_device
 -- so it cannot drift from the schedule the device actually keeps.
 ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS check_in_interval_s integer;
+
+-- WHAT THE DEVICE SAYS IT DID AT ITS LAST CHECK-IN (muster#146). One row per
+-- device, replaced by each newer report: the question this answers is "is it
+-- working NOW", and a history would make every reader sort it to find out.
+--
+-- Until this existed the only answer was the device's own status screen, which
+-- needs somebody holding the phone, or an inference from repeated asset
+-- downloads in the server log. `steps` is every BootPlan step with its outcome
+-- and concerns; `packages` is the versionCode of each managed application as
+-- the platform reported it after the install attempts, null where it is not
+-- installed.
+--
+-- A NEW TABLE RATHER THAN COLUMNS ON kith_device, so the roll query and its
+-- positional row reader are untouched, and so a report - device-reported and
+-- arriving every fifteen minutes - never shares a row lock with an operator's
+-- revoke.
+CREATE TABLE IF NOT EXISTS kith_report (
+    key_id      text PRIMARY KEY REFERENCES kith_device (key_id) ON DELETE CASCADE,
+    received_at timestamptz NOT NULL,
+    steps       jsonb NOT NULL,
+    packages    jsonb NOT NULL
+);

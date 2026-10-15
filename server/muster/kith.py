@@ -66,11 +66,12 @@ out-of-memory kill, which would take issuance down by the back door.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import pathlib
 import threading
 from collections import deque
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Callable, Protocol
 
 from muster import telemetry
@@ -251,6 +252,41 @@ class Member:
     not_after: dt.datetime | None
 
 
+@dataclass(frozen=True)
+class StepReport:
+    """One BootPlan step as the device reported it (muster#146).
+
+    `concerns` empty means the step did what it was told - the same claim the
+    agent's own SyncReport makes, carried here unchanged rather than re-derived
+    from `outcome`, which is prose.
+    """
+
+    name: str
+    outcome: str
+    concerns: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PackageReport:
+    """A managed application's installed versionCode. None: not installed."""
+
+    package: str
+    version_code: int | None
+
+
+@dataclass(frozen=True)
+class Report:
+    """What a device said it did at its most recent check-in (muster#146).
+
+    `received_at` is muster's clock, not the device's: it orders replays, and a
+    handset with a wrong clock must not be able to pin a stale report in place.
+    """
+
+    received_at: dt.datetime
+    steps: tuple[StepReport, ...]
+    packages: tuple[PackageReport, ...]
+
+
 class Records(Protocol):
     """Somewhere to put the kith. Two implementations: memory, and Postgres.
 
@@ -280,6 +316,10 @@ class Records(Protocol):
     def record_reboot_acknowledged(self, key_id: str) -> bool: ...
 
     def record_collected(self, request_id: str, at: dt.datetime) -> None: ...
+
+    def record_report(self, key_id: str, report: Report) -> None: ...
+
+    def report(self, key_id: str) -> Report | None: ...
 
     def roll(self) -> list[Member]: ...
 
@@ -323,6 +363,7 @@ class MemoryRecords:
     def __init__(self) -> None:
         self._devices: dict[str, Device] = {}
         self._certificates: dict[str, list[Certificate]] = {}
+        self._reports: dict[str, Report] = {}
 
     def describe(self) -> str:
         return "memory"
@@ -497,6 +538,21 @@ class MemoryRecords:
                         collected_at=at,
                     )
                     return
+
+    def record_report(self, key_id: str, report: Report) -> None:
+        # Unknown key: nothing to attach it to, the same rule `record_seen`
+        # applies and the SQL's `WHERE EXISTS` enforces.
+        if key_id not in self._devices:
+            return
+        # The newer report wins, not the last writer: a replayed backlog lands
+        # out of order by definition.
+        held = self._reports.get(key_id)
+        if held is not None and held.received_at >= report.received_at:
+            return
+        self._reports[key_id] = report
+
+    def report(self, key_id: str) -> Report | None:
+        return self._reports.get(key_id)
 
     def roll(self) -> list[Member]:
         members = [self._member(device) for device in self._devices.values()]
@@ -968,6 +1024,44 @@ class PostgresRecords:
 
         self._run(work)
 
+    def record_report(self, key_id: str, report: Report) -> None:
+        def work(cursor):
+            # INSERT ... SELECT WHERE the device exists, rather than a plain
+            # VALUES that the foreign key would refuse: an unknown key is not a
+            # row this store will ever accept, and `MemoryRecords` treats it as
+            # nothing to attach to. The conflict clause keeps the NEWER report,
+            # so a replay that drains late cannot put an old one back.
+            cursor.execute(
+                "INSERT INTO kith_report (key_id, received_at, steps, packages)"
+                " SELECT %s, %s, %s::jsonb, %s::jsonb"
+                "  WHERE EXISTS (SELECT 1 FROM kith_device WHERE key_id = %s)"
+                " ON CONFLICT (key_id) DO UPDATE SET"
+                "   received_at = EXCLUDED.received_at,"
+                "   steps = EXCLUDED.steps,"
+                "   packages = EXCLUDED.packages"
+                " WHERE kith_report.received_at < EXCLUDED.received_at",
+                (
+                    key_id,
+                    report.received_at,
+                    json.dumps([asdict(step) for step in report.steps]),
+                    json.dumps([asdict(package) for package in report.packages]),
+                    key_id,
+                ),
+            )
+
+        self._run(work)
+
+    def report(self, key_id: str) -> Report | None:
+        def work(cursor):
+            cursor.execute(
+                "SELECT received_at, steps, packages FROM kith_report WHERE key_id = %s",
+                (key_id,),
+            )
+            return cursor.fetchone()
+
+        row = self._run(work)
+        return _report_from_row(row) if row is not None else None
+
     # ---- reads -----------------------------------------------------------
 
     # The roll and one member differ only by a WHERE, so they share the text.
@@ -1129,6 +1223,25 @@ def _certificate_status_from_row(row) -> CertificateStatus:
     )
 
 
+def _report_from_row(row) -> Report:
+    # psycopg decodes jsonb to Python lists already, so nothing is parsed here.
+    return Report(
+        received_at=row[0],
+        steps=tuple(
+            StepReport(
+                name=step["name"],
+                outcome=step["outcome"],
+                concerns=tuple(step["concerns"]),
+            )
+            for step in row[1]
+        ),
+        packages=tuple(
+            PackageReport(package=package["package"], version_code=package["version_code"])
+            for package in row[2]
+        ),
+    )
+
+
 # ---- the deferred writes, as data ---------------------------------------
 #
 # Modeled rather than closed over, so the backlog can be counted, inspected in
@@ -1162,6 +1275,15 @@ class _Collected:
 
     def apply(self, records: Records) -> None:
         records.record_collected(self.request_id, self.at)
+
+
+@dataclass(frozen=True)
+class _Reported:
+    key_id: str
+    report: Report
+
+    def apply(self, records: Records) -> None:
+        records.record_report(self.key_id, self.report)
 
 
 class Kith:
@@ -1378,6 +1500,21 @@ class Kith:
     def collected(self, request_id: str) -> None:
         self._defer(_Collected(request_id=request_id, at=self._clock()), "collected")
 
+    def reported(
+        self,
+        key_id: str,
+        steps: tuple[StepReport, ...],
+        packages: tuple[PackageReport, ...],
+    ) -> None:
+        """Keep what a device says it did at its last check-in (muster#146).
+
+        DEFERRED, like `seen`: a device causes this write, and an outage must
+        not fail the request it is making. Losing one costs a report the device
+        sends again at its next check-in.
+        """
+        report = Report(received_at=self._clock(), steps=steps, packages=packages)
+        self._defer(_Reported(key_id=key_id, report=report), "reported")
+
     def _defer(self, entry, kind: str) -> None:
         with self._lock:
             if len(self._backlog) >= self._backlog_max:
@@ -1493,6 +1630,10 @@ class Kith:
 
     def awaiting_collection(self, request_id: str) -> Certificate | None:
         return self._read(lambda records: records.awaiting_collection(request_id))
+
+    def report(self, key_id: str) -> Report | None:
+        """The device's latest report, or None if it has never sent one."""
+        return self._read(lambda records: records.report(key_id))
 
     def _write_now(self, do):
         """A write that must NOT be deferred, with a caller waiting on it.
