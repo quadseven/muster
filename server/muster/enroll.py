@@ -147,7 +147,6 @@ DEFAULT_CODE_TTL_S = 300.0
 # 10 minutes strictly bounds that physical exposure window to minutes rather
 # than leaving an unspent QR alive for hours.
 DEFAULT_SCANNED_CODE_TTL_S = 600.0
-SCANNED_CODE_TTL_S = DEFAULT_SCANNED_CODE_TTL_S
 
 
 # How many wrong guesses a single code tolerates before it is burned. Not the
@@ -416,10 +415,13 @@ class Enrollment:
         """An administrator asks for a pairing code.
 
         The TTL defaults to DEFAULT_SCANNED_CODE_TTL_S (600s) for scanned codes
-        and DEFAULT_CODE_TTL_S (300s) for typed codes. The scanned window must
-        survive a whole provisioning run, measured at 332s on a Pixel 6a
-        (muster#149). 600s gives headroom while bounding how long a QR on a
-        monitor is worth photographing; see the security reasoning above.
+        and DEFAULT_CODE_TTL_S (300s) for typed codes. The scanned window is
+        the one that must survive a full provisioning run - on a measured
+        Pixel 6a run that was 332s (muster#149), so 600s is headroom, not
+        margin. Both stay in minutes precisely because a QR on a monitor is a
+        screen in a room, and minutes is the only thing bounding how long it
+        is worth photographing - see the constant block above for the full
+        attack surface.
         """
         # REFUSED HERE, at the only door a role comes through, rather than
         # where it is used. By the time a role reaches `policy.py` it is half a
