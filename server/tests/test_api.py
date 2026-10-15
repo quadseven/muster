@@ -2728,11 +2728,11 @@ def test_an_administrator_can_rename_a_device(state, tmp_path):
     ] is None
 
     assert client.post(
-        f"/v1/kith/{key_id}/name", json={"name": "Evan's Pixel"}, cookies=ADMIN
+        f"/v1/kith/{key_id}/name", json={"name": "The operator's Pixel"}, cookies=ADMIN
     ).status_code == 200
 
     device = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"]
-    assert device["admin_name"] == "Evan's Pixel"
+    assert device["admin_name"] == "The operator's Pixel"
     assert device["name"] == "pixel-6a", "the device-reported name must survive too"
 
 
@@ -2777,14 +2777,14 @@ def test_renaming_needs_an_administrator(state, tmp_path):
     client, _apk = _published_and_proving(state, tmp_path)
     key_id, _key = _enrolled_device(client, state, tmp_path)
     assert client.post(
-        f"/v1/kith/{key_id}/name", json={"name": "Evan's Pixel"}
+        f"/v1/kith/{key_id}/name", json={"name": "The operator's Pixel"}
     ).status_code == 401
 
 
 def test_renaming_a_device_that_is_not_in_the_kith_is_a_404(state, tmp_path):
     client, _apk = _published_and_proving(state, tmp_path)
     assert client.post(
-        f"/v1/kith/{'a' * 64}/name", json={"name": "Evan's Pixel"}, cookies=ADMIN
+        f"/v1/kith/{'a' * 64}/name", json={"name": "The operator's Pixel"}, cookies=ADMIN
     ).status_code == 404
 
 
