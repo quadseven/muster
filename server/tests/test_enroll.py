@@ -22,7 +22,6 @@ from muster.enroll import (
     CODE_RETENTION_S,
     DEFAULT_CODE_TTL_S,
     DEFAULT_SCANNED_CODE_TTL_S,
-    SCANNED_CODE_TTL_S,
     MAX_ATTEMPTS,
     MAX_CODE_LENGTH,
     Enrollment,

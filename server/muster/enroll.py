@@ -416,11 +416,10 @@ class Enrollment:
         """An administrator asks for a pairing code.
 
         The TTL defaults to DEFAULT_SCANNED_CODE_TTL_S (600s) for scanned codes
-        and DEFAULT_CODE_TTL_S (300s) for typed codes. A scanned code must survive
-        a whole provisioning run - download, install, setup wizard - which on a
-        measured Pixel 6a run took 332s (muster#149). 600s gives comfortable
-        headroom without racing a timer, while keeping the window to minutes so
-        a QR on a monitor is not photographable indefinitely.
+        and DEFAULT_CODE_TTL_S (300s) for typed codes. The scanned window must
+        survive a whole provisioning run, measured at 332s on a Pixel 6a
+        (muster#149). 600s gives headroom while bounding how long a QR on a
+        monitor is worth photographing; see the security reasoning above.
         """
         # REFUSED HERE, at the only door a role comes through, rather than
         # where it is used. By the time a role reaches `policy.py` it is half a

@@ -33,11 +33,11 @@ from muster.ca import Authority
 from muster.enroll import (
     DEFAULT_CODE_TTL_S,
     DEFAULT_SCANNED_CODE_TTL_S,
-    SCANNED_CODE_TTL_S,
     MAX_ATTEMPTS,
     Enrollment,
     fingerprint,
 )
+from muster.proof import Proofs
 from muster.revocation import FRESHNESS
 from tests.conftest import FakeProvider
 

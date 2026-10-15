@@ -109,7 +109,6 @@ from muster import kith as kith_store
 from muster.enroll import (
     DEFAULT_CODE_TTL_S,
     DEFAULT_SCANNED_CODE_TTL_S,
-    SCANNED_CODE_TTL_S,
     Enrollment,
     Outcome,
     Refused,
