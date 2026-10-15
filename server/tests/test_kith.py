@@ -77,6 +77,14 @@ class Breakable(MemoryRecords):
         self._check()
         super().record_collected(request_id, at)
 
+    def record_report(self, key_id_, report) -> None:
+        self._check()
+        super().record_report(key_id_, report)
+
+    def report(self, key_id_):
+        self._check()
+        return super().report(key_id_)
+
     def roll(self):
         self._check()
         return super().roll()
@@ -1160,9 +1168,11 @@ def test_every_statement_is_something_postgresql_can_actually_parse():
     records.certificate_status("AAAA")
     records.unexpired_revocations(START)
     records.awaiting_collection("req-1")
+    records.record_report("abc", kith_store.Report(START, *a_report()))
+    records.report("abc")
 
     statements = [sql for sql, _ in connection.log]
-    assert len(statements) >= 10, statements
+    assert len(statements) >= 12, statements
 
     for sql in statements:
         # psycopg substitutes %s client-side, so the placeholder never reaches
@@ -1372,8 +1382,8 @@ def test_an_administrator_can_rename_a_device_without_re_enrolling(kith):
     """muster#29. Three devices named 'Pixel 6a' by the vouch made a wipe
     confirmation dialog show the same words for three different handsets."""
     kith.issued(a_device(), a_certificate("AAAA"))
-    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
-    assert kith.member(a_device().key_id).device.admin_name == "Evan's Pixel"
+    kith.set_admin_name(a_device().key_id, "The operator's Pixel")
+    assert kith.member(a_device().key_id).device.admin_name == "The operator's Pixel"
 
 
 def test_a_rename_does_not_touch_the_device_reported_name(kith):
@@ -1381,7 +1391,7 @@ def test_a_rename_does_not_touch_the_device_reported_name(kith):
     follow the device's own report on every renewal, so a rename written into
     that column would be silently reverted at the device's next check-in."""
     kith.issued(a_device(name="Pixel 6a"), a_certificate("AAAA"))
-    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    kith.set_admin_name(a_device().key_id, "The operator's Pixel")
     assert kith.member(a_device().key_id).device.name == "Pixel 6a"
 
 
@@ -1392,10 +1402,10 @@ def test_a_rename_survives_a_renewal(kith, clock):
     nobody watching (#13, #22) and a rename that reverted itself weeks later
     would look like it never happened."""
     kith.issued(a_device(), a_certificate("AAAA"))
-    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    kith.set_admin_name(a_device().key_id, "The operator's Pixel")
     later = START + dt.timedelta(days=80)
     kith.issued(a_device(at=later), a_certificate("BBBB", at=later))
-    assert kith.member(a_device().key_id).device.admin_name == "Evan's Pixel"
+    assert kith.member(a_device().key_id).device.admin_name == "The operator's Pixel"
 
 
 def test_a_rename_can_be_cleared_back_to_the_device_reported_name(kith):
@@ -1403,7 +1413,7 @@ def test_a_rename_can_be_cleared_back_to_the_device_reported_name(kith):
     rather than an empty string, because an empty string and 'no override'
     must not be the same value read two ways."""
     kith.issued(a_device(name="Pixel 6a"), a_certificate("AAAA"))
-    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    kith.set_admin_name(a_device().key_id, "The operator's Pixel")
     kith.set_admin_name(a_device().key_id, None)
     device = kith.member(a_device().key_id).device
     assert device.admin_name is None
@@ -1418,7 +1428,7 @@ def test_renaming_costs_a_device_nothing_else(kith):
 
     kith.issued(a_device(), a_certificate("AAAA"))
     before = kith.member(a_device().key_id).device
-    kith.set_admin_name(before.key_id, "Evan's Pixel")
+    kith.set_admin_name(before.key_id, "The operator's Pixel")
     after = kith.member(before.key_id).device
     for field in fields(before):
         if field.name == "admin_name":
@@ -1427,7 +1437,7 @@ def test_renaming_costs_a_device_nothing_else(kith):
 
 
 def test_renaming_a_device_the_kith_never_heard_of_says_so(kith):
-    assert kith.set_admin_name("z" * 64, "Evan's Pixel") is False
+    assert kith.set_admin_name("z" * 64, "The operator's Pixel") is False
 
 
 def test_being_seen_does_not_cost_a_device_its_rename(kith, clock):
@@ -1436,7 +1446,152 @@ def test_being_seen_does_not_cost_a_device_its_rename(kith, clock):
     on every proven request, so a hand-rolled field-by-field rebuild in
     `record_seen` is exactly the kind of place a new column goes missing."""
     kith.issued(a_device(), a_certificate("AAAA"))
-    kith.set_admin_name(a_device().key_id, "Evan's Pixel")
+    kith.set_admin_name(a_device().key_id, "The operator's Pixel")
     clock.advance(60)
     kith.seen(a_device().key_id)
-    assert kith.member(a_device().key_id).device.admin_name == "Evan's Pixel"
+    assert kith.member(a_device().key_id).device.admin_name == "The operator's Pixel"
+
+
+# ---- what a device says it did (muster#146) ------------------------------
+
+
+def a_report(*, concern: str | None = None, version: int | None = 78):
+    from muster.kith import PackageReport, StepReport
+
+    steps = (
+        StepReport(
+            name="install-apps",
+            outcome="installed=[] current=0",
+            concerns=(concern,) if concern else (),
+        ),
+    )
+    packages = (PackageReport(package="app.example.companion", version_code=version),)
+    return steps, packages
+
+
+def test_a_device_report_is_kept_and_read_back(kith):
+    """The question an operator could not answer before: did it work?"""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    steps, packages = a_report(concern="WELDED app.example.companion: INSTALL_FAILED")
+
+    kith.reported(a_device().key_id, steps, packages)
+
+    report = kith.report(a_device().key_id)
+    assert report is not None
+    assert report.received_at == START
+    assert report.steps == steps
+    assert report.packages == packages
+
+
+def test_the_newest_report_replaces_the_one_before(kith, clock):
+    """One row per device: the latest truth, not a history somebody has to sort."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    kith.reported(a_device().key_id, *a_report(version=78))
+    clock.advance(900)
+    kith.reported(a_device().key_id, *a_report(version=152))
+
+    report = kith.report(a_device().key_id)
+    assert report.packages[0].version_code == 152
+    assert report.received_at == START + dt.timedelta(seconds=900)
+
+
+def test_a_device_with_no_report_answers_none_rather_than_an_empty_one(kith):
+    """An empty report would read as "every step fine, nothing installed"."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    assert kith.report(a_device().key_id) is None
+
+
+def test_a_report_from_a_device_the_store_never_heard_of_is_not_an_error(kith):
+    """Same shape as an unknown proof: there is no row to attach it to."""
+    kith.reported(key_id(b"never-recorded"), *a_report())
+    assert kith.report(key_id(b"never-recorded")) is None
+
+
+def test_a_report_during_an_outage_is_refused_and_never_joins_the_backlog(
+    kith, records
+):
+    """The backlog drops its oldest entry when full, so a fleet's reports queued
+    through an outage would evict the issuances it exists to keep. A refused
+    report costs nothing: the device sends a fresher one next check-in."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    records.up = False
+
+    with pytest.raises(Unreachable):
+        kith.reported(a_device().key_id, *a_report())
+    assert kith.status()["deferred"] == 0
+
+
+def test_a_stale_report_replayed_late_does_not_replace_a_newer_one():
+    """A backlog replays out of order by definition; the older report loses."""
+    from muster.kith import Report
+
+    records = MemoryRecords()
+    records.record_issuance(a_device(), a_certificate("AAAA"))
+    steps, _ = a_report()
+    newer = Report(received_at=START + dt.timedelta(seconds=60), steps=steps,
+                   packages=a_report(version=152)[1])
+    older = Report(received_at=START, steps=steps, packages=a_report(version=78)[1])
+
+    records.record_report(a_device().key_id, newer)
+    records.record_report(a_device().key_id, older)
+
+    assert records.report(a_device().key_id) == newer
+
+
+def test_a_report_upsert_keeps_the_newer_row_and_needs_a_known_device():
+    """The SQL half of the two rules above, asserted on the statement text."""
+    import json
+
+    from muster.kith import Report
+
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    steps, packages = a_report(concern="WELDED x")
+    records.record_report("abc", Report(received_at=START, steps=steps, packages=packages))
+
+    sql, params = next(
+        (sql, params) for sql, params in connection.log
+        if "INSERT INTO kith_report" in sql
+    )
+    assert "FROM kith_device WHERE key_id = %s" in sql
+    assert "WHERE kith_report.received_at < EXCLUDED.received_at" in sql
+    assert params[0] == "abc"
+    assert json.loads(params[2]) == [
+        {"name": "install-apps", "outcome": "installed=[] current=0",
+         "concerns": ["WELDED x"]}
+    ]
+    assert json.loads(params[3]) == [
+        {"package": "app.example.companion", "version_code": 78}
+    ]
+
+
+def test_a_stored_report_is_read_back_from_its_row():
+    from muster.kith import PackageReport, StepReport
+
+    rows = [(
+        START,
+        [{"name": "install-apps", "outcome": "o", "concerns": ["c"]}],
+        [{"package": "app.example.companion", "version_code": None}],
+    )]
+    connection = FakeConnection(rows=rows)
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+
+    report = records.report("abc")
+
+    assert report.received_at == START
+    assert report.steps == (StepReport(name="install-apps", outcome="o", concerns=("c",)),)
+    assert report.packages == (
+        PackageReport(package="app.example.companion", version_code=None),
+    )
+
+
+def test_the_schema_creates_the_report_table():
+    schema = kith_store.SCHEMA.read_text()
+    assert "CREATE TABLE IF NOT EXISTS kith_report" in schema
+    assert "REFERENCES kith_device (key_id) ON DELETE CASCADE" in schema.split(
+        "kith_report"
+    )[1]

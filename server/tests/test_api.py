@@ -607,6 +607,148 @@ def test_diagnostic_upload_is_rate_limited_per_device(state):
     assert _send_diagnostics(client, key, identity, ["two"]).status_code == 429
 
 
+# ---- what a device says it did (muster#146) -------------------------------
+
+
+def _send_report(client, key, identity, steps, packages):
+    import base64
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    signature = key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+    return client.post(
+        "/v1/device/report",
+        json={
+            "nonce": nonce,
+            "signature_b64": base64.b64encode(signature).decode(),
+            "certificate_pem": identity.certificate_pem.decode(),
+            "steps": steps,
+            "packages": packages,
+        },
+    )
+
+
+_WELDED = (
+    "WELDED app.example.companion: INSTALL_FAILED_UPDATE_INCOMPATIBLE - refused "
+    "before downloading"
+)
+
+
+def test_a_device_report_is_stored_and_an_administrator_can_read_it(state):
+    """The question an MDM could not answer before: did the install work?"""
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+
+    response = _send_report(
+        client, key, identity,
+        steps=[
+            {"name": "configuration", "outcome": "fetched", "concerns": []},
+            {"name": "install-apps", "outcome": "installed=[]", "concerns": [_WELDED]},
+        ],
+        packages=[
+            {"package": "app.example.companion", "version_code": 78},
+            {"package": "app.example.other", "version_code": None},
+        ],
+    )
+
+    assert response.status_code == 202, response.text
+    report = client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["report"]
+    assert report["steps"][1] == {
+        "name": "install-apps", "outcome": "installed=[]", "concerns": [_WELDED],
+    }
+    assert report["packages"] == [
+        {"package": "app.example.companion", "version_code": 78},
+        {"package": "app.example.other", "version_code": None},
+    ]
+    assert report["concerns"] == 1
+    assert report["received_at"]
+    assert "custom.muster.device.report.received:1|c" in state.telemetry.sent
+    assert "custom.muster.device.report.concerns:1|c" in state.telemetry.sent
+
+
+def test_a_device_that_never_reported_shows_no_report_rather_than_an_empty_one(state):
+    """An empty report would read as "every step fine, nothing installed"."""
+    client = _proof_client(state)
+    _key, _identity, device_id = _enrolled(state, record=True)
+
+    assert client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["report"] is None
+
+
+def test_a_device_report_is_sanitized_before_it_is_kept(state):
+    """Concerns are device prose, and a steward can quote a config line."""
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+
+    _send_report(
+        client, key, identity,
+        steps=[{"name": "app-config", "outcome": "token=NEVER_KEEP_SENTINEL",
+                "concerns": ["REFUSED password=NEVER_KEEP_SENTINEL"]}],
+        packages=[],
+    )
+
+    report = client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["report"]
+    assert "NEVER_KEEP_SENTINEL" not in str(report)
+    assert "[REDACTED]" in report["steps"][0]["concerns"][0]
+
+
+@pytest.mark.parametrize("steps,packages", [
+    ([{"name": "x", "outcome": "o" * 513, "concerns": []}], []),
+    ([{"name": "x", "outcome": "o", "concerns": ["c" * 513]}], []),
+    ([{"name": "x", "outcome": "o", "concerns": ["c"] * 33}], []),
+    ([{"name": "x", "outcome": "o", "concerns": []}] * 33, []),
+    ([], [{"package": "not a package", "version_code": 1}]),
+    ([], [{"package": "app.example.x", "version_code": -1}]),
+    ([], [{"package": "app.example.x", "version_code": 1}] * 65),
+])
+def test_a_device_report_out_of_bounds_is_refused(state, steps, packages):
+    """Bounded like diagnostics: this is a row every device rewrites each check-in."""
+    client = _proof_client(state)
+    key, identity, _device_id = _enrolled(state, record=True)
+
+    assert _send_report(client, key, identity, steps, packages).status_code == 422
+
+
+def test_a_device_report_over_the_total_byte_limit_is_refused(state):
+    """Every field in bounds, and the row as a whole still too big."""
+    client = _proof_client(state)
+    key, identity, _device_id = _enrolled(state, record=True)
+    step = {"name": "x", "outcome": "o" * 512, "concerns": ["c" * 512] * 31}
+
+    assert _send_report(client, key, identity, [step], []).status_code == 413
+
+
+def test_a_device_report_while_the_store_is_down_is_503_and_not_kept(state):
+    """A report must not queue behind issuance in the bounded backlog."""
+    class Down(kith_store.MemoryRecords):
+        def record_report(self, key_id, report):
+            raise OSError("connection refused")
+
+    state.kith = kith_store.Kith(Down())
+    client = _proof_client(state)
+    key, identity, _device_id = _enrolled(state, record=True)
+
+    response = _send_report(client, key, identity, [], [])
+
+    assert response.status_code == 503
+    assert state.kith.status()["deferred"] == 0
+
+
+def test_a_device_report_is_rate_limited_per_device(state):
+    client = _proof_client(state)
+    key, identity, _device_id = _enrolled(state, record=True)
+
+    assert _send_report(client, key, identity, [], []).status_code == 202
+    assert _send_report(client, key, identity, [], []).status_code == 429
+
+
+def test_a_report_and_diagnostics_from_one_check_in_do_not_share_a_limit(state):
+    """The agent sends both at the end of the same check-in."""
+    client = _proof_client(state)
+    key, identity, _device_id = _enrolled(state, record=True)
+
+    assert _send_diagnostics(client, key, identity, ["one"]).status_code == 202
+    assert _send_report(client, key, identity, [], []).status_code == 202
+
+
 def _policy_root(tmp_path):
     from muster import policy
 
@@ -2044,6 +2186,10 @@ OPEN_TO_ANYONE = {
 DEVICE_PROVEN = {
     ("POST", "/v1/device/config"),
     ("POST", "/v1/device/diagnostics"),
+    # muster#146: what each step did and which versions are installed. Proven
+    # for the same reason diagnostics are: a report is stored against the key
+    # that signed it, so an unproven one could rewrite another device's record.
+    ("POST", "/v1/device/report"),
     # muster#45: the bytes an operator put in the store, for the device that
     # was told to expect them. Not open, because the store is where an APK is
     # about to live; not administrator-only, because a phone in a cupboard has
@@ -2235,6 +2381,8 @@ def test_a_device_route_refuses_a_well_formed_request_with_no_proof(client, meth
             "signature_b64": "",
             "certificate_pem": "not a certificate",
             "diagnostics": [],
+            "steps": [],
+            "packages": [],
         },
     )
     assert response.status_code in (400, 503), response.text
@@ -2728,11 +2876,11 @@ def test_an_administrator_can_rename_a_device(state, tmp_path):
     ] is None
 
     assert client.post(
-        f"/v1/kith/{key_id}/name", json={"name": "Evan's Pixel"}, cookies=ADMIN
+        f"/v1/kith/{key_id}/name", json={"name": "The operator's Pixel"}, cookies=ADMIN
     ).status_code == 200
 
     device = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"]
-    assert device["admin_name"] == "Evan's Pixel"
+    assert device["admin_name"] == "The operator's Pixel"
     assert device["name"] == "pixel-6a", "the device-reported name must survive too"
 
 
@@ -2777,14 +2925,14 @@ def test_renaming_needs_an_administrator(state, tmp_path):
     client, _apk = _published_and_proving(state, tmp_path)
     key_id, _key = _enrolled_device(client, state, tmp_path)
     assert client.post(
-        f"/v1/kith/{key_id}/name", json={"name": "Evan's Pixel"}
+        f"/v1/kith/{key_id}/name", json={"name": "The operator's Pixel"}
     ).status_code == 401
 
 
 def test_renaming_a_device_that_is_not_in_the_kith_is_a_404(state, tmp_path):
     client, _apk = _published_and_proving(state, tmp_path)
     assert client.post(
-        f"/v1/kith/{'a' * 64}/name", json={"name": "Evan's Pixel"}, cookies=ADMIN
+        f"/v1/kith/{'a' * 64}/name", json={"name": "The operator's Pixel"}, cookies=ADMIN
     ).status_code == 404
 
 
@@ -3294,6 +3442,8 @@ def test_a_revoked_device_is_refused_on_every_route_it_can_reach(
         ).decode(),
         "certificate_pem": identity.certificate_pem.decode(),
         "diagnostics": [],
+        "steps": [],
+        "packages": [],
     })
 
     assert response.status_code == 403, (

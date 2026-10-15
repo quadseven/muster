@@ -9,6 +9,7 @@ WHO CAN REACH WHAT, because this is the part that gets it wrong:
                                GET  /agent.apk, /agent.json
     device, proven             POST /v1/device/config
                                POST /v1/device/diagnostics
+                               POST /v1/device/report
     administrator, signed in   PUT  /v1/assets/{name}
                                POST /v1/enroll/codes
                                GET  /v1/enroll/requests
@@ -89,12 +90,13 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Annotated, Callable
 from email.utils import format_datetime
 
 from cryptography.hazmat.primitives import serialization
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
 from starlette.routing import Host, Route, Router
 
@@ -248,6 +250,10 @@ class State:
     telemetry: telemetry.Telemetry = field(default_factory=telemetry.Telemetry)
     diagnostic_lock: threading.Lock = field(default_factory=threading.Lock)
     diagnostic_last_sent: dict[str, float] = field(default_factory=dict)
+    # A SEPARATE LEDGER, same lock. The agent sends diagnostics and its report
+    # at the end of the same check-in, so one shared slot would refuse the
+    # second every time.
+    report_last_sent: dict[str, float] = field(default_factory=dict)
 
 
 
@@ -292,21 +298,93 @@ DIAGNOSTIC_MAX_LINES = 16
 DIAGNOSTIC_INTERVAL_S = 60
 
 
-def _take_diagnostic_slot(state: "State", key_id: str) -> bool:
-    """Allow one report per device per minute; discard expired identities."""
+def _take_diagnostic_slot(
+    state: "State", key_id: str, ledger: dict[str, float] | None = None
+) -> bool:
+    """Allow one upload per device per minute; discard expired identities.
+
+    `ledger` defaults to the diagnostics one; the report route passes its own.
+    """
+    sent = state.diagnostic_last_sent if ledger is None else ledger
     now = time.monotonic()
     with state.diagnostic_lock:
         expired = [
-            device for device, sent_at in state.diagnostic_last_sent.items()
+            device for device, sent_at in sent.items()
             if now - sent_at >= DIAGNOSTIC_INTERVAL_S
         ]
         for device in expired:
-            del state.diagnostic_last_sent[device]
-        last = state.diagnostic_last_sent.get(key_id)
+            del sent[device]
+        last = sent.get(key_id)
         if last is not None and now - last < DIAGNOSTIC_INTERVAL_S:
             return False
-        state.diagnostic_last_sent[key_id] = now
+        sent[key_id] = now
         return True
+
+
+# WHAT A DEVICE SAYS IT DID (muster#146). Bounded per field like diagnostics,
+# because this is a row every device rewrites every check-in: thirty-two steps
+# is three times BootPlan's eleven, and sixty-four packages is more managed
+# applications than any policy file here names.
+REPORT_MAX_STEPS = 32
+REPORT_MAX_CONCERNS = 32
+REPORT_MAX_PACKAGES = 64
+# THE WHOLE ROW, NOT ONLY EACH FIELD. The per-field limits above multiply out to
+# half a megabyte; a real check-in is a few kilobytes, and this is the bound
+# that keeps a device from making its own row large.
+REPORT_MAX_BYTES = 16384
+# The agent's own package-name rule (AppInstallPolicy.PACKAGE), so a name the
+# device could never have installed cannot become a row.
+_PACKAGE = r"^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$"
+
+
+class StepIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    outcome: str = Field(..., max_length=telemetry.DIAGNOSTIC_LINE_CHARS)
+    concerns: list[
+        Annotated[str, Field(max_length=telemetry.DIAGNOSTIC_LINE_CHARS)]
+    ] = Field(..., max_length=REPORT_MAX_CONCERNS)
+
+
+class PackageIn(BaseModel):
+    package: str = Field(..., max_length=255, pattern=_PACKAGE)
+    # None is "not installed", which is an answer and not a missing field.
+    version_code: int | None = Field(..., ge=0)
+
+
+def _kept_step(step: StepIn) -> kith_store.StepReport:
+    """One reported step, sanitized the way a diagnostic line is before it is kept."""
+    return kith_store.StepReport(
+        name=telemetry.sanitize_diagnostic(step.name),
+        outcome=telemetry.sanitize_diagnostic(step.outcome),
+        concerns=tuple(telemetry.sanitize_diagnostic(c) for c in step.concerns),
+    )
+
+
+def _report_bytes(steps: tuple[kith_store.StepReport, ...]) -> int:
+    """The UTF-8 size of every string a report's steps carry."""
+    return sum(
+        len(text.encode("utf-8"))
+        for step in steps
+        for text in (step.name, step.outcome, *step.concerns)
+    )
+
+
+def _report_view(report: kith_store.Report | None) -> dict | None:
+    """A stored report as JSON, with its concern count up front for a monitor."""
+    if report is None:
+        return None
+    return {
+        "received_at": report.received_at.isoformat(),
+        "concerns": sum(len(step.concerns) for step in report.steps),
+        "steps": [
+            {"name": s.name, "outcome": s.outcome, "concerns": list(s.concerns)}
+            for s in report.steps
+        ],
+        "packages": [
+            {"package": p.package, "version_code": p.version_code}
+            for p in report.packages
+        ],
+    }
 
 
 def _issue(state: "State", request_id: str, pending) -> dict:
@@ -1435,6 +1513,73 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         state.telemetry.count("device.diagnostics.received")
         return {"accepted": True}
 
+    @app.post("/v1/device/report", status_code=202)
+    def device_report(
+        response: Response,
+        nonce: str = Body(..., embed=True),
+        signature_b64: str = Body(..., embed=True),
+        certificate_pem: str = Body(..., embed=True),
+        steps: list[StepIn] = Body(..., embed=True, max_length=REPORT_MAX_STEPS),
+        packages: list[PackageIn] = Body(
+            ..., embed=True, max_length=REPORT_MAX_PACKAGES
+        ),
+    ):
+        """What a device did at its last check-in, kept so the console can say (muster#146).
+
+        Diagnostics go to the log and are gone; this is STORED, one row per
+        device, because "did the install work" is a question asked after the
+        fact - by an operator, or by a monitor alerting on a concern - and the
+        only other place the answer lived was the status screen of a phone
+        nobody is holding.
+
+        Everything here is the device's own account. muster records it and
+        does not act on it: a report cannot change policy, and a device that
+        lies about a version only misleads the reader of its own row.
+        """
+        response.headers["Cache-Control"] = "no-store"
+        proven = _proven_device(state, nonce, signature_b64, certificate_pem)
+        if not _take_diagnostic_slot(state, proven, state.report_last_sent):
+            state.telemetry.count("device.report.refused", tags=["reason:rate-limit"])
+            raise HTTPException(
+                status_code=429,
+                detail="a report may be sent once per minute",
+                headers={"Retry-After": str(DIAGNOSTIC_INTERVAL_S)},
+            )
+        kept = tuple(_kept_step(step) for step in steps)
+        if _report_bytes(kept) > REPORT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="report is too large")
+        try:
+            state.kith.reported(
+                proven,
+                kept,
+                tuple(
+                    kith_store.PackageReport(package=p.package, version_code=p.version_code)
+                    for p in packages
+                ),
+            )
+        except kith_store.Unreachable as unreachable:
+            # 503 and the device keeps going: it sends a fresher report at its
+            # next check-in, which is worth more than this one anyway.
+            state.telemetry.count("device.report.refused", tags=["reason:unreachable"])
+            raise HTTPException(
+                status_code=503,
+                detail=f"{unreachable}. The report was not kept; send the next one.",
+                headers={"Cache-Control": "no-store"},
+            ) from unreachable
+        concerns = [f"{step.name}: {c}" for step in kept for c in step.concerns]
+        state.telemetry.count("device.report.received")
+        # A COUNT, NOT A TAG PER STEP. Step names arrive from the device, and a
+        # tag a device chooses is unbounded cardinality; the concerns themselves
+        # are in the event below, where a monitor can read which.
+        state.telemetry.count("device.report.concerns", value=len(concerns))
+        telemetry.event(
+            "device report received",
+            key_id=proven,
+            concerns=concerns,
+            versions={p.package: p.version_code for p in packages},
+        )
+        return {"accepted": True}
+
     @app.post("/v1/device/wipe", status_code=200)
     def device_wipe(
         response: Response,
@@ -2110,10 +2255,15 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
             if member is None:
                 raise HTTPException(status_code=404, detail="no such device")
             history = state.kith.history(key_id)
+            report = state.kith.report(key_id)
         except kith_store.Unreachable as exc:
             raise _unreachable(exc) from exc
         return {
             "device": _member(member),
+            # WHAT IT LAST SAID IT DID (muster#146), or null if it never said.
+            # Null and not an empty report: an empty one would read as every
+            # step fine and nothing installed.
+            "report": _report_view(report),
             "certificates": [
                 {
                     "serial": c.serial,

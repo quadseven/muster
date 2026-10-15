@@ -80,9 +80,11 @@ class StatusActivity : Activity() {
             }
             val report = SyncReport.of(steps)
             val diagnosticsSent = DiagnosticsSteward(this).send(report)
+            val reportSent = ReportSteward(this).send(steps)
             CheckIn.record(this, System.currentTimeMillis() / 1000)
             main.post {
                 Log.i(TAG, "sync diagnostics upload: $diagnosticsSent")
+                Log.i(TAG, "sync report upload: $reportSent")
                 report.detail.forEach { Log.i(TAG, "sync $it") }
                 // ON THE SCREEN, NOT ONLY IN LOGCAT. A phone enrolled by QR has
                 // no adb and no cable, so the reason a step enforced nothing has

@@ -45,6 +45,9 @@ class CheckInJob : JobService() {
             }
             val report = SyncReport.of(steps)
             Log.i(TAG, "check-in diagnostics upload: ${DiagnosticsSteward(this).send(report)}")
+            // AFTER EVERY STEP, so the report carries the whole check-in and
+            // the versions the install steps left behind (muster#146).
+            Log.i(TAG, "check-in report upload: ${ReportSteward(this).send(steps)}")
             report.detail.forEach { Log.i(TAG, "check-in $it") }
             // AT ERROR, so `logcat -s muster:E` on a device that is behaving
             // oddly shows the reason rather than a wall of successful steps.

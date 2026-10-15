@@ -43,6 +43,9 @@ agent at `status.hostIP:8125`.
     device.config.refused           #reason:no-source|unreadable
     device.diagnostics.received     a proven device uploaded its check-in report
     device.diagnostics.refused      #reason:rate-limit
+    device.report.received          a proven device's check-in report was kept
+    device.report.concerns          count, the concerns in that report
+    device.report.refused           #reason:rate-limit|unreachable
     agent.apk.served                a device downloaded the agent
     auth.signin.completed           an administrator signed in
     auth.signin.refused             #reason:<why>
@@ -96,6 +99,17 @@ bearer values and private-key blocks, and caps each line. The route caps the
 bundle at 16 lines and 4 KiB and accepts at most one report per device per
 minute. Search Datadog logs for `message:"device diagnostics received"` and
 facet on `key_id` or `diagnostics` to inspect a device's report.
+
+**`device.report.concerns` is the one to alert on for installs (muster#146).**
+Diagnostics are logged and gone; the check-in report is STORED, newest per
+device, and returned as `report` on `GET /v1/kith/{key_id}` with each step's
+outcome and concerns and the installed `versionCode` of every managed package.
+A concern is a step that did not do what it was told - an install that did not
+take, one backing off, one refused as `INSTALL_FAILED_UPDATE_INCOMPATIBLE` -
+so a rate above zero is a device somebody should look at, and the
+`device report received` log line beside it names the `key_id`, the
+`concerns`, and the `versions`. The count is not tagged by step: step names
+arrive from the device, and a tag a device chooses is unbounded cardinality.
 
 **`shape` is the same argument one level out.** A QR whose code expired before a
 phone finished downloading and installing the agent, and an operator mistyping

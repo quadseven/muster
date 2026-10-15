@@ -248,6 +248,32 @@ phone. Installing is additive, and withholding every install because one line is
 wrong denies a device the software it needs in order to protect it from having
 extra software.
 
+### A failing install backs off, and a known signer mismatch is refused
+
+An install that cannot succeed used to cost its whole download at every
+check-in: a 19.5 MB APK signed by a different key was fetched four times in
+eleven minutes, failing identically each time (muster#146). Two rules end that,
+both keyed by the digest the line names - so publishing a fixed build starts
+clean rather than waiting out the broken one's clock:
+
+- **Backoff.** Bytes that downloaded and did not install are not fetched again
+  for thirty minutes, doubling with each failure up to a day. The step reports
+  `BACKING_OFF` with the time of the next attempt. A fetch that never reached
+  muster is NOT backed off - nothing was downloaded, and a network that comes
+  back should be used at once.
+- **Refuse rather than retry.** When a download shows the bytes are signed by a
+  key the installed copy will not accept, the agent remembers that signer. At
+  every later check-in it compares it against the installed copy's signer
+  BEFORE downloading, and refuses with a `WELDED` concern naming
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. The comparison reads the fetched APK's
+  whole signing lineage, so a v3 key rotation that Android accepts is not
+  refused. A line carrying `replace-if-signer-differs` is exempt: it asked for
+  the mismatch to be resolved, and is backed off instead.
+
+muster has no uninstall verb, so a refusal is resolved by re-signing the build
+with the installed key, adding `replace-if-signer-differs` (which deletes the
+app's data), or wiping the device.
+
 ### muster updates itself last, twice over
 
 Committing muster's own install ends the process. So `install-apps` is the LAST
@@ -564,6 +590,20 @@ sanitizer before writing the report as a structured log for Datadog. The report
 is limited to 16 lines and 4 KiB, and each proven device may send once per
 minute. This is the check-in report, not raw logcat: raw logs can contain
 configuration values and are not uploaded.
+
+**So does the stored check-in report (muster#146).** After every step has run,
+the agent also sends `POST /v1/device/report`: each step's name, outcome and
+concerns, and the installed `versionCode` of every package `install-apps`
+names (null where it is not installed). Unlike diagnostics it is KEPT - the
+newest per device, in `kith_report` - and returned as `report` on
+`GET /v1/kith/{key_id}`, so whether an install worked is answerable without
+holding the phone. Each field is bounded, the whole report is capped at 16 KiB,
+and one is accepted per device per minute. It is written synchronously and
+answered 503 while the kith store is down rather than queued: a report is far
+larger than the timestamps the backlog holds, and the device sends a fresher
+one at its next check-in. One post per check-in rather than one per step, for
+the same reason - and the only check-in that ends before posting is one where
+muster installed itself, whose new version the next report carries.
 
 **It writes the same files this document already describes**, into the same
 device-protected directory, so everything the stewards do - reconciling both
