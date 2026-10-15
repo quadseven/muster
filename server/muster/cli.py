@@ -213,7 +213,7 @@ def cmd_asset(args) -> int:
 
 
 def cmd_wallpaper(args) -> int:
-    """Push an image to the agent's device-protected files directory.
+    """Push an image and the policy that tells the agent to apply it.
 
     Not baked into the APK on purpose: this app is Device Owner, so changing a
     bundled asset would mean a rebuild, a reinstall, and eventually a factory
@@ -234,14 +234,22 @@ def cmd_wallpaper(args) -> int:
     # like a broken cable. What it does instead has an expiry date on it, and
     # says so where it is written.
     files = DEVICE_FILES.format(package=args.package)
+    image = source.read_bytes()
     placed = place_file(
-        adb, args.serial, args.package, f"{files}/wallpaper.png", source.read_bytes()
+        adb, args.serial, args.package, f"{files}/wallpaper.png", image
     )
     if not placed.ok:
         print(placed.detail, file=sys.stderr)
         return 3
-    print(f"placed: {placed.detail}")
-    print("the agent applies it at the next boot")
+    policy = f"image wallpaper.png sha256 {hashlib.sha256(image).hexdigest()}\n"
+    configured = place_file(
+        adb, args.serial, args.package, f"{files}/wallpaper", policy.encode("ascii")
+    )
+    if not configured.ok:
+        print(configured.detail, file=sys.stderr)
+        return 3
+    print(f"placed: {placed.detail}; {configured.detail}")
+    print("the agent applies it at the next boot if fetched policy does not replace it")
     return 0
 
 
