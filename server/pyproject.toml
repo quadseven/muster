@@ -67,7 +67,7 @@ dependencies = [
 # httpx is NOT here any more: the sign-in flow talks to the identity provider at
 # runtime, so it moved into the dependencies above. Listing it twice would let
 # the two specifiers drift.
-dev = ["pytest>=9", "pglast>=7"]
+dev = ["pytest>=9", "pglast>=7", "pyyaml>=6"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
