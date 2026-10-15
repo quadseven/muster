@@ -201,50 +201,65 @@ will not stretch to one.
 
 ## The asset store, and how to put something in it
 
-Bytes a proven device may fetch: the wallpaper today, an agent APK and zippie's
-when muster can install (muster#67). **A share on the UNAS, not a Secret** - a
-Secret tops out near a megabyte and an APK is ~12.7 MB, which was the only thing
-standing between muster and installing an application or updating its own agent.
+The control plane stores operator files (wallpapers and APKs) on its persistent
+asset volume. An operator uploads from any network that can reach Muster; the
+device fetches by name over its own proven identity. The router's `/www` is not
+an asset source for Muster-managed devices and must not serve their files.
+
+The pod root filesystem remains read-only. Only the dedicated persistent asset
+volume is writable by the application, mounted at the path configured by
+`MUSTER_ASSET_DIR`. Keep the volume on durable storage and include it in the
+cluster's normal backup plan. The application replaces files atomically and
+serves no more than 32 MiB per asset.
 
 ```sh
-# The PVC uses an SMB-backed StorageClass that auto-creates
-# k8s/<namespace>/<pvc> as the subdirectory. A hand-made SMB PV does NOT - you
-# get `mount error(2)` - which is why this uses the class.
-#
-# The one thing not in the manifest is the credential, bootstrapped out of
-# band like every other SMB consumer in this estate:
-kubectl -n muster create secret generic <smb-creds-secret-name> \
-  --from-literal=username=... --from-literal=password=...
-```
+# Upload bytes using the authenticated administrator session. `-b` supplies
+# the session cookie obtained from the signed-in console; do not put it in a
+# shared shell history or paste it into a public issue.
+curl --fail-with-body -X PUT \
+  -b 'muster_session=<administrator-session-cookie>' \
+  --data-binary @./wall.png \
+  https://<muster-host>/v1/assets/wall.png
 
-**muster's own mount is read-only, and that is deliberate.** The pod holds a
-certificate authority; a process that can rewrite what it serves to devices is a
-process that can serve a device something else. Assets are written out of band -
-either onto the share directly, or through a short-lived pod with the claim
-mounted read-write.
+# Compute the stanza and digest for the managed policy.
+uv run --group dev python -m muster.cli asset ./wall.png
 
-```sh
-# Then name it in policy. `muster asset <file>` prints the digest and stanza:
-uv run --group dev python -m muster.cli asset ./zippie-wall.png
-
-# kith.wallpaper:
-#   image zippie-wall.png sha256 6674edd...
-#   surfaces system lock
-
+# Confirm the mounted store sees the upload.
 kubectl -n muster exec deploy/muster -- wget -qO- 127.0.0.1:8000/readyz
 #   "assets":{"directory":"/etc/muster/assets","readable":true,"assets":1}
 ```
+
+The upload endpoint requires an administrator session, accepts a raw body,
+refuses invalid names and files over 32 MiB, and returns the SHA-256 digest of
+the exact bytes stored. The device fetch endpoint returns those bytes with
+`X-Muster-Digest` and `Cache-Control: no-store`; the device independently checks
+the digest from its policy before applying the file.
+
+### Asset-store recovery
+
+If `/readyz` reports `readable: false`, or device fetches return 503, restore
+the asset volume before editing policy. Check the volume mount and storage
+backend, restore the latest backup to the same `MUSTER_ASSET_DIR`, and verify
+that `/readyz` reports it readable with the expected asset count. Re-upload any
+missing file through `PUT /v1/assets/{name}` from an administrator session, then
+compare the upload digest with the policy stanza. A missing store is a 503 and a
+missing name is a 404; neither response authorizes removing managed files.
+
+When moving off the legacy router, copy each referenced asset into Muster's
+asset store, upload it, update policy with the returned digest, and verify a
+managed device fetched it successfully. Then remove the asset files and HTTP
+serving configuration from the router. Muster-managed devices must use only
+Muster's authenticated asset endpoint.
 
 `readable` now means muster can ACTUALLY read the share, not that a path was
 configured. On a Secret volume those were the same thing; on a share that can
 stop answering they are not.
 
-**THREE THINGS THIS STORAGE DOES THAT A SECRET DID NOT**, all of which the code
-now accounts for:
+**THREE THINGS THIS STORAGE DOES**, all of which the code accounts for:
 
 - **Unavailability BLOCKS rather than erroring.** A measured 90-second drop hung
   a plain `ls` for 106 seconds and then returned success. Every touch in
-  `assets.py` is bounded by `STORAGE_TIMEOUT_S` and abandoned after it, because
+  `assets.py` bounds every storage operation by `STORAGE_TIMEOUT_S`, because
   an unbounded read is a request thread muster never gets back - and enough of
   those stop enrollment, not just wallpapers.
 - **The SMB CSI driver only runs on nodes that can reach the share.** The
@@ -268,7 +283,7 @@ answered 200. Pod restart count: 0 across the whole 8-day window this was
 checked against. The bound worked under the exact condition it was sized for;
 the failure mode of the two prior outages did not recur.
 
-An asset the share cannot answer for is a **503**, never a 404. The agent
+An asset the store cannot answer for is a **503**, never a 404. The agent
 removes a file absent from a SUCCESSFUL answer, so a 404 would tell a device its
 wallpaper had been withdrawn.
 

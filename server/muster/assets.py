@@ -1,36 +1,10 @@
-"""Operator files a device may fetch, and where they live.
+"""Operator files a proven device may fetch from persistent asset storage.
 
-WHY THIS EXISTS (muster#45). Every asset muster could apply used to travel over
-a cable: `muster wallpaper` reads a PNG off the operator's laptop and pushes it
-with `adb`. That works for one handset within cable reach and is unreachable for
-a phone on somebody else's network - which, since QR provisioning landed, is
-every device muster enrolls. The wallpaper on the open-source-MDM-managed Pixel comes
-from a PNG in `/www` on a travel router, and a travel router is not a record of
-what a fleet is supposed to have.
-
-WHAT THIS IS NOT. It is not the whole of muster#45. An APK is the same route
-with a bigger file behind it, and this store is a directory - which is a Secret
-in the pod, capped at a megabyte. That is right-sized for a wallpaper and wrong
-for an APK. The part meant to outlive the backing store is the ROUTE and its
-contract: a name, a digest the device verifies, and `no-store`. Swapping the
-directory for object storage later is a change to `fetch` and to nothing the
-device knows about.
-
-WHY A DIRECTORY, AGAIN. The same argument as `policy.Policies`: a table nothing
-writes to is a mechanism with no operator, and a console for uploading assets is
-muster#36. A directory is a Secret, and putting a file in it is one command an
-operator already runs for policy.
-
-    kubectl -n muster create secret generic muster-assets \\
-      --from-file=wall.png=./zippie-wall.png
-
-HOW A DEVICE LEARNS AN ASSET EXISTS is deliberately not here. It is told by a
-managed policy file - `wallpaper` names an asset and the digest it expects - so
-the closed vocabulary in `policy.MANAGED_FILES` stays the only thing that
-decides what a device acts on. An endpoint that let a device enumerate the store
-would be a wider answer than any device needs.
+The administrator upload route writes to the configured asset mount. The
+device fetch route reads the same store, computes a digest over the returned
+bytes, and never offers asset enumeration. Policy remains the only source that
+tells a device which asset to apply.
 """
-# Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
 from __future__ import annotations
 
 import concurrent.futures
@@ -38,6 +12,7 @@ import hashlib
 import os
 import pathlib
 import re
+import tempfile
 from dataclasses import dataclass
 
 from muster import telemetry
@@ -145,6 +120,23 @@ def _list_names(root: pathlib.Path) -> list[str]:
         for entry in root.iterdir()
         if _NAME.match(entry.name) and entry.is_file()
     )
+
+
+def _replace_file(root: pathlib.Path, name: str, content: bytes) -> None:
+    """Publish complete bytes atomically, so readers never see a partial file."""
+    fd, temporary = tempfile.mkstemp(prefix=".upload-", dir=root)
+    try:
+        with os.fdopen(fd, "wb") as target:
+            target.write(content)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary, root / name)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _bounded(work, *args):
@@ -367,6 +359,20 @@ class Assets:
             content = _bounded(_read_bytes, path)
         except OSError as exc:
             raise Unreadable(f"'{name}' is in the store and could not be read: {exc}") from exc
+        return Asset(name=name, content=content, digest=hashlib.sha256(content).hexdigest())
+
+    def put(self, name: str, content: bytes) -> Asset:
+        """Replace one named asset after the complete upload has arrived."""
+        if self.root is None:
+            raise NoSource("muster has no writable asset store")
+        if not _NAME.fullmatch(name or ""):
+            raise Unknown(f"'{name}' is not a name an asset can have")
+        if len(content) > MAX_BYTES:
+            raise TooLarge(f"asset is {len(content)} bytes; maximum is {MAX_BYTES}")
+        try:
+            _bounded(_replace_file, self.root, name, content)
+        except OSError as exc:
+            raise Unavailable(f"asset store could not publish '{name}': {exc}") from exc
         return Asset(name=name, content=content, digest=hashlib.sha256(content).hexdigest())
 
 
