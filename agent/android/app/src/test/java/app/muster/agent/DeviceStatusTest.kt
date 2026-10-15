@@ -27,8 +27,10 @@ class DeviceStatusTest {
         lastCheckIn: Long? = 1_000_000L,
         restrictions: List<String> = listOf("no_safe_boot"),
         agentVersion: String = "0.1.0",
+        hasIdentity: Boolean = stance !is Stance.Unenrolled,
     ) = DeviceStatus.Facts(
         deviceOwner = deviceOwner,
+        hasIdentity = hasIdentity,
         stance = stance,
         revoked = revoked,
         notAfter = 1_795_000_000L,
@@ -46,6 +48,20 @@ class DeviceStatusTest {
         val view = DeviceStatus.render(facts(stance = Stance.Current))
         assertFalse(view.canEnroll)
         assertEquals("Managed and current", view.headline)
+    }
+
+    @Test
+    fun aCertificateWithUnreadableDatesIsNotMistakenForAnUnenrolledDevice() {
+        val view = DeviceStatus.render(facts(stance = Stance.Unenrolled, hasIdentity = true))
+        assertFalse(view.canEnroll)
+        assertEquals("Identity status unavailable", view.headline)
+        assertEquals("unavailable", view.rows.single { it.label == "Identity stance" }.value)
+    }
+
+    @Test
+    fun theIdentityStanceIsShownAsASeparateFact() {
+        val view = DeviceStatus.render(facts(stance = Stance.ShouldRenew(2_592_000)))
+        assertEquals("renewal due", view.rows.single { it.label == "Identity stance" }.value)
     }
 
     @Test
