@@ -14,15 +14,15 @@ day does not prove.
 
 **Date-mark everything here.** Google moved these gates during 2025-2026. If you
 are reading this months later, re-check the support pages before trusting a
-CLOSED verdict, and re-run Route 2 before trusting an OPEN one: the gate it
-cleared behaves like a heuristic, and a heuristic is allowed to change its mind.
+CLOSED verdict, and do not treat Route 2 as OPEN until a run has been seen to pass the gate: it
+behaves like a heuristic, and a heuristic is allowed to change its mind.
 
 ## The three routes, and their status
 
 | Route | Status | The gate |
 |---|---|---|
 | Call the Android Management API ourselves | **CLOSED** | Commercial-EMM eligibility |
-| Our own DPC, provisioned by QR / six-tap | **OPEN**, once | Play Protect's approved-DPC check - see below |
+| Our own DPC, provisioned by QR / six-tap | **UNMEASURED** | Play Protect's approved-DPC check - no run has yet been attributed to it, see below |
 | Our own DPC, provisioned by `adb dpm set-device-owner` | **OPEN** | A USB cable, once per device |
 
 ## Route 1: AMAPI directly - closed
@@ -46,10 +46,11 @@ Android story.** Its fully-managed Android works because it holds that
 eligibility. Its Premium tier is not a feature flag over an API we could call
 ourselves - it is access to a door we cannot open.
 
-## Route 2: our own DPC by QR - open, measured once
+## Route 2: our own DPC by QR - Play Protect's verdict unmeasured
 
 This is the flow everyone asks for by name: factory reset, tap the welcome screen
-six times, scan a QR, walk away. On 2026-08-19 it worked here.
+six times, scan a QR, walk away. Whether Play Protect lets this agent through
+has not been measured: the one attempt recorded below failed before that gate.
 
 **Measured on <device-serial>, Android 17, 2026-08-19.** A wiped Pixel 6a scanned
 a provisioning QR from `/v1/provision/qr.svg`, downloaded the agent, and
@@ -65,17 +66,17 @@ MDM with `no_factory_reset` set - it was freed and re-provisioned.
 
 ### What this does not prove
 
-**One device, one Android version, one day.** The gate cleared here is Play
-Protect's approved-DPC check, and everything known about it says it behaves like
+**The Play Protect verdict, either way.** The gate is the approved-DPC check, and
+everything known about it says it behaves like
 a harmful-app heuristic rather than a strict list: devices sometimes offer a
 "continue", and developers have cleared it by dropping permissions that read as
-dangerous. A heuristic that said yes to this APK, on this handset, on this
-Android build, on this date, has promised nothing about the next one - and
+dangerous. Even a pass on one APK, one handset, one Android build and one date would
+promise nothing about the next one - and
 Google can move it without announcing anything, which is how it arrived in the
 first place.
 
-So: take Route 2 first, and keep Route 3 working. The cost of the heuristic
-changing its mind is a handset that has already been wiped.
+So: keep Route 3 working, and treat each Route 2 attempt as a measurement. The
+cost of the heuristic saying no is a handset that has already been wiped.
 
 ### What this corrects, and why the old verdict was wrong
 
@@ -94,9 +95,9 @@ states the requirement and the consequence:
 
 > If provisioning fails, the device is factory reset.
 
-Both activities now exist and a test asserts the manifest declares them, because
-the failure costs a wipe and names no cause on the handset. The run recorded
-above is the next attempt after that fix.
+Both activities now exist and `ProvisioningManifestTest` fails if the manifest
+stops declaring either, because the failure costs a wipe and names no cause on
+the handset. No run has yet been recorded here with that fix in place.
 
 The lesson outlives the correction: **a gate nothing ever reached had been
 written down as a result.** The evidence for CLOSED was a failure that happened
@@ -122,10 +123,10 @@ allowlisted again.
 
 **A domain, a certificate, an mTLS handshake and a beautiful console change none
 of this.** The one variable we do control is the permission profile, and it is
-the bet that appears to have paid - inferred, not measured, because nothing on
-the handset says why it was allowed through. The agent asks for four
-permissions: `RECEIVE_BOOT_COMPLETED`, `SET_WALLPAPER`, `INTERNET`,
-`BIND_DEVICE_ADMIN`. No SMS, no notification listener, no accessibility. Adding a
+the bet that it helps - a hypothesis, not a measurement, because no run has
+shown the gate's answer. The agent declares four permissions:
+`RECEIVE_BOOT_COMPLETED`, `SET_WALLPAPER`, `INTERNET`, `ACCESS_NETWORK_STATE`,
+and guards its components with `BIND_DEVICE_ADMIN`, which only the system holds. No SMS, no notification listener, no accessibility. Adding a
 fifth is no longer a free decision - it changes the only input to that heuristic
 we have any influence over, and the way to find out what it did is another wipe.
 
@@ -145,8 +146,8 @@ Conditions, all of which this project meets:
   way is not enrolled in managed Google Play, so there is no enterprise app set
   for Play to reconcile against and delete
 
-It is no longer the only way in, and as of 2026-08-19 it is no longer the one to
-reach for first. What it is still for:
+It may not be the only way in, but until Route 2 has been measured end to end it
+is the dependable one. What it is for:
 
 - **provisioning at all, if Play Protect refuses** - the fallback that makes
   attempting Route 2 a safe thing to do
@@ -194,8 +195,8 @@ it.
 
 ## Measured device state, 2026-08-19
 
-<device-serial> again, the same phone, after the QR run above. Read off the
-device rather than remembered:
+<device-serial> again, the same phone, after a QR run. Read off the device rather
+than remembered. None of it measures Play Protect's verdict:
 
     Device Owner: app.muster.agent/.MusterDeviceAdminReceiver  testOnlyAdmin=false
     Device policy global restrictions: no_safe_boot, no_config_date_time
