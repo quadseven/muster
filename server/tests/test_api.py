@@ -29,9 +29,14 @@ from starlette.routing import Host
 from muster import console
 from muster import kith as kith_store
 from muster.api import State, create_app
-from muster.ca import Authority
-from muster.enroll import DEFAULT_CODE_TTL_S, MAX_ATTEMPTS, Enrollment, fingerprint
-from muster.proof import Proofs
+from muster.enroll import (
+    DEFAULT_CODE_TTL_S,
+    DEFAULT_SCANNED_CODE_TTL_S,
+    SCANNED_CODE_TTL_S,
+    MAX_ATTEMPTS,
+    Enrollment,
+    fingerprint,
+)
 from muster.revocation import FRESHNESS
 from tests.conftest import FakeProvider
 
@@ -1392,6 +1397,32 @@ def test_the_code_in_the_qr_is_one_a_device_can_actually_present_with(
     assert "BEGIN CERTIFICATE" in identity.json()["certificate_pem"]
 
 
+def test_a_qr_provisioned_device_can_present_after_measured_provisioning_time(
+    state, clock, tmp_path
+):
+    """muster#149: A Pixel 6a real provisioning run from factory reset to presenting
+    the QR takes 332s. The scanned-path pairing code TTL must cover the measured
+    332s duration with headroom, rather than refusing with 410 Gone at 300s."""
+    client, _apk = _published(state, tmp_path)
+    client.get("/v1/provision/qr.svg", cookies=ADMIN)
+    csr, _key = _csr_pem()
+
+    # Advance clock by the measured 332s duration of a Pixel 6a provisioning run
+    clock.advance(332.0)
+
+    presented = client.post(
+        "/v1/enroll/requests",
+        json={"code": _minted(state).code, "csr_pem": csr, "device_name": "pixel-6a"},
+    )
+    assert presented.status_code == 202
+
+    identity = client.get(
+        f"/v1/enroll/requests/{presented.json()['request_id']}/identity"
+    )
+    assert identity.status_code == 200
+    assert "BEGIN CERTIFICATE" in identity.json()["certificate_pem"]
+
+
 def test_the_pairing_code_goes_in_the_qr_and_nowhere_else(state, tmp_path):
     """THE SAME RULE THE WIFI PASSWORD FOLLOWS, one field along.
 
@@ -1409,7 +1440,7 @@ def test_the_pairing_code_goes_in_the_qr_and_nowhere_else(state, tmp_path):
 
     assert described["pairing"] == {
         "carries_code": True,
-        "expires_in_s": 300,
+        "expires_in_s": 600,
         # Described back on purpose: a role is a value the operator CHECKS, not
         # one they hold. See the dict's own comment.
         "role": "",
@@ -1453,7 +1484,7 @@ def test_the_plain_qr_says_how_long_it_has_left(state, tmp_path):
     provisions and then cannot enroll, with nothing on the handset saying why."""
     client, _apk = _published(state, tmp_path)
     response = client.get("/v1/provision/qr.svg", cookies=ADMIN)
-    assert response.headers["x-muster-pairing-expires-in"] == "300"
+    assert response.headers["x-muster-pairing-expires-in"] == "600"
 
 
 def test_choosing_hands_free_in_a_url_is_not_a_credential_in_a_url(state, tmp_path):
@@ -1504,7 +1535,7 @@ def test_a_stale_qr_and_a_replayed_one_are_told_apart(state, tmp_path):
     state.enrollment.codes.clear()
     client.get("/v1/provision/qr.svg", cookies=ADMIN)
     stale = _minted(state).code
-    state.enrollment.codes[stale].created_at -= DEFAULT_CODE_TTL_S + 1
+    state.enrollment.codes[stale].created_at -= DEFAULT_SCANNED_CODE_TTL_S + 1
     expired = client.post(
         "/v1/enroll/requests",
         json={"code": stale, "csr_pem": csr, "device_name": "pixel-6a"},

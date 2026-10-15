@@ -107,6 +107,8 @@ from muster import assets as asset_store
 from muster import kith as kith_store
 from muster.enroll import (
     DEFAULT_CODE_TTL_S,
+    DEFAULT_SCANNED_CODE_TTL_S,
+    SCANNED_CODE_TTL_S,
     Enrollment,
     Outcome,
     Refused,
@@ -2429,7 +2431,7 @@ def _provision_qr(
         # telemetry.py's first rule.
         telemetry.event(
             "pairing code minted",
-            ttl_s=DEFAULT_CODE_TTL_S,
+            ttl_s=DEFAULT_SCANNED_CODE_TTL_S,
             shape=Shape.SCANNED.value,
         )
         state.telemetry.count(
@@ -2485,7 +2487,7 @@ def _provision_qr(
         # from; the code itself is deliberately absent.
         "pairing": {
             "carries_code": carries_code,
-            "expires_in_s": int(DEFAULT_CODE_TTL_S) if carries_code else None,
+            "expires_in_s": int(DEFAULT_SCANNED_CODE_TTL_S) if carries_code else None,
             # DESCRIBED BACK, unlike the code beside it. The code is a value an
             # operator HOLDS; the role is one they CHECK - "did I make this a
             # zippie android?" is exactly what the text beside a QR is for, and

@@ -78,7 +78,8 @@ path where they do.
 that monitor inside the code's few minutes can provision a device of their own
 against it, and it will look exactly like the real one. That is why the QR
 endpoint is administrator-only, why the code is spent by the first device to use
-it, and why the window was not widened to make provisioning more comfortable.
+it, and why the window is bounded to minutes (600s, covering the measured 332s
+Pixel 6a provisioning run with headroom, muster#149) rather than widened to hours.
 
 **The vouch is still required on both paths - it just happens at different
 times.** This paragraph used to say the trade "belongs to whoever runs the estate
