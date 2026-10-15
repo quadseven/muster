@@ -431,13 +431,15 @@ away.** All five write into a directory only the app can write to, using
 `run-as`, and `run-as` refuses a package that is not debuggable. They fail
 loudly rather than silently.
 
-**The replacement now exists for three of the five** (#46): an enrolled device
-fetches `restrictions`, `visible-apps` and `app-config` from the control plane
-over the identity it holds, at every boot - `POST /v1/device/config`, described
-in `policy.md`. `muster wallpaper` still needs a cable, because a PNG needs
-asset hosting (#45), and `muster provision --server-url` is how a device that
-has no identity yet learns where to enroll, which is by definition before it can
-fetch anything.
+**The replacement now exists for four of the five** (#46, #142): an enrolled
+device fetches `restrictions`, `visible-apps` and `app-config` from the control
+plane over the identity it holds, at every boot and every check-in -
+`POST /v1/device/config`, described in `policy.md` - under the same names, into
+the same directory the cable writes to. The wallpaper travels the same way since
+asset hosting (#45, #140): the managed `wallpaper` file names an image the
+device fetches from muster. `muster provision --server-url` is the one left, and
+it is how a device that has no identity yet learns where to enroll, which is by
+definition before it can fetch anything.
 
 **Not measured on a handset.** Written on 2026-08-19 with no device attached.
 

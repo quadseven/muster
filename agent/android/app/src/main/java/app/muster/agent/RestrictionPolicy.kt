@@ -25,6 +25,13 @@ package app.muster.agent
 object RestrictionPolicy {
 
     /**
+     * The file this is read from, under the name muster serves it by and
+     * ConfigurationSteward writes it as. One spelling, so a device
+     * configured over the air holds the same file as one configured by hand.
+     */
+    const val FILE_NAME = "restrictions"
+
+    /**
      * The word that has to appear beside a stranding restriction to allow it.
      *
      * Deliberately long and unmistakable. The whole purpose is that it cannot

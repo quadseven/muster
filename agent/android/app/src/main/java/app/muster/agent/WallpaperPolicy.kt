@@ -32,6 +32,13 @@ package app.muster.agent
 object WallpaperPolicy {
 
     /**
+     * The file this is read from, under the name muster serves it by and
+     * ConfigurationSteward writes it as. One spelling, so a device
+     * configured over the air holds the same file as one configured by hand.
+     */
+    const val FILE_NAME = "wallpaper"
+
+    /**
      * A screen a wallpaper can be on.
      *
      * TWO, AND NOT A BOOLEAN, because muster#41 is exactly the bug a boolean

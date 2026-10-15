@@ -71,13 +71,13 @@ import java.io.File
  */
 class AppVisibilitySteward(private val context: Context) {
 
-    /** Where `muster visible-apps` pushes the file. */
+    /** Where `muster visible-apps` pushes the file, and where ConfigurationSteward writes it. */
     fun configFile(): File = File(
         // Device-protected, like everything else the boot path reads: this runs
         // at LOCKED_BOOT_COMPLETED, before first unlock, and a credential-
         // protected read there fails in a way that looks like an empty config -
         // which for an allowlist means "hide everything".
-        context.createDeviceProtectedStorageContext().filesDir, "visible-apps"
+        context.createDeviceProtectedStorageContext().filesDir, AppVisibilityPolicy.FILE_NAME
     )
 
     /**

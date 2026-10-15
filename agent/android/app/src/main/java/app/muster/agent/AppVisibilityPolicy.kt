@@ -48,6 +48,13 @@ package app.muster.agent
  */
 object AppVisibilityPolicy {
 
+    /**
+     * The file this is read from, under the name muster serves it by and
+     * ConfigurationSteward writes it as. One spelling, so a device
+     * configured over the air holds the same file as one configured by hand.
+     */
+    const val FILE_NAME = "visible-apps"
+
     /** A config line that will not be acted on, and the reason, for logging. */
     data class Refusal(val line: String, val why: String)
 

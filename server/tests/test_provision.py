@@ -348,9 +348,14 @@ def test_the_restrictions_file_is_named_the_same_on_both_sides():
 
     agent = Path(__file__).resolve().parents[2] / "agent/android/app/src/main/java/app/muster/agent"
     steward = (agent / "RestrictionSteward.kt").read_text()
+    policy = (agent / "RestrictionPolicy.kt").read_text()
     cli = (Path(__file__).resolve().parents[1] / "muster/cli.py").read_text()
 
-    assert '"restrictions"' in steward, "the agent no longer reads a file called 'restrictions'"
+    # The steward reads the name through its policy's constant (muster#142), so
+    # the spelling is checked where it lives and the steward is checked for
+    # reading it.
+    assert "RestrictionPolicy.FILE_NAME" in steward, "the agent no longer reads its policy's name"
+    assert 'FILE_NAME = "restrictions"' in policy, "the agent no longer reads a file called 'restrictions'"
     assert '/restrictions"' in cli, "the CLI no longer pushes a file called 'restrictions'"
 
 

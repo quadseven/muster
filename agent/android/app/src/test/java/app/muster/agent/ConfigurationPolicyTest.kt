@@ -234,6 +234,29 @@ class ConfigurationPolicyTest {
         )
     }
 
+    @Test
+    fun everyManagedNameIsTheConstantItsStewardReadsBy() {
+        // The mapping above is a comment, and a comment is not checked. A
+        // steward that read a name spelled differently from the one a fetch
+        // writes would leave a device configured over the air holding a file
+        // nothing acts on - the opposite of indistinguishable from one set up by
+        // hand. Each steward reads its file through its policy's FILE_NAME
+        // (BootPlanTest checks that half from the sources), and this checks the
+        // constants are exactly the names a fetch may write.
+        assertEquals(
+            setOf(
+                RestrictionPolicy.FILE_NAME,
+                AppVisibilityPolicy.FILE_NAME,
+                AppConfigPolicy.FILE_NAME,
+                WallpaperPolicy.FILE_NAME,
+                AppInstallPolicy.FILE_NAME,
+                WipePolicy.FILE_NAME,
+                RebootPolicy.FILE_NAME,
+            ),
+            ConfigurationPolicy.MANAGED,
+        )
+    }
+
     // ---- the seam --------------------------------------------------------
 
     @Test

@@ -17,6 +17,7 @@ import hashlib
 import pytest
 
 from muster import cli
+from muster.policy import MANAGED_FILES
 from muster.provision import DEVICE_FILES
 from tests.test_provision import RunAsAdb
 
@@ -230,6 +231,44 @@ def test_an_app_configuration_reaches_the_device_through_the_app(device, tmp_pat
 
     assert cli.main(["app-config", "fake-serial", "--file", str(config)]) == 0
     assert device.stored[f"{AGENT_FILES}/app-config"] == APP_CONFIG.encode()
+
+
+def test_a_device_configured_by_hand_holds_the_files_a_fetch_would_write(
+    device, tmp_path
+):
+    """The cable and the fetch must land the same files in the same directory.
+
+    `POST /v1/device/config` serves names from MANAGED_FILES, and the agent
+    writes them into the device-protected directory these commands write to.
+    A command that wrote any other name would configure a device in a way the
+    fetch could never reproduce or withdraw - so a device set up only over the
+    air would differ from one set up by hand. `wallpaper.png` is the one
+    exception: it is the image the agent itself fetches as an asset, named by
+    the managed `wallpaper` file, not a file muster serves.
+    """
+    image = tmp_path / "kitchen.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    policy = tmp_path / "kitchen.restrictions"
+    policy.write_text("DISALLOW_SAFE_BOOT\n")
+    allowlist = tmp_path / "kitchen.visible-apps"
+    allowlist.write_text("app.muster.agent\n")
+    config = tmp_path / "kitchen.appconfig"
+    config.write_text(APP_CONFIG)
+
+    for command in (
+        ["wallpaper", "fake-serial", "--image", str(image)],
+        ["restrictions", "fake-serial", "--file", str(policy)],
+        ["visible-apps", "fake-serial", "--file", str(allowlist)],
+        ["app-config", "fake-serial", "--file", str(config)],
+    ):
+        assert cli.main(command) == 0
+
+    written = {path.removeprefix(f"{AGENT_FILES}/") for path in device.stored}
+    assert all(path.startswith(f"{AGENT_FILES}/") for path in device.stored)
+    assert written - {"wallpaper.png"} == {
+        "wallpaper", "restrictions", "visible-apps", "app-config"
+    }
+    assert written - {"wallpaper.png"} <= set(MANAGED_FILES)
 
 
 def test_an_app_configuration_the_device_did_not_take_exits_three(monkeypatch, tmp_path):

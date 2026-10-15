@@ -201,15 +201,68 @@ class BootPlanTest {
         // The flow is a factory now, so the cheap path stays cheap without
         // anybody re-implementing the decision to keep it that way;
         // `nothingIsBuiltOnTheBootOfADeviceThatHasNothingToDo` pins that half.
-        val code = readSource("BootPlan.kt").lines()
-            .filterNot { it.trim().startsWith("//") }
-            .joinToString("\n")
+        val code = readCode("BootPlan.kt")
         assertFalse(
             "BootPlan is deciding for itself whether this device is enrolled, " +
                 "which is how it came to skip HandsFreeEnrollment's cleanup",
             code.contains("hasIdentity"),
         )
     }
+
+    @Test
+    fun everyStewardReadsItsFileByTheNameAFetchWrites() {
+        // A SOURCE-LEVEL GUARD, because a steward's `configFile()` needs a
+        // Context. ConfigurationSteward writes the names in
+        // ConfigurationPolicy.MANAGED; each steward below reads one of them. If
+        // a steward spelled its name out instead, the two could drift apart and
+        // a device configured over the air would hold a file nothing reads,
+        // while the same file pushed by hand under the steward's spelling was
+        // enforced. ConfigurationPolicyTest checks the constants are MANAGED.
+        val readers = mapOf(
+            "RestrictionSteward.kt" to "RestrictionPolicy.FILE_NAME",
+            "AppVisibilitySteward.kt" to "AppVisibilityPolicy.FILE_NAME",
+            "AppConfigSteward.kt" to "AppConfigPolicy.FILE_NAME",
+            "WallpaperSteward.kt" to "WallpaperPolicy.FILE_NAME",
+            "AppInstallSteward.kt" to "AppInstallPolicy.FILE_NAME",
+            "WipeSteward.kt" to "WipePolicy.FILE_NAME",
+            "RebootSteward.kt" to "RebootPolicy.FILE_NAME",
+        )
+        for ((steward, constant) in readers) {
+            val code = readCode(steward)
+            assertTrue("$steward must read its file as $constant", code.contains(constant))
+            for (name in ConfigurationPolicy.MANAGED) {
+                assertFalse(
+                    "$steward spells out \"$name\" instead of reading the constant",
+                    code.contains("\"$name\""),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun thePeriodicCheckInRunsThePlanSoPolicyArrivesWithNobodyThere() {
+        // Boot alone is not enough: an appliance may not reboot for months, so
+        // a policy changed centrally reaches it through the periodic job. That
+        // job must run this same plan - configuration included - and must be
+        // scheduled both when the device becomes managed and at every boot.
+        val job = readCode("CheckInJob.kt")
+        assertTrue("CheckInJob must run BootPlan.STEPS", job.contains("BootPlan.STEPS"))
+        for (scheduler in listOf("MusterDeviceAdminReceiver.kt", "BootReceiver.kt")) {
+            assertTrue(
+                "$scheduler must schedule the periodic check-in",
+                readCode(scheduler).contains("CheckInJob.ensureScheduled(context)"),
+            )
+        }
+    }
+
+    /**
+     * A source with its comment lines dropped, so a guard is satisfied by code
+     * and never by a sentence that mentions the code.
+     */
+    private fun readCode(name: String): String = readSource(name).lines()
+        .map { it.trim() }
+        .filterNot { it.startsWith("//") || it.startsWith("*") || it.startsWith("/*") }
+        .joinToString("\n")
 
     /**
      * A file out of the agent's own sources, found from wherever the runner

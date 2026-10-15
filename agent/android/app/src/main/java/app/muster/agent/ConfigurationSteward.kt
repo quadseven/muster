@@ -28,9 +28,9 @@ import java.io.File
  *
  * IT DOES NOT SURVIVE A SUCCESSFUL FETCH, AND THAT IS THE ORDER OF OPERATIONS
  * TO KNOW. `muster restrictions`, `muster visible-apps` and `muster app-config`
- * write exactly the three names in `ConfigurationPolicy.MANAGED`, so once this
+ * write three of the names in `ConfigurationPolicy.MANAGED`, so once this
  * device is enrolled, the control plane is what decides their contents - a name
- * muster does not serve is removed at the next boot. That is the whole point of
+ * muster does not serve is removed at the next fetch. That is the whole point of
  * a reconciler, and it means a file placed by hand on an enrolled device is a
  * temporary measure unless the same content is in the policy directory. muster
  * refusing to answer at all (an empty or absent policy source) leaves them

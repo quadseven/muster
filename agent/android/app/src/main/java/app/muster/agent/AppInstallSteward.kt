@@ -73,7 +73,7 @@ class AppInstallSteward(
 
     /** The `install-apps` policy file, written by ConfigurationSteward. */
     fun configFile(): File = File(
-        context.createDeviceProtectedStorageContext().filesDir, "install-apps"
+        context.createDeviceProtectedStorageContext().filesDir, AppInstallPolicy.FILE_NAME
     )
 
     fun reconcile(only: AppInstallPolicy.Only = AppInstallPolicy.Only.ALL): Outcome {

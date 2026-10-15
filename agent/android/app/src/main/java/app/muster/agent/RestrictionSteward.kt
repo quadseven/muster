@@ -24,12 +24,12 @@ import java.io.File
  */
 class RestrictionSteward(private val context: Context) {
 
-    /** Where `muster restrictions` pushes the file. */
+    /** Where `muster restrictions` pushes the file, and where ConfigurationSteward writes it. */
     fun configFile(): File = File(
         // Device-protected, like everything else the boot path reads: this runs
         // at LOCKED_BOOT_COMPLETED, before first unlock, and a credential-
         // protected read there fails in a way that looks like an empty config.
-        context.createDeviceProtectedStorageContext().filesDir, "restrictions"
+        context.createDeviceProtectedStorageContext().filesDir, RestrictionPolicy.FILE_NAME
     )
 
     /**
