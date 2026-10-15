@@ -338,14 +338,56 @@ class AppVisibilityPolicyTest {
 
     @Test
     fun aNameThatIsNotOnTheDeviceIsRefusedRatherThanIgnored() {
-        // A typo in an allowlist does not leave an application visible by
-        // accident - it hides it. `app.zippie.compainon` reads exactly like a
-        // policy that is working.
+        // muster#143: an absent package is refused so it is reported on the
+        // device screen (legacy no. 60), but it no longer withholds the entire
+        // plan. The absent package is skipped as a no-op, and installed
+        // packages not in the allowlist are hidden as expected.
         val plan = plan("app.muster.agent\napp.zippie.compainon\n")
         assertTrue(plan.refused.any { it.line == "app.zippie.compainon" })
-        // And nothing is hidden while the file still reads that way.
-        assertTrue(plan.hide.isEmpty())
-        assertTrue("app.zippie.companion" in plan.withheld)
+        assertTrue(plan.withheldWhy.isEmpty())
+        assertTrue(plan.withheld.isEmpty())
+        assertTrue("app.zippie.companion" in plan.hide)
+        assertFalse("app.muster.agent" in plan.hide)
+        assertFalse("app.zippie.compainon" in plan.hide)
+    }
+
+    @Test
+    fun absentPackageInAllowlistIsSkippedWhileRemainingValidPackagesAreHidden() {
+        // Acceptance criteria:
+        // 1. When a package in visible-apps is not installed, that package is
+        //    skipped but the remaining valid packages in the plan are still hidden.
+        // 2. Refused (absent) package names are reported rather than swallowing
+        //    the whole plan.
+        // 3. The withheldWhy / hide = emptyList() branch is no longer triggered
+        //    solely by absent packages.
+        // 4. Installed packages not in the allowlist are hidden as expected
+        //    when at least one other listed package is absent.
+        val plan = plan(
+            """
+                app.muster.agent
+                app.zippie.companion
+                com.nonexistent.package
+            """.trimIndent()
+        )
+        // com.nonexistent.package is skipped (not in hide, not in unhide)
+        assertFalse("com.nonexistent.package" in plan.hide)
+        assertFalse("com.nonexistent.package" in plan.unhide)
+        // Listed installed packages stay visible (not in hide)
+        assertFalse("app.muster.agent" in plan.hide)
+        assertFalse("app.zippie.companion" in plan.hide)
+        // Installed packages not in the allowlist are hidden as expected
+        assertEquals(
+            listOf(
+                "com.android.vending",
+                "com.google.android.apps.photos",
+                "com.google.android.gm",
+            ),
+            plan.hide,
+        )
+        // Absent package is reported in refused
+        assertTrue(plan.refused.any { it.line == "com.nonexistent.package" })
+        assertTrue(plan.withheldWhy.isEmpty())
+        assertTrue(plan.withheld.isEmpty())
     }
 
     @Test
