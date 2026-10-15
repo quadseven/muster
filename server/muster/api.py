@@ -420,7 +420,7 @@ def _proven_device(
     signature_b64: str,
     certificate_pem: str,
     check_in_interval_s: int | None = None,
-    expired_detail: str = "certificate expired",
+    expired_detail: str = "certificate expired; enroll again with a pairing code",
 ) -> str:
     """Which device sent this, or an HTTPException saying why it is nobody.
 

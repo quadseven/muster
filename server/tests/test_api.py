@@ -4145,6 +4145,23 @@ def test_a_lapsed_device_is_told_to_enroll_again(state, monkeypatch):
     assert "enroll again" in response.json()["detail"].lower()
 
 
+def test_other_proof_routes_keep_the_enrollment_guidance_for_lapsed_certs(
+    state, monkeypatch
+):
+    """Renewal may specialize its expiry message without changing other routes."""
+    from fastapi import HTTPException
+
+    from muster.api import _proven_device
+    from muster.proof import Verdict
+
+    monkeypatch.setattr(state.proofs, "verify", lambda *_: Verdict.CERT_EXPIRED)
+    with pytest.raises(HTTPException) as refused:
+        _proven_device(state, "nonce", "c2ln", "certificate")
+
+    assert refused.value.status_code == 409
+    assert refused.value.detail == "certificate expired; enroll again with a pairing code"
+
+
 def test_a_key_missing_from_the_kith_cannot_renew(state, monkeypatch):
     client = _proof_client(state)
     key, identity, _key_id = _enrolled(state, record=False)
