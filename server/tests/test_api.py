@@ -707,6 +707,31 @@ def test_a_device_report_out_of_bounds_is_refused(state, steps, packages):
     assert _send_report(client, key, identity, steps, packages).status_code == 422
 
 
+def test_a_device_report_over_the_total_byte_limit_is_refused(state):
+    """Every field in bounds, and the row as a whole still too big."""
+    client = _proof_client(state)
+    key, identity, _device_id = _enrolled(state, record=True)
+    step = {"name": "x", "outcome": "o" * 512, "concerns": ["c" * 512] * 31}
+
+    assert _send_report(client, key, identity, [step], []).status_code == 413
+
+
+def test_a_device_report_while_the_store_is_down_is_503_and_not_kept(state):
+    """A report must not queue behind issuance in the bounded backlog."""
+    class Down(kith_store.MemoryRecords):
+        def record_report(self, key_id, report):
+            raise OSError("connection refused")
+
+    state.kith = kith_store.Kith(Down())
+    client = _proof_client(state)
+    key, identity, _device_id = _enrolled(state, record=True)
+
+    response = _send_report(client, key, identity, [], [])
+
+    assert response.status_code == 503
+    assert state.kith.status()["deferred"] == 0
+
+
 def test_a_device_report_is_rate_limited_per_device(state):
     client = _proof_client(state)
     key, identity, _device_id = _enrolled(state, record=True)

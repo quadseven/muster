@@ -1277,14 +1277,6 @@ class _Collected:
         records.record_collected(self.request_id, self.at)
 
 
-@dataclass(frozen=True)
-class _Reported:
-    key_id: str
-    report: Report
-
-    def apply(self, records: Records) -> None:
-        records.record_report(self.key_id, self.report)
-
 
 class Kith:
     """The record of the kith, and the policy that stops it taking muster down.
@@ -1508,12 +1500,15 @@ class Kith:
     ) -> None:
         """Keep what a device says it did at its last check-in (muster#146).
 
-        DEFERRED, like `seen`: a device causes this write, and an outage must
-        not fail the request it is making. Losing one costs a report the device
-        sends again at its next check-in.
+        SYNCHRONOUS, AND NOT DEFERRED LIKE `seen`, though a device causes it.
+        The backlog is bounded and drops its oldest entry when full, and a
+        report is far bigger than a timestamp: a fleet reporting through an
+        outage would evict the issuances the backlog exists to keep. A refused
+        report costs nothing - the device sends a fresher one next check-in -
+        so this raises `Unreachable` and the route answers 503.
         """
         report = Report(received_at=self._clock(), steps=steps, packages=packages)
-        self._defer(_Reported(key_id=key_id, report=report), "reported")
+        self._write_now(lambda records: records.record_report(key_id, report))
 
     def _defer(self, entry, kind: str) -> None:
         with self._lock:

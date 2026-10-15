@@ -1507,20 +1507,18 @@ def test_a_report_from_a_device_the_store_never_heard_of_is_not_an_error(kith):
     assert kith.report(key_id(b"never-recorded")) is None
 
 
-def test_a_report_sent_during_an_outage_is_written_when_the_store_returns(
-    kith, records, clock
+def test_a_report_during_an_outage_is_refused_and_never_joins_the_backlog(
+    kith, records
 ):
-    """A device-caused write, so it defers like `seen` rather than failing the
-    request - the device would only send the same report again anyway."""
+    """The backlog drops its oldest entry when full, so a fleet's reports queued
+    through an outage would evict the issuances it exists to keep. A refused
+    report costs nothing: the device sends a fresher one next check-in."""
     kith.issued(a_device(), a_certificate("AAAA"))
     records.up = False
-    kith.reported(a_device().key_id, *a_report())
-    assert kith.status()["deferred"] == 1
 
-    records.up = True
-    clock.advance(kith_store.COOLDOWN_S)
-    assert kith.flush() == 0
-    assert kith.report(a_device().key_id) is not None
+    with pytest.raises(Unreachable):
+        kith.reported(a_device().key_id, *a_report())
+    assert kith.status()["deferred"] == 0
 
 
 def test_a_stale_report_replayed_late_does_not_replace_a_newer_one():

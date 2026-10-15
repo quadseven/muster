@@ -328,6 +328,10 @@ def _take_diagnostic_slot(
 REPORT_MAX_STEPS = 32
 REPORT_MAX_CONCERNS = 32
 REPORT_MAX_PACKAGES = 64
+# THE WHOLE ROW, NOT ONLY EACH FIELD. The per-field limits above multiply out to
+# half a megabyte; a real check-in is a few kilobytes, and this is the bound
+# that keeps a device from making its own row large.
+REPORT_MAX_BYTES = 16384
 # The agent's own package-name rule (AppInstallPolicy.PACKAGE), so a name the
 # device could never have installed cannot become a row.
 _PACKAGE = r"^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$"
@@ -353,6 +357,15 @@ def _kept_step(step: StepIn) -> kith_store.StepReport:
         name=telemetry.sanitize_diagnostic(step.name),
         outcome=telemetry.sanitize_diagnostic(step.outcome),
         concerns=tuple(telemetry.sanitize_diagnostic(c) for c in step.concerns),
+    )
+
+
+def _report_bytes(steps: tuple[kith_store.StepReport, ...]) -> int:
+    """The UTF-8 size of every string a report's steps carry."""
+    return sum(
+        len(text.encode("utf-8"))
+        for step in steps
+        for text in (step.name, step.outcome, *step.concerns)
     )
 
 
@@ -1533,14 +1546,26 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                 headers={"Retry-After": str(DIAGNOSTIC_INTERVAL_S)},
             )
         kept = tuple(_kept_step(step) for step in steps)
-        state.kith.reported(
-            proven,
-            kept,
-            tuple(
-                kith_store.PackageReport(package=p.package, version_code=p.version_code)
-                for p in packages
-            ),
-        )
+        if _report_bytes(kept) > REPORT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="report is too large")
+        try:
+            state.kith.reported(
+                proven,
+                kept,
+                tuple(
+                    kith_store.PackageReport(package=p.package, version_code=p.version_code)
+                    for p in packages
+                ),
+            )
+        except kith_store.Unreachable as unreachable:
+            # 503 and the device keeps going: it sends a fresher report at its
+            # next check-in, which is worth more than this one anyway.
+            state.telemetry.count("device.report.refused", tags=["reason:unreachable"])
+            raise HTTPException(
+                status_code=503,
+                detail=f"{unreachable}. The report was not kept; send the next one.",
+                headers={"Cache-Control": "no-store"},
+            ) from unreachable
         concerns = [f"{step.name}: {c}" for step in kept for c in step.concerns]
         state.telemetry.count("device.report.received")
         # A COUNT, NOT A TAG PER STEP. Step names arrive from the device, and a
