@@ -60,6 +60,7 @@ object DeviceStatus {
      */
     data class Facts(
         val deviceOwner: Boolean,
+        val hasIdentity: Boolean,
         val stance: IdentityLifecycle.Stance,
         val revoked: Boolean,
         val notAfter: Long?,
@@ -90,9 +91,15 @@ object DeviceStatus {
                     "administrator readmits it."
             }
             facts.stance is IdentityLifecycle.Stance.Unenrolled -> {
-                headline = "Not enrolled"
-                detail = "This device is managed but has no identity yet. " +
-                    "Enroll it with a pairing code from the console."
+                if (facts.hasIdentity) {
+                    headline = "Identity status unavailable"
+                    detail = "This device has an identity, but its certificate dates " +
+                        "could not be read. Check the identity files before enrolling again."
+                } else {
+                    headline = "Not enrolled"
+                    detail = "This device is managed but has no identity yet. " +
+                        "Enroll it with a pairing code from the console."
+                }
             }
             facts.stance is IdentityLifecycle.Stance.ClockBehind -> {
                 val skew = facts.stance.secondsOfSkew
@@ -124,6 +131,7 @@ object DeviceStatus {
         facts.serverUrl?.takeIf { it.isNotBlank() }?.let {
             rows += Row("Control plane", it, machine = true)
         }
+        rows += Row("Identity stance", stanceName(facts.stance, facts.hasIdentity))
         facts.notAfter?.let { rows += Row("Identity expires", when_(it, facts.now)) }
         facts.renewAfter?.let { rows += Row("Renews after", when_(it, facts.now)) }
         rows += Row(
@@ -148,9 +156,16 @@ object DeviceStatus {
             // Offered only when there is genuinely nothing to enroll with.
             // Showing it beside a valid identity is what this screen replaced.
             canEnroll = !facts.revoked &&
-                (facts.stance is IdentityLifecycle.Stance.Unenrolled ||
-                    facts.stance is IdentityLifecycle.Stance.Lapsed),
+                (!facts.hasIdentity || facts.stance is IdentityLifecycle.Stance.Lapsed),
         )
+    }
+
+    private fun stanceName(stance: IdentityLifecycle.Stance, hasIdentity: Boolean): String = when (stance) {
+        IdentityLifecycle.Stance.Current -> "current"
+        is IdentityLifecycle.Stance.ShouldRenew -> "renewal due"
+        is IdentityLifecycle.Stance.Lapsed -> "lapsed"
+        is IdentityLifecycle.Stance.ClockBehind -> "clock behind"
+        IdentityLifecycle.Stance.Unenrolled -> if (hasIdentity) "unavailable" else "unenrolled"
     }
 
     /**

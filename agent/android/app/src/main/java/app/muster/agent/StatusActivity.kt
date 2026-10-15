@@ -171,6 +171,7 @@ class StatusActivity : Activity() {
 
         return DeviceStatus.Facts(
             deviceOwner = MusterDeviceAdminReceiver.isDeviceOwner(this),
+            hasIdentity = store.hasIdentity(),
             stance = IdentityLifecycle.stance(
                 notBefore = notBefore,
                 notAfter = epochOf(notAfter),
