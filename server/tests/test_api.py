@@ -30,7 +30,7 @@ from muster import console
 from muster import kith as kith_store
 from muster.api import State, create_app
 from muster.ca import Authority
-from muster.enroll import DEFAULT_CODE_TTL_S, MAX_ATTEMPTS, Enrollment
+from muster.enroll import DEFAULT_CODE_TTL_S, MAX_ATTEMPTS, Enrollment, fingerprint
 from muster.proof import Proofs
 from muster.revocation import FRESHNESS
 from tests.conftest import FakeProvider
@@ -441,7 +441,7 @@ def test_a_signature_that_is_not_base64_is_400(state):
 # be refused rather than shortened, or a device withdraws policy over a bad byte.
 
 
-def _enrolled(state, name="pixel"):
+def _enrolled(state, name="pixel", record=False):
     """A device with a real certificate from this state's CA, and its key."""
     key = ec.generate_private_key(ec.SECP256R1())
     csr = (
@@ -452,12 +452,37 @@ def _enrolled(state, name="pixel"):
     identity = state.authority.issue(csr.public_bytes(serialization.Encoding.DER), name)
     from muster.enroll import key_id as _key_id
 
-    return key, identity, _key_id(
+    device_id = _key_id(
         key.public_key().public_bytes(
             encoding=serialization.Encoding.DER,
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
     )
+    if record:
+        now = state.kith.now()
+        state.kith.issued(
+            kith_store.Device(
+                key_id=device_id,
+                fingerprint=fingerprint(
+                    key.public_key().public_bytes(
+                        serialization.Encoding.DER,
+                        serialization.PublicFormat.SubjectPublicKeyInfo,
+                    )
+                ),
+                name=name,
+                first_seen=now,
+                last_seen=now,
+            ),
+            kith_store.Certificate(
+                serial=f"{identity.serial:X}",
+                request_id=f"test-{identity.serial:X}",
+                not_before=identity.not_before,
+                not_after=identity.not_after,
+                issued_at=now,
+                certificate_pem=identity.certificate_pem.decode(),
+            ),
+        )
+    return key, identity, device_id
 
 
 def _collect_identity(client, state, request_id=None):
@@ -2027,6 +2052,7 @@ DEVICE_PROVEN = {
     # muster#10: a fresh certificate over the identity the device already holds.
     # Device-proven and NOT open, because possession of the enrolled key is what
     # stands in for the pairing code - it is the whole authorization.
+    ("POST", "/v1/enroll/renew"),
     ("POST", "/v1/device/renew"),
     # muster#15: a wipe-pending device acknowledges that it received the
     # instruction before it erases itself. Device-proven for the same reason
@@ -3449,7 +3475,7 @@ def test_a_device_with_no_kith_row_yet_is_still_answered(state, tmp_path):
     """
     state.assets = _asset_store(tmp_path)
     client = _proof_client(state)
-    key, identity, key_id = _enrolled(state)
+    key, identity, key_id = _enrolled(state, record=False)
 
     assert state.kith.member(key_id) is None, "this test needs a device with no row"
     assert _fetch_asset(client, key, identity, "wall.png").status_code == 200
@@ -3938,7 +3964,7 @@ def test_revocation_answers_are_cacheable_until_their_signed_next_update():
 
 
 
-def _renew(client, key, identity, csr_key=None):
+def _renew(client, key, identity, csr_key=None, path="/v1/enroll/renew"):
     """The exchange a device makes to renew: challenge, sign, present a CSR.
 
     `csr_key` defaults to the device's own key, which is renewal. Passing a
@@ -3953,7 +3979,7 @@ def _renew(client, key, identity, csr_key=None):
         .sign(signing, hashes.SHA256())
     )
     nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
-    return client.post("/v1/device/renew", json={
+    return client.post(path, json={
         "nonce": nonce,
         "signature_b64": base64.b64encode(
             key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
@@ -3998,7 +4024,7 @@ def test_a_device_renews_itself_with_nobody_present(state, monkeypatch):
     used.
     """
     client = _proof_client(state)
-    key, identity, _key_id = _enrolled(state)
+    key, identity, _key_id = _enrolled(state, record=True)
     _past_renew_after(state, monkeypatch, identity)
 
     response = _renew(client, key, identity)
@@ -4010,6 +4036,16 @@ def test_a_device_renews_itself_with_nobody_present(state, monkeypatch):
     assert body["not_after"] and body["renew_after"]
 
 
+def test_renewal_is_available_at_enroll_renew(state, monkeypatch):
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state, record=True)
+    _past_renew_after(state, monkeypatch, identity)
+
+    response = _renew(client, key, identity, path="/v1/enroll/renew")
+
+    assert response.status_code == 201, response.text
+
+
 def test_the_renewed_certificate_actually_works(state, tmp_path, monkeypatch):
     """A certificate that comes back and cannot be used is worse than none: the
     device discards a working identity for it. So the test does not stop at 201
@@ -4019,7 +4055,7 @@ def test_the_renewed_certificate_actually_works(state, tmp_path, monkeypatch):
     state.policies = _policy_root(tmp_path)
     (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
     client = _proof_client(state)
-    key, identity, _key_id = _enrolled(state)
+    key, identity, _key_id = _enrolled(state, record=True)
     _past_renew_after(state, monkeypatch, identity)
 
     renewed = _renew(client, key, identity).json()
@@ -4044,7 +4080,7 @@ def test_renewal_will_not_swap_the_key(state, monkeypatch):
     enforces: a device presenting a new key is a new device.
     """
     client = _proof_client(state)
-    key, identity, _key_id = _enrolled(state)
+    key, identity, _key_id = _enrolled(state, record=True)
     _past_renew_after(state, monkeypatch, identity)
 
     other = ec.generate_private_key(ec.SECP256R1())
@@ -4065,7 +4101,7 @@ def test_a_device_cannot_renew_before_muster_said_it_may(state, monkeypatch):
     certificate's renew_after (2026-09-16) and failed on every run after.
     """
     client = _proof_client(state)
-    key, identity, _key_id = _enrolled(state)
+    key, identity, _key_id = _enrolled(state, record=True)
     _past_renew_after(state, monkeypatch, identity)
     one_minute_early = state.kith.now() - dt.timedelta(minutes=2)
     monkeypatch.setattr(state.kith, "now", lambda: one_minute_early)
@@ -4093,6 +4129,31 @@ def test_a_revoked_device_cannot_renew_itself_back_to_life(state, tmp_path, monk
 
     assert response.status_code == 403
     assert "revoked" in response.json()["detail"]
+
+
+def test_a_lapsed_device_is_told_to_enroll_again(state, monkeypatch):
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state, record=True)
+    certificate = x509.load_pem_x509_certificate(identity.certificate_pem)
+    monkeypatch.setattr(
+        state.proofs, "_now", lambda: certificate.not_valid_after_utc.timestamp() + 1
+    )
+
+    response = _renew(client, key, identity)
+
+    assert response.status_code == 409
+    assert "enroll again" in response.json()["detail"].lower()
+
+
+def test_a_key_missing_from_the_kith_cannot_renew(state, monkeypatch):
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state, record=False)
+    _past_renew_after(state, monkeypatch, identity)
+
+    response = _renew(client, key, identity)
+
+    assert response.status_code == 403
+    assert "not in the kith" in response.json()["detail"].lower()
 
 
 def test_renewal_keeps_the_device_and_its_role_rather_than_making_a_new_one(

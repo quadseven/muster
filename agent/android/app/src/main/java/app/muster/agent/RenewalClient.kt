@@ -108,7 +108,7 @@ class RenewalClient(
 
     companion object {
         const val CHALLENGE_PATH = "/v1/auth/challenge"
-        const val RENEW_PATH = "/v1/device/renew"
+        const val RENEW_PATH = "/v1/enroll/renew"
         const val REFUSAL_DETAIL_CHARS = 200
     }
 }

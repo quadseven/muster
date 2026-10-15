@@ -67,7 +67,7 @@ class RenewalClientTest {
         assertTrue(result is RenewalClient.Renewed.Identity)
         assertEquals("server-nonce", identity.signed)
         assertEquals(
-            listOf(RenewalClient.CHALLENGE_PATH, RenewalClient.RENEW_PATH),
+            listOf(RenewalClient.CHALLENGE_PATH, "/v1/enroll/renew"),
             transport.paths,
         )
         val sent = JSONObject(transport.bodies.last())
