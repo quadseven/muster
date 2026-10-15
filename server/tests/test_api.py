@@ -29,6 +29,7 @@ from starlette.routing import Host
 from muster import console
 from muster import kith as kith_store
 from muster.api import State, create_app
+from muster.ca import Authority
 from muster.enroll import (
     DEFAULT_CODE_TTL_S,
     DEFAULT_SCANNED_CODE_TTL_S,
