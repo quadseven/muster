@@ -1,0 +1,14 @@
+{
+  "name": "Muster check-in absence",
+  "type": "query alert",
+  "query": "sum(last_5m):sum:custom.muster.device.check_in{service:muster}.as_count() < 1",
+  "message": "No device check-ins reached muster during the alert window.",
+  "tags": ["service:muster"],
+  "options": {
+    "thresholds": {
+      "critical": 1
+    },
+    "notify_no_data": false,
+    "require_full_window": false
+  }
+}
