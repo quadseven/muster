@@ -819,6 +819,20 @@ async def _check_in_absence_ticks(
             emitter.check_in_absence_tick()
 
 
+@contextlib.asynccontextmanager
+async def _check_in_metric_lifecycle(emitter: telemetry.Telemetry):
+    """Run and stop the periodic check-in metric task with the application."""
+    stop = asyncio.Event()
+    task = asyncio.create_task(_check_in_absence_ticks(emitter, stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app(state: State) -> FastAPI:
     # NO INTERACTIVE API BROWSER, and this is a security decision rather than a
     # tidying one. FastAPI's /docs and /redoc pages load their JavaScript from a
@@ -843,17 +857,10 @@ def create_app(state: State) -> FastAPI:
         """
         state.kith.start_flushing()
         state.enrollment.start_sweeping()
-        check_in_stop = asyncio.Event()
-        check_in_metrics = asyncio.create_task(
-            _check_in_absence_ticks(state.telemetry, check_in_stop)
-        )
         try:
-            yield
+            async with _check_in_metric_lifecycle(state.telemetry):
+                yield
         finally:
-            check_in_stop.set()
-            check_in_metrics.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await check_in_metrics
             state.enrollment.stop_sweeping()
             state.kith.stop_flushing()
 

@@ -197,6 +197,27 @@ def test_periodic_check_in_task_emits_zeros_until_stopped(emitter):
     assert set(emitter.sent) == {"custom.muster.device.check_in:0|c"}
 
 
+def test_check_in_metric_lifecycle_cancels_background_task(emitter, monkeypatch):
+    import muster.api
+
+    stopped = asyncio.Event()
+
+    async def wait_for_cancellation(_emitter, _stop, _interval_s=60):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(muster.api, "_check_in_absence_ticks", wait_for_cancellation)
+
+    async def exercise():
+        async with muster.api._check_in_metric_lifecycle(emitter):
+            await asyncio.sleep(0)
+        assert stopped.is_set()
+
+    asyncio.run(exercise())
+
+
 def test_env_and_service_tags_ride_on_every_metric(monkeypatch):
     monkeypatch.setenv("DD_ENV", "prod")
     monkeypatch.setenv("DD_SERVICE", "muster")
