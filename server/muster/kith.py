@@ -1640,6 +1640,10 @@ class Kith:
         DEVICE causes, where losing one costs a timestamp and failing the
         request would be worse; this is for writes an OPERATOR causes, where a
         silent queue means the console says done and the handset disagrees.
+
+        ONE DEVICE WRITE COMES HERE TOO: the check-in report (`reported`). It is
+        too large to queue beside issuance in a bounded backlog, and refusing it
+        costs nothing the device's next check-in does not replace.
         """
         return self._read(do)
 
