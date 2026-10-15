@@ -20,6 +20,10 @@ on:
       - 'agent/android/**'
       - '.github/workflows/check.agent-android.yml'
   workflow_dispatch:
+  # Keep the server's source APK younger than the artifact retention window,
+  # even when the agent source has not changed.
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
