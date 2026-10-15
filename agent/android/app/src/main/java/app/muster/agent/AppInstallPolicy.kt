@@ -29,6 +29,13 @@ package app.muster.agent
  */
 object AppInstallPolicy {
 
+    /**
+     * The file this is read from, under the name muster serves it by and
+     * ConfigurationSteward writes it as. One spelling, so a device
+     * configured over the air holds the same file as one configured by hand.
+     */
+    const val FILE_NAME = "install-apps"
+
     /** muster's own package, which is the one case that ends this process. */
     const val OWN_PACKAGE = "app.muster.agent"
 

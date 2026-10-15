@@ -50,7 +50,7 @@ class WallpaperSteward(
 
     /** The `wallpaper` policy file, written by ConfigurationSteward. */
     fun configFile(): File = File(
-        context.createDeviceProtectedStorageContext().filesDir, "wallpaper"
+        context.createDeviceProtectedStorageContext().filesDir, WallpaperPolicy.FILE_NAME
     )
 
     /** Where the bytes are kept once fetched, or pushed by `muster` over adb. */

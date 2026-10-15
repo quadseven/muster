@@ -43,12 +43,12 @@ import java.io.File
  */
 class AppConfigSteward(private val context: Context) {
 
-    /** Where `muster app-config` pushes the file. */
+    /** Where `muster app-config` pushes the file, and where ConfigurationSteward writes it. */
     fun configFile(): File = File(
         // Device-protected, like everything else the boot path reads: this runs
         // at LOCKED_BOOT_COMPLETED, before first unlock, and a credential-
         // protected read there fails in a way that looks like an empty config.
-        context.createDeviceProtectedStorageContext().filesDir, "app-config"
+        context.createDeviceProtectedStorageContext().filesDir, AppConfigPolicy.FILE_NAME
     )
 
     /**

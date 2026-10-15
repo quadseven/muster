@@ -536,8 +536,8 @@ signing ceremony.
 
 ### The device fetches it
 
-An enrolled device asks muster for its own configuration at every boot, over the
-identity it already holds. No cable, no wireless debugging, no `run-as`, and
+An enrolled device asks muster for its own configuration at every boot and at
+every fifteen-minute check-in, over the identity it already holds. No cable, no wireless debugging, no `run-as`, and
 nothing that needs a debuggable build.
 
     device                                            muster
@@ -712,8 +712,9 @@ it, policy could be added remotely and only ever withdrawn with a cable. It is
 safe in the direction that matters, because the agent already treats an absent
 file as "leave this device as it is" rather than as "strip it".
 
-A name outside `restrictions`, `visible-apps` and `app-config` is refused by the
-device, not just omitted by the server. Anything else would make this a remote
+A name outside `ConfigurationPolicy.MANAGED` - `restrictions`, `visible-apps`,
+`app-config`, `wallpaper`, `install-apps`, `wipe` and `reboot` - is refused by
+the device, not just omitted by the server. Anything else would make this a remote
 write into the agent's private storage, and the first file it would be pointed
 at is `server-url` - the one that decides which control plane the device answers
 to.
@@ -737,11 +738,11 @@ still stop working the day the release-signed agent ships - `run-as` needs a
 debuggable package. That is now a route ending rather than the route ending.
 
 **A file placed by hand does not survive a successful fetch.** Those three
-commands write exactly the three names the control plane manages, so on an
-enrolled device the policy directory decides their contents and a name muster
-does not serve is removed at the next boot. That is what a reconciler is for; it
-also means a cable-placed file is temporary unless the same content is in the
-secret. muster refusing to answer at all leaves them alone.
+commands write three of the names the control plane manages, into the directory
+a fetch writes to, so on an enrolled device the policy directory decides their
+contents and a name muster does not serve is removed at the next fetch. That is
+what a reconciler is for; it also means a cable-placed file is temporary unless
+the same content is in the secret. muster refusing to answer at all leaves them alone.
 
 ### What is not proven
 
@@ -750,16 +751,21 @@ device attached. The server half is covered end to end by
 `server/tests/test_api.py` and `server/tests/test_policy.py`; the device's
 decisions are covered by JVM unit tests. What no test here can see is the boot
 receiver actually completing a network fetch inside its broadcast budget, the
-keystore signing a nonce, or the files landing where the stewards look. The
-first device to try it is the measurement.
+keystore signing a nonce, or the files landing on a real filesystem. That they
+land under the names the stewards read is guarded: each steward reads its file
+through its policy's `FILE_NAME`, `ConfigurationPolicyTest` checks those are
+exactly the names a fetch may write, and `test_cli.py` checks the cable writes
+the same names. The first device to try it is the measurement.
 
-**Policy reaches a device at its next boot**, not within minutes of the edit,
-and a failed fetch is not retried until the next one. There is no periodic
-fetch, and adding one needs a scheduler component and a device to prove its
-direct-boot behavior on. A device whose network is not yet up at
-`LOCKED_BOOT_COMPLETED` therefore keeps its existing configuration - correct,
-and the whole point - but will not pick up a change until it reboots or somebody
-presses sync on its status screen.
+**Policy reaches a device at its next check-in**, within about fifteen minutes
+of the edit on a powered, networked device, with nobody touching it.
+`CheckInJob` runs the same `BootPlan.STEPS` as boot, configuration included,
+and is scheduled both when the device becomes managed and at every boot. A
+device whose network is not yet up at `LOCKED_BOOT_COMPLETED` keeps its existing
+configuration - correct, and the whole point - and a check-in whose fetch did
+not reach muster asks to be woken when a network appears. That periodic path is
+wired and guarded by `BootPlanTest`, and not yet measured on a handset (see
+`state-of-play.md`).
 
 **The response is not signed.** The proof authenticates the *device* to muster,
 over a channel that survives Cloudflare (`proof.py`). Nothing authenticates

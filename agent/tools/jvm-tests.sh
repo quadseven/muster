@@ -121,13 +121,17 @@ done
 # `AppInstallPolicy.kt` did, and the harness reported OK the whole time.
 #
 # Only tests whose subject imports `android.*` are legitimately skipped here;
-# CI runs those. Anything else with no source at all is a typo in a filename.
+# CI runs those. So is a test whose subject is the manifest rather than a Kotlin
+# source (ProvisioningManifestTest): it opens `src/main/AndroidManifest.xml`
+# relative to Gradle's working directory, which this harness does not share.
+# Anything else with no source at all is a typo in a filename.
 for t in "$TST"/*Test.kt; do
   [ -e "$t" ] || continue
   subject="$SRC/$(basename "${t%Test.kt}").kt"
   for chosen in "${TESTS[@]}"; do
     [ "$chosen" = "$t" ] && continue 2
   done
+  grep -q '"src/main/AndroidManifest.xml"' "$t" && continue
   if [ ! -f "$subject" ]; then
     echo "::error::$(basename "$t") has no subject at $(basename "$subject") - it is not being run by anything" >&2
     exit 1
