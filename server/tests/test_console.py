@@ -757,3 +757,9 @@ def test_each_device_row_says_when_it_last_checked_in():
         "the window must come from what the device reported (muster#77)"
     )
     assert "CHECK_IN_WINDOW_MIN" not in html, "a page-wide constant is back"
+
+
+def test_device_staleness_uses_configured_period_multiplier():
+    html = _console_html()
+    assert "device.check_in_stale_after_periods" in html
+    assert "device.last_seen" in html and "stale" in html

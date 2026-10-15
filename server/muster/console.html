@@ -231,6 +231,7 @@
     border: 1.5px solid var(--charcoal);
   }
   .mark.recent { background: var(--charcoal); }
+  .mark.stale { border-style: dashed; }
   .facts { font-size: .85rem; color: var(--stone); margin-top: .25rem; }
   .facts span + span::before { content: "\00b7"; margin: 0 .45rem; }
   /* Wrap BETWEEN facts, never inside one: "Aug 23," and "2026" on separate
@@ -827,11 +828,16 @@
     if (cycle !== null) {
       const mark = element('span', 'mark', '');
       const recent = minutesSince(device.last_seen) <= cycle;
+      const stale = isStale(device);
       if (recent) mark.classList.add('recent');
+      if (stale) mark.classList.add('stale');
       mark.title = recent
         ? 'Inside its ' + Math.round(device.check_in_interval_s / 60)
           + '-minute check-in cycle'
-        : 'Quiet since ' + exactTime(device.last_seen);
+        : stale
+          ? 'Stale: no check-in for more than '
+            + device.check_in_stale_after_periods + ' check-in periods'
+          : 'Quiet since ' + exactTime(device.last_seen);
       nameEl.append(mark);
     }
     nameEl.append(element('span', '', displayName(device)));
@@ -844,7 +850,9 @@
       element('div', 'fp', device.fingerprint),
       element('div', 'muted shape', device.role ? 'role: ' + device.role : 'no role'),
     );
-    const status = element('div', 'device-status', deviceStatus(device));
+    const stale = isStale(device);
+    const status = element('div', 'device-status', stale
+      ? 'Stale - ' + deviceStatus(device) : deviceStatus(device));
     status.classList.add('muted');
     left.append(status, deviceFacts(device));
 
@@ -917,6 +925,13 @@
     if (!seconds) return null;
     const minutes = seconds / 60;
     return minutes + Math.max(5, minutes / 3);
+  }
+
+  function isStale(device) {
+    const seconds = device.check_in_interval_s;
+    if (!seconds) return false;
+    return minutesSince(device.last_seen) > seconds / 60
+      * (device.check_in_stale_after_periods || 3);
   }
 
   function minutesSince(iso) {
