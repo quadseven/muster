@@ -879,6 +879,13 @@ is the one thing nobody spots in a log. The agent says so instead:
     visible-apps: HIDING WITHHELD - ...
     visible-apps: would have hidden [...]
 
+**Absent packages do not withhold hiding.** An allowlist is kith-wide, and a
+package muster is supposed to deliver can be named before it arrives without
+breaking visibility on devices that do not have it yet (muster#143). An absent
+package (one with no launcher entry) is skipped as a no-op rather than
+withholding the entire plan, while still being reported as a refusal on the
+status screen so typos remain visible.
+
 Reconciling goes **both ways**. A package deleted from the file is hidden at the
 next boot; a package added back is unhidden. Policy that only hides is a
 ratchet, and the reverse gear on a ratchet a Device Owner is holding is a
