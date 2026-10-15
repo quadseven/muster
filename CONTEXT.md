@@ -142,7 +142,7 @@ and does.
 authorization.** A pairing code answers "should this stranger get a
 certificate". A device signing a nonce with a key muster has already vouched for
 is not a stranger - so demanding it enroll again is asking for a weaker proof
-than the one it is holding. `POST /v1/device/renew`.
+than the one it is holding. `POST /v1/enroll/renew`.
 
 **Renewing is not rotating.** The CSR must carry the SAME public key; a new key
 is a new `key_id`, and `key_id` is what every policy scope, role and kith row is
