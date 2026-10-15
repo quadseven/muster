@@ -125,6 +125,15 @@ jobs:
             echo "::error::no successful agent build on main - there is no APK to serve, and an image without one publishes a server whose provisioning QR points at a 404"
             exit 1
           fi
+          artifacts="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts"
+          artifact_state="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                        -H "Accept: application/vnd.github+json" \
+                        "$artifacts?per_page=100" \
+                      | python3 -c 'import json,sys; a=json.load(sys.stdin)["artifacts"]; ok=[x for x in a if x["name"].startswith("muster-agent-") and x["name"].endswith("apk") and not x["expired"] and x["size_in_bytes"] > 0]; print("present" if ok else "missing")')"
+          if [ "$artifact_state" != "present" ]; then
+            echo "::error::agent APK artifact is missing or expired for run $run_id; run the agent workflow to produce a fresh artifact"
+            exit 1
+          fi
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           echo "::notice::baking the APK from agent build run $run_id"
 
