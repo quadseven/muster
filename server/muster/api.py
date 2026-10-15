@@ -80,6 +80,7 @@ fingerprint, which means they were looking at the attacker's device.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -118,6 +119,17 @@ from muster.enroll import (
     key_id,
 )
 from muster import telemetry
+
+CHECK_IN_STALE_AFTER_PERIODS = int(
+    os.environ.get("MUSTER_CHECK_IN_STALE_AFTER_PERIODS", "3")
+)
+CHECK_IN_METRIC_INTERVAL_S = float(
+    os.environ.get("MUSTER_CHECK_IN_METRIC_INTERVAL_S", "60")
+)
+if CHECK_IN_STALE_AFTER_PERIODS < 1:
+    raise ValueError("MUSTER_CHECK_IN_STALE_AFTER_PERIODS must be at least 1")
+if CHECK_IN_METRIC_INTERVAL_S <= 0:
+    raise ValueError("MUSTER_CHECK_IN_METRIC_INTERVAL_S must be positive")
 
 # Which refusal maps to which status. Written out rather than defaulted, because
 # the difference matters to a device deciding whether to retry: 429 and 410 are
@@ -559,6 +571,7 @@ def _proven_device(
         )
 
     state.telemetry.count("proof.verified", tags=["verdict:ok"])
+    state.telemetry.check_in()
     proven = _key_id_of(certificate_pem.encode())
     # WHICH CERTIFICATE, NOT ONLY WHICH DEVICE (muster#66). After a renewal
     # the previous certificate stays valid for months, so "this key proved" is
@@ -792,6 +805,36 @@ async def _ocsp_response(
     )
 
 
+async def _check_in_absence_ticks(
+    emitter: telemetry.Telemetry,
+    stop: asyncio.Event,
+    interval_s: float = CHECK_IN_METRIC_INTERVAL_S,
+) -> None:
+    """Keep the DogStatsD check-in count series present during quiet periods."""
+    if interval_s <= 0:
+        raise ValueError("check-in metric interval must be positive")
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_s)
+            return
+        except TimeoutError:
+            emitter.check_in_absence_tick()
+
+
+@contextlib.asynccontextmanager
+async def _check_in_metric_lifecycle(emitter: telemetry.Telemetry):
+    """Run and stop the periodic check-in metric task with the application."""
+    stop = asyncio.Event()
+    task = asyncio.create_task(_check_in_absence_ticks(emitter, stop))
+    try:
+        yield
+    finally:
+        stop.set()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app(state: State) -> FastAPI:
     # NO INTERACTIVE API BROWSER, and this is a security decision rather than a
     # tidying one. FastAPI's /docs and /redoc pages load their JavaScript from a
@@ -817,7 +860,8 @@ def create_app(state: State) -> FastAPI:
         state.kith.start_flushing()
         state.enrollment.start_sweeping()
         try:
-            yield
+            async with _check_in_metric_lifecycle(state.telemetry):
+                yield
         finally:
             state.enrollment.stop_sweeping()
             state.kith.stop_flushing()
@@ -2328,6 +2372,7 @@ def _member(member: kith_store.Member) -> dict:
         ),
         # What the device reported, or null (muster#77).
         "check_in_interval_s": member.device.check_in_interval_s,
+        "check_in_stale_after_periods": CHECK_IN_STALE_AFTER_PERIODS,
         # WHAT IT IS FOR (muster#70). Absent until now, so a console could show
         # a fleet of devices and not one of them said which policy it was on -
         # and the answer is the difference between a handset that carries a

@@ -7,6 +7,7 @@ was added to observe - and both are the kind that ship green.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import socket
@@ -169,6 +170,52 @@ def test_tags_are_appended_in_dogstatsd_form(emitter):
     assert emitter.sent == [
         "custom.muster.enroll.vouch.refused:1|c|#reason:fingerprint-mismatch"
     ]
+
+
+def test_check_in_absence_tick_emits_an_explicit_zero(emitter):
+    emitter.check_in_absence_tick()
+    assert emitter.sent == ["custom.muster.device.check_in:0|c"]
+
+
+def test_successful_check_in_increments_the_same_series(emitter):
+    emitter.check_in()
+    assert emitter.sent == ["custom.muster.device.check_in:1|c"]
+
+
+def test_periodic_check_in_task_emits_zeros_until_stopped(emitter):
+    from muster.api import _check_in_absence_ticks
+
+    async def exercise():
+        stop = asyncio.Event()
+        task = asyncio.create_task(_check_in_absence_ticks(emitter, stop, 0.01))
+        await asyncio.sleep(0.035)
+        stop.set()
+        await task
+
+    asyncio.run(exercise())
+    assert len(emitter.sent) >= 2
+    assert set(emitter.sent) == {"custom.muster.device.check_in:0|c"}
+
+
+def test_check_in_metric_lifecycle_cancels_background_task(emitter, monkeypatch):
+    import muster.api
+
+    stopped = asyncio.Event()
+
+    async def wait_for_cancellation(_emitter, _stop, _interval_s=60):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(muster.api, "_check_in_absence_ticks", wait_for_cancellation)
+
+    async def exercise():
+        async with muster.api._check_in_metric_lifecycle(emitter):
+            await asyncio.sleep(0)
+        assert stopped.is_set()
+
+    asyncio.run(exercise())
 
 
 def test_env_and_service_tags_ride_on_every_metric(monkeypatch):

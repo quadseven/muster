@@ -1890,6 +1890,7 @@ def test_a_renewal_is_one_device_with_two_certificates():
     devices = client.get("/v1/kith", cookies=ADMIN).json()["devices"]
     assert len(devices) == 1, devices
     assert devices[0]["certificates"] == 2
+    assert devices[0]["check_in_stale_after_periods"] == 3
 
     detail = client.get(f"/v1/kith/{devices[0]['key_id']}", cookies=ADMIN).json()
     assert len(detail["certificates"]) == 2
@@ -2035,6 +2036,7 @@ def test_a_proof_of_possession_moves_last_seen():
     after = client.get("/v1/kith", cookies=ADMIN).json()["devices"][0]
     assert after["last_seen"] > after["first_seen"], "a proof did not move last_seen"
     assert after["first_seen"] == device["first_seen"]
+    assert "custom.muster.device.check_in:1|c" in state.telemetry.sent
 
 
 def test_fetching_configuration_moves_last_seen_too(tmp_path):

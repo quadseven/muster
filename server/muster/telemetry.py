@@ -152,6 +152,14 @@ class Telemetry:
     def count(self, name: str, value: int = 1, tags: list[str] | None = None) -> None:
         self._send(f"{PREFIX}.{name}:{value}|c", tags)
 
+    def check_in(self) -> None:
+        """Count one successful device proof on the absence-monitor series."""
+        self.count("device.check_in")
+
+    def check_in_absence_tick(self) -> None:
+        """Send an explicit zero so a quiet interval remains observable."""
+        self.count("device.check_in", value=0)
+
     def gauge(self, name: str, value: float, tags: list[str] | None = None) -> None:
         self._send(f"{PREFIX}.{name}:{value}|g", tags)
 

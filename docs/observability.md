@@ -39,6 +39,7 @@ agent at `status.hostIP:8125`.
     ca.issue.duration               ms, emitted even when signing raises
     proof.verified                  #verdict:ok
     proof.refused                   #verdict:<why>
+    device.check_in                 successful signed device check-ins
     device.config.served            a device fetched its own configuration
     device.config.refused           #reason:no-source|unreadable
     device.diagnostics.received     a proven device uploaded its check-in report
@@ -99,6 +100,21 @@ bearer values and private-key blocks, and caps each line. The route caps the
 bundle at 16 lines and 4 KiB and accepts at most one report per device per
 minute. Search Datadog logs for `message:"device diagnostics received"` and
 facet on `key_id` or `diagnostics` to inspect a device's report.
+
+`device.check_in` is the fleet check-in count used for absence alerting. Each
+successful device proof increments it, and the application emits an explicit
+zero count every `MUSTER_CHECK_IN_METRIC_INTERVAL_S` seconds (default 60), so a
+quiet interval remains a zero-valued series instead of disappearing. Configure
+a Datadog query alert using [the monitor definition](check-in-absence-monitor.json):
+`sum(last_5m):sum:custom.muster.device.check_in{service:muster}.as_count() < 1`
+with `notify_no_data: false`. Tune the `last_5m` window to change how long
+traffic may be absent before alerting; tune the query comparison and its
+`critical` threshold to set the minimum expected check-ins. The metric has no
+device tags, so its cardinality does not grow with the fleet.
+
+The console marks a device stale after `MUSTER_CHECK_IN_STALE_AFTER_PERIODS`
+reported check-in periods (default 3). This is a positive integer and is
+returned with the device data, so the browser and server use the same setting.
 
 **`device.report.concerns` is the one to alert on for installs (muster#146).**
 Diagnostics are logged and gone; the check-in report is STORED, newest per
