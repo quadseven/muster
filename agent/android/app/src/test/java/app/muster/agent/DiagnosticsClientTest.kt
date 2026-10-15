@@ -12,7 +12,7 @@ class DiagnosticsClientTest {
         override fun post(path: String, body: String): EnrollmentClient.Transport.Reply {
             paths += path
             bodies += body
-            return if (path == DiagnosticsClient.CHALLENGE_PATH) {
+            return if (path == ProvenPost.CHALLENGE_PATH) {
                 EnrollmentClient.Transport.Reply(201, "{\"nonce\":\"challenge\"}")
             } else {
                 EnrollmentClient.Transport.Reply(202, "{\"accepted\":true}")
@@ -40,9 +40,9 @@ class DiagnosticsClientTest {
 
         val sent = DiagnosticsClient(transport, identity).send(report)
 
-        assertEquals(DiagnosticsClient.Sent.Accepted, sent)
+        assertEquals(ProvenPost.Sent.Accepted, sent)
         assertEquals(
-            listOf(DiagnosticsClient.CHALLENGE_PATH, DiagnosticsClient.DIAGNOSTICS_PATH),
+            listOf(ProvenPost.CHALLENGE_PATH, DiagnosticsClient.DIAGNOSTICS_PATH),
             transport.paths,
         )
         assertEquals(listOf("challenge"), identity.signed)
@@ -62,7 +62,7 @@ class DiagnosticsClientTest {
         )
 
         assertEquals(
-            DiagnosticsClient.Sent.Accepted,
+            ProvenPost.Sent.Accepted,
             DiagnosticsClient(transport, FakeIdentity()).send(report),
         )
         val lines = JSONObject(transport.bodies.last()).getJSONArray("diagnostics")

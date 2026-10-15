@@ -255,6 +255,20 @@ class BootPlanTest {
         }
     }
 
+    @Test
+    fun everyCheckInThatRunsThePlanReportsWhatItDid() {
+        // muster#146. A report nothing sends is the same as no report: the
+        // console stays as blind as it was. Both places that run the plan and
+        // have a network to send over must send one, after the steps.
+        for (runner in listOf("CheckInJob.kt", "StatusActivity.kt")) {
+            val code = readCode(runner)
+            val steps = code.indexOf("BootPlan.STEPS")
+            val report = code.indexOf("ReportSteward(this).send(steps)")
+            assertTrue("$runner must send the check-in report", report >= 0)
+            assertTrue("$runner must report after running the steps", report > steps)
+        }
+    }
+
     /**
      * A source with its comment lines dropped, so a guard is satisfied by code
      * and never by a sentence that mentions the code.

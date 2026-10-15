@@ -31,6 +31,8 @@ import java.io.File
 class AppInstallSteward(
     private val context: Context,
     private val clientFactory: () -> AssetClient? = { defaultClient(context) },
+    private val ledgerFactory: () -> InstallLedger = { InstallLedger(context) },
+    private val clock: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
 
     data class Outcome(
@@ -47,6 +49,8 @@ class AppInstallSteward(
         val replaced: List<String> = emptyList(),
         /** A signer mismatch the policy did not authorize muster to resolve. */
         val weldedShut: List<String> = emptyList(),
+        /** Failed recently, so not downloaded again yet (muster#146). */
+        val backingOff: List<String> = emptyList(),
         val inert: String? = null,
     ) : StepOutcome {
 
@@ -55,6 +59,7 @@ class AppInstallSteward(
             weldedShut.forEach { add("WELDED $it") }
             couldNotFetch.forEach { add("COULD_NOT_FETCH $it") }
             didNotTake.forEach { add("DID_NOT_TAKE $it") }
+            backingOff.forEach { add("BACKING_OFF $it") }
             inert?.let { add("nothing enforced - $it") }
             refused.forEach { add("REFUSED '${it.line}' - ${it.why}") }
         }
@@ -66,9 +71,21 @@ class AppInstallSteward(
                 if (substituted.isNotEmpty()) append(" SUBSTITUTED=$substituted")
                 if (couldNotFetch.isNotEmpty()) append(" COULD_NOT_FETCH=$couldNotFetch")
                 if (didNotTake.isNotEmpty()) append(" DID_NOT_TAKE=$didNotTake")
+                if (backingOff.isNotEmpty()) append(" BACKING_OFF=${backingOff.size}")
                 if (refused.isNotEmpty()) append(" REFUSED=${refused.map { it.line }}")
             }
         }
+    }
+
+    /** What one pass found, collected package by package. */
+    private class Tally {
+        val installed = mutableListOf<String>()
+        val couldNotFetch = mutableListOf<String>()
+        val substituted = mutableListOf<String>()
+        val didNotTake = mutableListOf<String>()
+        val replaced = mutableListOf<String>()
+        val weldedShut = mutableListOf<String>()
+        val backingOff = mutableListOf<String>()
     }
 
     /** The `install-apps` policy file, written by ConfigurationSteward. */
@@ -96,133 +113,183 @@ class AppInstallSteward(
             Log.w(TAG, "install-apps refused: ${refusal.line} - ${refusal.why}")
         }
 
-        val installed = mutableListOf<String>()
-        val couldNotFetch = mutableListOf<String>()
-        val substituted = mutableListOf<String>()
-        val didNotTake = mutableListOf<String>()
-        val replaced = mutableListOf<String>()
-        val weldedShut = mutableListOf<String>()
-
-        for (step in plan.install) {
-            val want = step.wanted
-            when (val fetched = fetch(want.asset, want.digest)) {
-                is AssetClient.Fetched.Asset -> {
-                    // THE PLATFORM DECIDES, AND IT SAYS WHY.
-                    //
-                    // Deciding "this cannot install" ourselves reimplements
-                    // Android's signature logic and gets v3 key rotation wrong,
-                    // where a rotated key carries a lineage proving continuity
-                    // and installs in place. And inferring "it refused because
-                    // of the signer" from "it refused, and the signers differ"
-                    // misdiagnoses every OTHER refusal - a full disk, a
-                    // transient package-manager error - as a signature
-                    // conflict. The action that follows deletes an
-                    // application's data, so the diagnosis has to come from the
-                    // platform rather than from a guess that fits.
-                    InstallReport.forget(want.packageName)
-                    var took = commit(want.packageName, fetched.bytes) &&
-                        installTook(want.packageName, want.versionCode)
-
-                    var signer = Signer.UNKNOWN
-                    if (!took && want.replaceIfSignerDiffers) {
-                        // ASKED AGAIN HERE, not before the commit. The earlier
-                        // reading would be up to a minute stale by now, and
-                        // anything else on the device - Play, a system update -
-                        // may have replaced the package in between. Removing on
-                        // a stale reading deletes an app whose data was
-                        // preservable.
-                        signer = signerCheck(want.packageName, fetched.bytes)
-                        val platformSaysSignature = InstallReport.refusedForSignature(want.packageName)
-                        if (signer == Signer.DIFFERS && platformSaysSignature == true) {
-                            if (uninstall(want.packageName)) {
-                                InstallReport.forget(want.packageName)
-                                took = commit(want.packageName, fetched.bytes) &&
-                                    installTook(want.packageName, want.versionCode)
-                                if (took) replaced.add(want.packageName)
-                                else didNotTake.add(
-                                    "${want.packageName}: removed and would still not install"
-                                )
-                            } else {
-                                didNotTake.add("${want.packageName}: could not be removed")
-                            }
-                        }
-                    } else if (!took) {
-                        signer = signerCheck(want.packageName, fetched.bytes)
-                    }
-
-                    if (took) {
-                        installed.add(want.packageName)
-                        Log.i(TAG, "install-apps: ${want.packageName} installed (${step.why})")
-                    } else if (didNotTake.none { it.startsWith("${want.packageName}:") }) {
-                        if (signer == Signer.DIFFERS) {
-                            weldedShut.add(
-                                "${want.packageName}: the installed copy is signed by a " +
-                                    "different key, so ${want.asset} cannot install over it. " +
-                                    "Add 'replace-if-signer-differs' to the policy line to " +
-                                    "remove it first - THAT DELETES ITS DATA - or wipe the device."
-                            )
-                        } else {
-                            didNotTake.add(want.packageName)
-                        }
-                    }
-                }
-                is AssetClient.Fetched.DigestMismatch -> {
-                    // LOUD, AND NOTHING IS INSTALLED. Something in the path
-                    // served bytes the policy did not name, and this is the
-                    // one place where acting anyway would be catastrophic.
-                    Log.e(
-                        TAG,
-                        "install-apps: SUBSTITUTED ${want.asset} - expected " +
-                            "${fetched.expected}, got ${fetched.actual}",
-                    )
-                    substituted.add(
-                        "${want.packageName}: ${want.asset} expected sha256 " +
-                            "${fetched.expected.take(12)}, bytes were ${fetched.actual.take(12)}"
-                    )
-                }
-                else -> {
-                    // Unreachable, refused, not enrolled. The device keeps what
-                    // it already has, which is CONTEXT.md's second rule.
-                    Log.w(TAG, "install-apps: could not fetch ${want.asset}: $fetched")
-                    couldNotFetch.add("${want.packageName}: $fetched")
-                }
-            }
-        }
+        val ledger = ledgerFactory()
+        ledger.keepOnly(desired.wanted.map { it.digest }.toSet())
+        val tally = Tally()
+        for (step in plan.install) attempt(step, ledger, tally)
 
         return Outcome(
-            installed = installed,
+            installed = tally.installed,
             current = plan.current,
             refused = plan.refused,
-            couldNotFetch = couldNotFetch,
-            substituted = substituted,
-            didNotTake = didNotTake,
-            replaced = replaced,
-            weldedShut = weldedShut,
+            couldNotFetch = tally.couldNotFetch,
+            substituted = tally.substituted,
+            didNotTake = tally.didNotTake,
+            replaced = tally.replaced,
+            weldedShut = tally.weldedShut,
+            backingOff = tally.backingOff,
         )
     }
 
     /**
-     * What each named package is at now, or absent if it is not installed.
+     * Every package the install file names, at the version the platform
+     * reports NOW, null where it is not installed.
      *
-     * ASKED ONLY ABOUT PACKAGES THE POLICY NAMES, rather than enumerating
-     * everything. `getPackageInfo` on a name this device cannot see throws
-     * NameNotFoundException, which is the same answer as "not installed" and is
-     * what the plan wants; enumerating would additionally run into package
-     * visibility filtering, which a Device Owner is NOT exempt from.
+     * For the check-in report (muster#146), and read after the install steps
+     * rather than taken from their outcomes: the platform is the answer that
+     * cannot be stale, and an install that landed after its step gave up
+     * waiting is still an install.
      */
+    fun managedVersions(): Map<String, Long?> {
+        val desired = AppInstallPolicy.read(configFile().takeIf { it.isFile }?.readText())
+        val have = installedVersions(desired)
+        return desired.wanted.associate { it.packageName to have[it.packageName] }
+    }
+
     /**
-     * Does the installed copy carry a different signing certificate than these
-     * bytes? Null when there is nothing installed to compare against.
+     * One package: decide whether to download it at all, then do.
      *
-     * THE DIGEST OF THE CERTIFICATE, not the certificate object. Two `Signature`
-     * instances for identical bytes are not equal by identity, and comparing
-     * `toCharsString()` works but moves megabytes through a string.
-     *
-     * This is the check that turns an impossible install into a stated refusal.
-     * INSTALL_FAILED_UPDATE_INCOMPATIBLE is not transient - no number of
-     * retries makes a different key acceptable - so knowing BEFORE committing
-     * is the difference between a clear message and a download loop.
+     * DECIDED BEFORE THE DOWNLOAD (muster#146). The same bytes failing at every
+     * check-in cost a full download each time; `InstallGate` refuses bytes
+     * already shown to carry an incompatible signer, and waits out a backoff
+     * on bytes that failed for any other reason.
      */
+    private fun attempt(step: AppInstallPolicy.Install, ledger: InstallLedger, tally: Tally) {
+        val want = step.wanted
+        val now = clock()
+        val decision = InstallGate.decide(
+            want.replaceIfSignerDiffers,
+            installedSigners(want.packageName),
+            ledger.signers(want.digest),
+            ledger.attempts(want.digest),
+            now,
+        )
+        when (decision) {
+            InstallGate.Decision.Incompatible -> {
+                Log.w(
+                    TAG,
+                    "install-apps: ${want.packageName} refused before downloading - " +
+                        InstallGate.INCOMPATIBLE,
+                )
+                tally.weldedShut.add(InstallGate.incompatible(want.packageName, want.asset))
+            }
+            is InstallGate.Decision.Wait ->
+                tally.backingOff.add(InstallGate.waiting(want.packageName, decision.attempts, now))
+            InstallGate.Decision.Fetch -> fetchAndInstall(step, ledger, tally)
+        }
+    }
+
+    private fun fetchAndInstall(step: AppInstallPolicy.Install, ledger: InstallLedger, tally: Tally) {
+        val want = step.wanted
+        when (val fetched = fetch(want.asset, want.digest)) {
+            is AssetClient.Fetched.Asset -> install(step, fetched.bytes, ledger, tally)
+            is AssetClient.Fetched.DigestMismatch -> {
+                // LOUD, AND NOTHING IS INSTALLED. Something in the path
+                // served bytes the policy did not name, and this is the
+                // one place where acting anyway would be catastrophic.
+                Log.e(
+                    TAG,
+                    "install-apps: SUBSTITUTED ${want.asset} - expected " +
+                        "${fetched.expected}, got ${fetched.actual}",
+                )
+                tally.substituted.add(
+                    "${want.packageName}: ${want.asset} expected sha256 " +
+                        "${fetched.expected.take(12)}, bytes were ${fetched.actual.take(12)}"
+                )
+                // BACKED OFF like a failed install: the bytes were downloaded
+                // in full, and the same path will most likely serve the same
+                // wrong ones next time.
+                ledger.failed(want.digest, clock())
+            }
+            else -> {
+                // Unreachable, refused, not enrolled. The device keeps what
+                // it already has, which is CONTEXT.md's second rule. NOT
+                // backed off: nothing was downloaded, and a network that comes
+                // back should be used at once.
+                Log.w(TAG, "install-apps: could not fetch ${want.asset}: $fetched")
+                tally.couldNotFetch.add("${want.packageName}: $fetched")
+            }
+        }
+    }
+
+    private fun install(
+        step: AppInstallPolicy.Install,
+        bytes: ByteArray,
+        ledger: InstallLedger,
+        tally: Tally,
+    ) {
+        val want = step.wanted
+        // THE PLATFORM DECIDES, AND IT SAYS WHY.
+        //
+        // Deciding "this cannot install" ourselves reimplements Android's
+        // signature logic and gets v3 key rotation wrong, where a rotated key
+        // carries a lineage proving continuity and installs in place. And
+        // inferring "it refused because of the signer" from "it refused, and
+        // the signers differ" misdiagnoses every OTHER refusal - a full disk, a
+        // transient package-manager error - as a signature conflict. The action
+        // that follows deletes an application's data, so the diagnosis has to
+        // come from the platform rather than from a guess that fits.
+        InstallReport.forget(want.packageName)
+        if (commitAndWait(want, bytes)) return succeeded(step, ledger, tally)
+
+        // ASKED HERE, not before the commit. An earlier reading would be up to
+        // a minute stale by now, and anything else on the device - Play, a
+        // system update - may have replaced the package in between. Removing
+        // on a stale reading deletes an app whose data was preservable.
+        val reading = signerCheck(want.packageName, bytes)
+        // REMEMBERED, so the next check-in can refuse these bytes without
+        // downloading them again (muster#146). The digest pins the bytes, so
+        // their signer cannot change under it.
+        if (reading.signer == Signer.DIFFERS) ledger.rememberSigners(want.digest, reading.incoming)
+        val platformSaysSignature = InstallReport.refusedForSignature(want.packageName) == true
+        if (want.replaceIfSignerDiffers && reading.signer == Signer.DIFFERS && platformSaysSignature) {
+            return replace(step, bytes, ledger, tally)
+        }
+        ledger.failed(want.digest, clock())
+        when {
+            reading.signer != Signer.DIFFERS -> tally.didNotTake.add(want.packageName)
+            // The flag is already on the line and the platform did not name the
+            // signer as its reason, so nothing was removed - and the advice in
+            // the refusal below, to add the flag, would be wrong here.
+            want.replaceIfSignerDiffers -> tally.didNotTake.add(
+                "${want.packageName}: signed by a different key, but the platform " +
+                    "did not give that as its reason, so the installed copy was kept"
+            )
+            else -> tally.weldedShut.add(InstallGate.incompatible(want.packageName, want.asset))
+        }
+    }
+
+    /** Remove the installed copy and install again. Reached only by the opt-in. */
+    private fun replace(
+        step: AppInstallPolicy.Install,
+        bytes: ByteArray,
+        ledger: InstallLedger,
+        tally: Tally,
+    ) {
+        val name = step.packageName
+        if (!uninstall(name)) {
+            ledger.failed(step.wanted.digest, clock())
+            tally.didNotTake.add("$name: could not be removed")
+            return
+        }
+        InstallReport.forget(name)
+        if (commitAndWait(step.wanted, bytes)) {
+            tally.replaced.add(name)
+            return succeeded(step, ledger, tally)
+        }
+        ledger.failed(step.wanted.digest, clock())
+        tally.didNotTake.add("$name: removed and would still not install")
+    }
+
+    private fun succeeded(step: AppInstallPolicy.Install, ledger: InstallLedger, tally: Tally) {
+        ledger.succeeded(step.wanted.digest)
+        tally.installed.add(step.packageName)
+        Log.i(TAG, "install-apps: ${step.packageName} installed (${step.why})")
+    }
+
+    private fun commitAndWait(want: AppInstallPolicy.Wanted, bytes: ByteArray): Boolean =
+        commit(want.packageName, bytes) && installTook(want.packageName, want.versionCode)
+
     /**
      * What comparing the installed signer to the fetched one established.
      *
@@ -234,6 +301,9 @@ class AppInstallSteward(
      * it costs the app.
      */
     private enum class Signer { SAME, DIFFERS, UNKNOWN, NOTHING_INSTALLED }
+
+    /** The verdict, and the fetched bytes' signer lineage it was reached with. */
+    private data class SignerReading(val signer: Signer, val incoming: Set<String>)
 
     /**
      * Did the install actually land, at the version asked for?
@@ -258,48 +328,73 @@ class AppInstallSteward(
         return false
     }
 
-    private fun signerCheck(packageName: String, bytes: ByteArray): Signer {
-        val pm = context.packageManager
-        val installed = try {
-            pm.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
-        } catch (e: PackageManager.NameNotFoundException) {
-            return Signer.NOTHING_INSTALLED
+    /**
+     * Does the installed copy carry a signer these bytes cannot update?
+     *
+     * THE DIGEST OF THE CERTIFICATE, not the certificate object. Two `Signature`
+     * instances for identical bytes are not equal by identity, and comparing
+     * `toCharsString()` works but moves megabytes through a string. The
+     * comparison itself is `InstallGate.compatible`, which reads the fetched
+     * bytes' whole lineage so a rotated key is not taken for a different one.
+     */
+    private fun signerCheck(packageName: String, bytes: ByteArray): SignerReading {
+        val installed = installedSigners(packageName)
+            ?: return SignerReading(Signer.NOTHING_INSTALLED, emptySet())
+        val incoming = archiveLineage(packageName, bytes)
+        val signer = when (InstallGate.compatible(installed, incoming)) {
+            null -> Signer.UNKNOWN.also {
+                Log.e(TAG, "install-apps: $packageName has no readable signer on one side")
+            }
+            true -> Signer.SAME
+            false -> Signer.DIFFERS.also {
+                Log.e(
+                    TAG,
+                    "install-apps: $packageName installed signer ${installed.first().take(12)} " +
+                        "is not in the lineage of ${incoming.first().take(12)}",
+                )
+            }
         }
+        return SignerReading(signer, incoming)
+    }
+
+    /** The installed copy's signer digests: null if not installed, empty if unreadable. */
+    private fun installedSigners(packageName: String): Set<String>? {
+        val installed = try {
+            context.packageManager.getPackageInfo(
+                packageName, PackageManager.GET_SIGNING_CERTIFICATES
+            )
+        } catch (e: PackageManager.NameNotFoundException) {
+            return null
+        } catch (e: Exception) {
+            // UNREADABLE, NOT ABSENT. This now runs before every download, and
+            // throwing here would end the whole step - every other package's
+            // install with it - over a question whose honest answer is
+            // "could not tell", which `InstallGate` never reads as a refusal.
+            Log.e(TAG, "install-apps: cannot read the installed signer of $packageName", e)
+            return emptySet()
+        }
+        return digests(installed.signingInfo?.apkContentsSigners)
+    }
+
+    /** The signer lineage of fetched bytes, or empty when it cannot be read. */
+    private fun archiveLineage(packageName: String, bytes: ByteArray): Set<String> {
         // A UNIQUE FILE. A fixed name is overwritten by a second package's
         // check running in the same pass, and both then read bytes belonging to
         // neither - which resolves to UNKNOWN and silently withholds an install.
         val staged = File.createTempFile("signer-check-", ".apk", context.cacheDir)
         return try {
             staged.writeBytes(bytes)
-            val incoming = pm.getPackageArchiveInfo(
+            val incoming = context.packageManager.getPackageArchiveInfo(
                 staged.absolutePath,
                 PackageManager.GET_SIGNING_CERTIFICATES,
-            ) ?: run {
-                // UNREADABLE IS NOT "THE SAME". Returning false here would let
-                // an install proceed on the assumption that a comparison
-                // succeeded when it never ran.
+            )
+            // UNREADABLE IS NOT "THE SAME". An empty answer makes the
+            // comparison UNKNOWN rather than letting it pass as one that ran.
+            if (incoming == null) {
                 Log.e(TAG, "install-apps: could not read the signer of the fetched $packageName")
-                return Signer.UNKNOWN
-            }
-            fun digests(info: android.content.pm.PackageInfo): Set<String> {
-                val signers = info.signingInfo?.apkContentsSigners ?: return emptySet()
-                val sha = java.security.MessageDigest.getInstance("SHA-256")
-                return signers.map { s ->
-                    sha.digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
-                }.toSet()
-            }
-            val here = digests(installed)
-            val there = digests(incoming)
-            if (here.isEmpty() || there.isEmpty()) {
-                Log.e(TAG, "install-apps: $packageName has no readable signer on one side")
-                return Signer.UNKNOWN
-            }
-            if (here == there) Signer.SAME else Signer.DIFFERS.also {
-                Log.e(
-                    TAG,
-                    "install-apps: $packageName installed signer ${here.first().take(12)} " +
-                        "does not match ${there.first().take(12)}",
-                )
+                emptySet()
+            } else {
+                lineage(incoming)
             }
         } catch (e: Exception) {
             // UNKNOWN, NOT DIFFERS, AND THE DIFFERENCE IS AN APP'S DATA.
@@ -308,10 +403,31 @@ class AppInstallSteward(
             // that authorizes deletion. Failing towards DIFFERS would remove an
             // app on no evidence that anything differed at all.
             Log.e(TAG, "install-apps: comparing signers for $packageName failed", e)
-            Signer.UNKNOWN
+            emptySet()
         } finally {
             staged.delete()
         }
+    }
+
+    /**
+     * Every key these bytes can claim continuity from: the rotation history
+     * for a single signer, or the signer set itself when there are several
+     * (which cannot rotate).
+     */
+    private fun lineage(info: android.content.pm.PackageInfo): Set<String> {
+        val signing = info.signingInfo ?: return emptySet()
+        return digests(
+            if (signing.hasMultipleSigners()) signing.apkContentsSigners
+            else signing.signingCertificateHistory
+        )
+    }
+
+    private fun digests(signers: Array<android.content.pm.Signature>?): Set<String> {
+        if (signers == null) return emptySet()
+        val sha = java.security.MessageDigest.getInstance("SHA-256")
+        return signers.map { s ->
+            sha.digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
+        }.toSet()
     }
 
     /**
@@ -355,6 +471,15 @@ class AppInstallSteward(
         }
     }
 
+    /**
+     * What each named package is at now, or absent if it is not installed.
+     *
+     * ASKED ONLY ABOUT PACKAGES THE POLICY NAMES, rather than enumerating
+     * everything. `getPackageInfo` on a name this device cannot see throws
+     * NameNotFoundException, which is the same answer as "not installed" and is
+     * what the plan wants; enumerating would additionally run into package
+     * visibility filtering, which a Device Owner is NOT exempt from.
+     */
     private fun installedVersions(desired: AppInstallPolicy.Desired): Map<String, Long> {
         val packages = context.packageManager
         val versions = LinkedHashMap<String, Long>()
