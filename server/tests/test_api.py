@@ -4154,12 +4154,13 @@ def test_other_proof_routes_keep_the_enrollment_guidance_for_lapsed_certs(
     from muster.api import _proven_device
     from muster.proof import Verdict
 
+    _proof_client(state)
     monkeypatch.setattr(state.proofs, "verify", lambda *_: Verdict.CERT_EXPIRED)
     with pytest.raises(HTTPException) as refused:
         _proven_device(state, "nonce", "c2ln", "certificate")
 
     assert refused.value.status_code == 409
-    assert refused.value.detail == "certificate expired; enroll again with a pairing code"
+    assert refused.value.detail == "certificate expired"
 
 
 def test_a_key_missing_from_the_kith_cannot_renew(state, monkeypatch):
