@@ -404,7 +404,7 @@ def _require_admin(state: State):
 
 # Refusals a device can act on. 401 for a certificate we did not issue is
 # deliberate rather than 403: the device is not forbidden, it is unrecognised,
-# and the fix is to enroll. 409 for expired says renew.
+# and the fix is to enroll. 409 for expired requires enrollment again.
 _PROOF_STATUS = {
     Verdict.NO_SUCH_NONCE: 400,
     Verdict.NONCE_EXPIRED: 408,
@@ -415,12 +415,25 @@ _PROOF_STATUS = {
 }
 
 
+def _refusal_detail(verdict: Verdict, expired_detail: str | None) -> str:
+    """The refusal text: the verdict's own value, unless a route words expiry itself.
+
+    Only a route whose caller can act on expiry (renewal: enroll again) passes
+    `expired_detail`. Every other device route keeps `cert-expired`, which
+    clients already match on.
+    """
+    if verdict is Verdict.CERT_EXPIRED and expired_detail is not None:
+        return expired_detail
+    return verdict.value
+
+
 def _proven_device(
     state: State,
     nonce: str,
     signature_b64: str,
     certificate_pem: str,
     check_in_interval_s: int | None = None,
+    expired_detail: str | None = None,
 ) -> str:
     """Which device sent this, or an HTTPException saying why it is nobody.
 
@@ -460,7 +473,9 @@ def _proven_device(
         telemetry.event("proof refused", verdict=verdict.value)
         state.telemetry.count("proof.refused", tags=[f"verdict:{verdict.value}"])
         raise HTTPException(
-            status_code=_PROOF_STATUS[verdict], detail=verdict.value, headers=uncached
+            status_code=_PROOF_STATUS[verdict],
+            detail=_refusal_detail(verdict, expired_detail),
+            headers=uncached,
         )
 
     state.telemetry.count("proof.verified", tags=["verdict:ok"])
@@ -1463,7 +1478,8 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         _turn_reboot_requested_into_acknowledged(state, proven)
         return {"key_id": proven, "reboot_acknowledged": True}
 
-    @app.post("/v1/device/renew", status_code=201)
+    @app.post("/v1/device/renew", status_code=201, include_in_schema=False)
+    @app.post("/v1/enroll/renew", status_code=201)
     def device_renew(
         response: Response,
         nonce: str = Body(..., embed=True),
@@ -1528,7 +1544,32 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         from cryptography.x509.oid import NameOID
 
         response.headers["Cache-Control"] = "no-store"
-        proven = _proven_device(state, nonce, signature_b64, certificate_pem)
+        proven = _proven_device(
+            state,
+            nonce,
+            signature_b64,
+            certificate_pem,
+            expired_detail="certificate expired; enroll again with a pairing code",
+        )
+
+        # A certificate signed by this CA proves its key, but renewal belongs
+        # only to a device already recorded in the kith. A missing row is normal
+        # during initial issuance, but that path does not call this endpoint.
+        try:
+            member = state.kith.member(proven)
+        except kith_store.Unreachable as unreachable:
+            raise HTTPException(
+                status_code=503,
+                detail="the kith store is unreachable, so this device cannot be "
+                       "confirmed as enrolled. Retry.",
+                headers={"Cache-Control": "no-store"},
+            ) from unreachable
+        if member is None:
+            raise HTTPException(
+                status_code=403,
+                detail="this device is not in the kith and must enroll first",
+                headers={"Cache-Control": "no-store"},
+            )
 
         # CHECKED HERE, AFTER THE PROOF, for the reason the parameter's own
         # comment gives: the emptiness of this field must never be answerable

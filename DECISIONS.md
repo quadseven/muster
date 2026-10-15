@@ -346,7 +346,7 @@ It is no longer the only one. `_proven_device` also refuses a device an
 administrator has revoked (muster#11), which had to arrive before automatic
 renewal (muster#10, now shipped): a device that renews itself never lapses, so
 lapse alone would have left a fleet nothing could cut off. `POST
-/v1/device/renew` calls the same function, so it inherits the refusal rather
+/v1/enroll/renew` calls the same function, so it inherits the refusal rather
 than restating it. The check is in the same function
 for the same reason everything else about a device is - and it FAILS CLOSED, 503
 rather than an allow, because a revocation you can defeat by making the database
