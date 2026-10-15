@@ -415,13 +415,25 @@ _PROOF_STATUS = {
 }
 
 
+def _refusal_detail(verdict: Verdict, expired_detail: str | None) -> str:
+    """The refusal text: the verdict's own value, unless a route words expiry itself.
+
+    Only a route whose caller can act on expiry (renewal: enroll again) passes
+    `expired_detail`. Every other device route keeps `cert-expired`, which
+    clients already match on.
+    """
+    if verdict is Verdict.CERT_EXPIRED and expired_detail is not None:
+        return expired_detail
+    return verdict.value
+
+
 def _proven_device(
     state: State,
     nonce: str,
     signature_b64: str,
     certificate_pem: str,
     check_in_interval_s: int | None = None,
-    expired_detail: str = "certificate expired",
+    expired_detail: str | None = None,
 ) -> str:
     """Which device sent this, or an HTTPException saying why it is nobody.
 
@@ -462,7 +474,7 @@ def _proven_device(
         state.telemetry.count("proof.refused", tags=[f"verdict:{verdict.value}"])
         raise HTTPException(
             status_code=_PROOF_STATUS[verdict],
-            detail=(expired_detail if verdict is Verdict.CERT_EXPIRED else verdict.value),
+            detail=_refusal_detail(verdict, expired_detail),
             headers=uncached,
         )
 

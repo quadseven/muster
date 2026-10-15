@@ -4180,10 +4180,10 @@ def test_a_lapsed_device_is_told_to_enroll_again(state, monkeypatch):
     assert "enroll again" in response.json()["detail"].lower()
 
 
-def test_other_proof_routes_keep_the_enrollment_guidance_for_lapsed_certs(
+def test_other_proof_routes_keep_the_unchanged_expiry_refusal(
     state, monkeypatch
 ):
-    """Renewal may specialize its expiry message without changing other routes."""
+    """Only renewal words expiry as "enroll again"; the shared proof keeps cert-expired."""
     from fastapi import HTTPException
 
     from muster.api import _proven_device
@@ -4195,7 +4195,7 @@ def test_other_proof_routes_keep_the_enrollment_guidance_for_lapsed_certs(
         _proven_device(state, "nonce", "c2ln", "certificate")
 
     assert refused.value.status_code == 409
-    assert refused.value.detail == "certificate expired"
+    assert refused.value.detail == "cert-expired"
 
 
 def test_a_key_missing_from_the_kith_cannot_renew(state, monkeypatch):
