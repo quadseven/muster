@@ -104,6 +104,36 @@ class SyncReportTest {
         assertTrue(view.detail[0], view.detail[0].startsWith("a: "))
     }
 
+    @Test
+    fun healthyWipeDoesNotInflateTheCountWhenAppsNeedAttention() {
+        val healthyWipe = WipeSteward.Outcome(
+            plan = WipePolicy.plan(null),
+            kept = "no wipe instruction",
+        )
+        val steps = listOf(
+            SyncReport.Step("apps", Fake(listOf("WITHHELD hiding [example.app]"))),
+            SyncReport.Step("wipe", healthyWipe),
+        ) + (1..8).map { SyncReport.Step("step $it", Fake(emptyList())) }
+
+        val view = SyncReport.of(steps)
+
+        assertEquals(listOf("apps: WITHHELD hiding [example.app]"), view.concerns)
+        assertTrue(view.headline, view.headline.contains("1 of 10 steps"))
+        assertTrue(view.detail[1], view.detail[1].contains("no wipe instruction"))
+    }
+
+    @Test
+    fun wipePendingRemainsVisibleInTheStepDetail() {
+        val pendingWipe = WipeSteward.Outcome(
+            plan = WipePolicy.plan(WipePolicy.COMMAND),
+        )
+
+        val view = report("wipe" to pendingWipe)
+
+        assertTrue(view.detail.single(), view.detail.single().contains("wipe=true"))
+        assertTrue(view.detail.single(), view.detail.single().contains("the wipe instruction arrived"))
+    }
+
     // The wallpaper's own "nothing configured is a concern" moved to
     // WallpaperSteward.Outcome when muster#45 gave the step a real Outcome like
     // the other four stewards. It cannot be built here - the steward imports
