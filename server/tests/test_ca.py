@@ -17,7 +17,6 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from muster.ca import (
     BACKDATE,
-    DEFAULT_VALIDITY_DAYS,
     Authority,
     Untrusted,
 )
@@ -155,20 +154,20 @@ def test_the_certificate_is_backdated_for_devices_with_no_clock(ca, clock):
     assert identity.not_before == clock() - BACKDATE
 
 
-def test_the_default_lifetime_is_ninety_days(ca, clock):
+def test_the_default_lifetime_is_twenty_one_days(ca, clock):
     csr_der, _ = _csr()
     _cert, identity = _issued(ca, csr_der)
-    assert identity.not_after == clock() + dt.timedelta(days=DEFAULT_VALIDITY_DAYS)
+    assert identity.not_after == clock() + dt.timedelta(days=21)
 
 
 def test_renewal_starts_at_a_third_of_life(ca, clock):
     """Wide enough that a router switched off for a fortnight still wakes inside
-    the window. At 90 days that is a 60-day runway."""
+    the window. At 21 days that is a 14-day runway."""
     csr_der, _ = _csr()
     _cert, identity = _issued(ca, csr_der)
 
     runway = identity.not_after - identity.renew_after()
-    assert dt.timedelta(days=59) < runway < dt.timedelta(days=62)
+    assert dt.timedelta(days=14) <= runway < dt.timedelta(days=15)
 
 
 def test_two_devices_do_not_share_a_serial(ca):

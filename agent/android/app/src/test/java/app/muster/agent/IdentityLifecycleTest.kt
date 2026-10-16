@@ -17,8 +17,8 @@ class IdentityLifecycleTest {
 
     private val day = 86_400L
     private val notBefore = 1_000_000L
-    private val notAfter = notBefore + 90 * day
-    private val renewAfter = notBefore + 30 * day
+    private val notAfter = notBefore + 21 * day
+    private val renewAfter = notBefore + 7 * day
 
     @Test
     fun aFreshIdentityIsCurrent() {
@@ -28,13 +28,13 @@ class IdentityLifecycleTest {
 
     @Test
     fun renewalStartsWithAWideRunway() {
-        // One second past the server's renewAfter, with 60 days still to run.
+        // One second past the server's renewAfter, with 14 days still to run.
         val stance = IdentityLifecycle.stance(notBefore, notAfter, renewAfter, renewAfter + 1)
         assertTrue(stance is Stance.ShouldRenew)
         val remaining = (stance as Stance.ShouldRenew).secondsUntilExpiry
         assertTrue(
             "a device offline for a fortnight must still wake up inside the window",
-            remaining > 55 * day,
+            remaining > 13 * day,
         )
     }
 

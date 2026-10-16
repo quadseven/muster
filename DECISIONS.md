@@ -272,7 +272,7 @@ that asked to be an administrator and was issued the name it was vouched for.
 
 ---
 
-### D6. Lapse is the revocation mechanism, and the numbers follow from that
+### D6. Lapse bounds offline trust, and the numbers follow from that
 
 **2026-08-18, foundational.** Evidence: `server/muster/ca.py`
 (`DEFAULT_VALIDITY_DAYS`, `RENEW_AFTER_FRACTION`, `BACKDATE`),
@@ -280,24 +280,29 @@ that asked to be an administrator and was issued the name it was vouched for.
 
 **Context.** Something has to be able to say a device is no longer trusted.
 
-**Alternatives.** A revocation list, or an online status protocol, or a separate
-enabled flag in a database.
+**Original alternatives.** A revocation list, an online status protocol, or a
+separate enabled flag in a database. Administrator revocation and CRL/OCSP have
+since been added (D7, D28); lapse still bounds a certificate that cannot
+receive a revocation update.
 
-**Why none of them.** A revocation list has to **reach** the verifier, and this
-estate's devices are routers in hotels and phones in drawers - offline for days
-is the normal case, not the failure case. And a flag can disagree with what a
-device can actually do; a certificate cannot. So a device's membership **is** its
-certificate, and revocation is not renewing it.
+**Why lapse still matters.** A revocation update has to **reach** the verifier,
+and this estate's devices are routers in hotels and phones in drawers - offline
+for days is the normal case, not the failure case. Expiry works without an
+update. An administrator can also revoke a device immediately at muster's own
+routes (D7); that does not erase a certificate already held by the device.
 
 **Chosen, with each number reasoned rather than picked:**
 
-- **90 days.** Long enough that renewal is not constant chatter, short enough
-  that "stop renewing" is a revocation an operator can live with. A stolen
-  device stays trusted for at most that long.
-- **Renew at a third of life.** Not half, and not at the last minute: a router
-  that is off for a fortnight has to wake up still inside the window. Coming
-  back with a dead identity means enrolling again from a fresh pairing code with
-  a human holding the handset, which on an owned device costs a factory reset.
+- **21 days.** At a one-third renewal point, 21 * (1 - 1/3) = 14 days remain.
+  That is the minimum lifetime that preserves a fortnight of offline tolerance
+  after renewal starts, and bounds trust from a certificate alone to 21 days
+  after issuance. The twelve-hour backdate adds eight hours to the measured
+  renewal runway.
+- **Renew at a third of life.** Renewal starts after about 7 days, leaving at
+  least 14 days: a router that is off for a fortnight can wake up at the edge
+  of the window. Coming back with a dead identity means enrolling again from a
+  fresh pairing code with a human holding the handset, which on an owned device
+  costs a factory reset.
 - **Backdate twelve hours.** Hardware without a real-time clock, which this
   estate has, can boot believing it is 1970 or several hours off. A not-yet-valid
   certificate is indistinguishable from a broken one on a device that cannot fix
@@ -432,8 +437,9 @@ failed store is left alone for a cooldown, and the status the readiness probe
 publishes takes no lock and does no I/O.
 
 **A device is its key, not its certificate**, so renewal writes a second
-certificate against the same device rather than inventing a second phone every
-ninety days.
+certificate against the same device rather than inventing a second phone at
+each renewal. The 14-day post-renewal runway is also the outage slack before an
+unrenewed identity lapses; issuance must remain available during that window.
 
 ---
 
@@ -1512,7 +1518,7 @@ query per relying party per validation.
 on saying `good` after an administrator has revoked a device, so choosing it is
 choosing how late a third party may act on stale permission.
 
-**Chosen. Five minutes.** Short against a 90-day certificate, so it is a
+**Chosen. Five minutes.** Short against a 21-day certificate, so it is a
 rounding error on the window an attacker gets from lapse anyway. Long against
 the kith store's 30-second breaker cooldown, so an ordinary refresh does not
 land in the database hot path during an outage. One constant feeds both the

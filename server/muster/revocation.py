@@ -23,7 +23,7 @@ from muster.ca import Authority, Untrusted
 from muster.kith import Kith
 
 # Five minutes is the maximum time a shared cache may continue saying `good`
-# after an administrator revokes a device. It is short compared with a 90-day
+# after an administrator revokes a device. It is short compared with a 21-day
 # certificate, long compared with the store's 30-second breaker cooldown, and
 # keeps ordinary CRL refreshes out of the database hot path. DECISIONS.md owns
 # the full argument; this constant makes the wire contract and cache header use

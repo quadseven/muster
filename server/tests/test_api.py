@@ -1878,7 +1878,7 @@ def test_a_renewal_is_one_device_with_two_certificates():
     The same key enrolling again is what renewal is: the device keeps the
     private key it generated in its own hardware and asks for a fresh
     certificate over it. A store keyed on the certificate would show two phones
-    here, and a fleet that had not changed would grow one every ninety days.
+    here, and a fleet that had not changed would grow one at each renewal.
     """
     state, _records = _kith_state()
     client = TestClient(create_app(state))
@@ -4335,7 +4335,7 @@ def test_a_revoked_device_cannot_renew_itself_back_to_life(state, tmp_path, monk
     """THE ORDERING THAT MADE muster#11 A PREREQUISITE.
 
     If renewal ran before the revocation check, a revoked device would extend
-    its own certificate for another ninety days and keep doing so forever, and
+    its own certificate for another 21 days and keep doing so forever, and
     lapse - muster's original revocation mechanism - cannot catch a device that
     never lapses. The parametrized audience test above covers this route too;
     this one exists because the CLAIM is about ordering and deserves to fail by
