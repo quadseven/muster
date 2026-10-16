@@ -711,6 +711,17 @@ def test_the_console_offers_a_role_when_minting_a_qr():
     assert "role: $('qr-role').value.trim()" in html, "the field is never sent"
 
 
+def test_provisioning_explains_battery_exemption_for_wake_config():
+    body = re.sub(r"<script.*?</script>", "", _console_html(), flags=re.S)
+    provision = body.split('id="section-provision"', 1)[1].split(
+        'id="section-devices"', 1
+    )[0]
+    assert "app-config" in provision
+    assert "wake" in provision
+    assert "battery optimization exemption" in provision
+    assert "foreground service" in provision
+
+
 def test_the_console_shows_the_role_beside_the_qr():
     """muster#70's second criterion. The role is the one thing on that panel an
     operator can actually check before scanning - everything else is opaque or

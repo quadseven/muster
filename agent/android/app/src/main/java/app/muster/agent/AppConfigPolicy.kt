@@ -444,6 +444,8 @@ object AppConfigPolicy {
      * started, the token was good, it announced every fifteen seconds, and
      * Android had frozen the process. The only way to know was to probe the UDP
      * port from the router and notice nothing answered.
+     * For a wake target that starts a foreground service, exemption is also a
+     * precondition: without it, the wake cannot start that service.
      *
      * "The app asked for an exemption" and "a grant actually took on THIS
      * handset" are different facts, and they have been indistinguishable. A
@@ -455,10 +457,11 @@ object AppConfigPolicy {
      */
     fun batteryConcerns(exempt: Map<String, Boolean>): List<String> =
         exempt.filterValues { !it }.keys.sorted().map { packageName ->
-            "$packageName is NOT exempt from battery optimization, so Android " +
-                "may freeze it while it looks configured and running. muster " +
-                "cannot grant this - no Device Owner API exists - the app has " +
-                "to ask for it."
+            "$packageName is NOT exempt from battery optimization. If this " +
+                "app is a wake target, exemption is required before wake can " +
+                "start its foreground service. " +
+                "muster cannot grant this - no Device Owner API exists - the " +
+                "app has to ask for it."
         }
 
     /**

@@ -529,6 +529,29 @@ phone. `POST_NOTIFICATIONS` is the one that prompted this: zippie's relay is
 deliberately a foreground service, and a foreground service with no notification
 permission is a relay that dies in a pocket.
 
+### Battery exemption for wake
+
+An `app-config` line `wake <package> <component> <action>` sends a broadcast to
+the target app after configuration. If that receiver starts a foreground
+service from the background, the target app must have a battery optimization
+exemption before the wake. Without the grant, Android refuses that foreground
+service start even when muster delivered the broadcast. Grant it during
+[enrollment](provisioning-a-pixel.md#before-relying-on-an-app-config-wake-either-route)
+and confirm the concern disappears from the device report. A prompt alone does
+not confirm the grant.
+
+Verification record (Android API 36): the project's check of the public
+`DevicePolicyManager` API found no method to grant another app a battery
+optimization exemption. `PowerManager.isIgnoringBatteryOptimizations(package)`
+reads the allowlist state; it does not change it. Android exposes a Settings
+flow for the user to allowlist an app. Device Owner permission grants, including
+`setPermissionGrantState`, do not change this state. Muster therefore reports a
+missing exemption and the target app must request it for a person to approve.
+See the Android references for
+"Restrictions on starting a foreground service from the background",
+`PowerManager.isIgnoringBatteryOptimizations`, and the API 36
+`DevicePolicyManager` method list.
+
 **`POST_NOTIFICATIONS` only exists from Android 13 (API 33).** The agent's
 `minSdk` is 29, and on anything below 33 that permission is not a runtime
 permission at all: `setPermissionGrantState` returns false, and the agent

@@ -416,6 +416,21 @@ reboot, after somebody else has touched it. It reports the owner and the version
 of each package as the DEVICE reports them, and exits non-zero if the phone is
 not what it should be.
 
+## Before relying on an app-config wake, either route
+
+For every `wake <package> <component> <action>` directive in the device's
+`app-config`, grant the target app a battery optimization exemption during
+enrollment. Open the app's exemption request on the device and approve it, or
+grant it in the device's battery settings if the app has no request. Then
+check that the app-config concern for that package is absent from the next
+device report. A requested exemption is not proof that Android granted it.
+
+The exemption is a precondition for this wake to start the target app's
+foreground service from the background. Muster can read the grant state but
+cannot grant it as Device Owner policy. Do this after the target app is installed
+and before treating a delivered wake as a working service. See
+[policy.md](policy.md#battery-exemption-for-wake) for the API verification.
+
 ## Reaching a phone that is not on this network
 
 If the phones live on a router's LAN that is not directly routable (a travel

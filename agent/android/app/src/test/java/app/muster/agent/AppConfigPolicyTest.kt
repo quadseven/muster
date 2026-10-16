@@ -511,6 +511,16 @@ class AppConfigPolicyTest {
     }
 
     @Test
+    fun aMissingBatteryExemptionIsReportedAsAWakePrecondition() {
+        val concern = AppConfigPolicy.batteryConcerns(
+            mapOf("app.zippie.companion" to false)
+        ).single()
+
+        assertTrue(concern, concern.contains("required before wake"))
+        assertTrue(concern, concern.contains("foreground service"))
+    }
+
+    @Test
     fun anExemptAppIsNotAConcern() {
         assertTrue(
             AppConfigPolicy.batteryConcerns(mapOf("app.zippie.companion" to true)).isEmpty()

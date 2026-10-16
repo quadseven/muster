@@ -412,6 +412,14 @@
             <li>Tap the same spot on the welcome screen six times. That opens a scanner.</li>
             <li>Show the QR below and hold the device up to it.</li>
           </ol>
+          <p class="caption breath-more">
+            If this device's app-config has a wake directive, grant the target
+            app a battery optimization exemption during enrollment. The
+            exemption is required before wake can start its foreground service.
+            Muster cannot grant it through Device Owner policy; use the app's
+            exemption request on the device and verify the grant before relying
+            on wake.
+          </p>
           <p class="caption breath-most">
             A device provisioned now is bound to the key this agent is signed
             with. Device Owner cannot be replaced by a build signed with a
