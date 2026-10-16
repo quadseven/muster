@@ -174,8 +174,8 @@ scheme invented for the second route would be a second chance to get it wrong,
 and the one that got it wrong would be the one nobody tested against a handset.
 If you are adding a route a device will reach, call it. Do not write a variant.
 
-It returns `key_id`, not a certificate serial. A serial changes every ninety
-days; the key does not, so identity survives renewal.
+It returns `key_id`, not a certificate serial. A serial changes at every
+renewal; the key does not, so identity survives renewal.
 
 **3. Reads raise. They never lie.**
 

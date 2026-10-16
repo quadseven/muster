@@ -332,7 +332,7 @@ plain QR would otherwise strip it silently, and the symptom is a zippie android
 that quietly stops being one. To CHANGE a role, mint a QR naming the new one.
 
 **A role survives renewal**, because it is on the device rather than the
-certificate. A device does not stop being a zippie android in ninety days.
+certificate. A device does not stop being a zippie android when it renews.
 
 Roles are `[a-z]([a-z0-9-]*[a-z0-9])?`, at most 31 characters. Narrow because a
 role becomes half of a policy file name and therefore a Kubernetes Secret key;
