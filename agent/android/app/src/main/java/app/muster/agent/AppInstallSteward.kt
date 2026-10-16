@@ -146,6 +146,37 @@ class AppInstallSteward(
         return desired.wanted.associate { it.packageName to have[it.packageName] }
     }
 
+    /** Expected versionCode for each package named by the active install policy. */
+    fun expectedVersions(): Map<String, Long> =
+        AppInstallPolicy.read(configFile().takeIf { it.isFile }?.readText())
+            .wanted.associate { it.packageName to it.versionCode }
+
+    /** Installed packages visible through the launchable-app query in the manifest. */
+    fun visibleInstalledVersions(): Map<String, Long?> {
+        val packages = context.packageManager
+        val managed = managedVersions()
+        val result = LinkedHashMap<String, Long?>().apply { putAll(managed) }
+        val names = packages.queryIntentActivities(
+            android.content.Intent(android.content.Intent.ACTION_MAIN)
+                .addCategory(android.content.Intent.CATEGORY_LAUNCHER),
+            0,
+        ).mapNotNull { it.activityInfo?.packageName }.toSortedSet()
+        for (name in names) {
+            if (result.size >= MAX_REPORTED_PACKAGES) break
+            if (name in result) continue
+            try {
+                result[name] = packages.getPackageInfo(name, 0).longVersionCode
+            } catch (e: PackageManager.NameNotFoundException) {
+                // Visibility changed between the launcher query and lookup.
+                Log.d(TAG, "check-in: $name disappeared after launcher query")
+            } catch (e: Exception) {
+                Log.e(TAG, "check-in: cannot read installed version for $name", e)
+            }
+        }
+        // Managed packages come first, including those without a launcher icon.
+        return result
+    }
+
     /**
      * One package: decide whether to download it at all, then do.
      *
@@ -554,6 +585,7 @@ class AppInstallSteward(
 
     companion object {
         private const val TAG = "muster"
+        private const val MAX_REPORTED_PACKAGES = 64
 
         private fun defaultClient(context: Context): AssetClient? {
             val serverUrl = KeystoreIdentity.serverBaseUrl(context)

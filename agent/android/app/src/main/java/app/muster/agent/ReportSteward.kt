@@ -17,7 +17,12 @@ class ReportSteward(private val context: Context) {
                 HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 5_000),
                 KeystoreIdentity(context),
             )
-            client.send(steps, AppInstallSteward(context).managedVersions())
+            val installs = AppInstallSteward(context)
+            client.send(
+                steps,
+                installs.visibleInstalledVersions(),
+                installs.expectedVersions(),
+            )
         } catch (e: Exception) {
             ProvenPost.Sent.Unreachable(e.javaClass.simpleName)
         }

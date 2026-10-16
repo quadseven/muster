@@ -1563,7 +1563,8 @@ def test_a_report_upsert_keeps_the_newer_row_and_needs_a_known_device():
          "concerns": ["WELDED x"]}
     ]
     assert json.loads(params[3]) == [
-        {"package": "app.example.companion", "version_code": 78}
+        {"package": "app.example.companion", "version_code": 78,
+         "expected_version_code": None}
     ]
 
 

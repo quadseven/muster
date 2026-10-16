@@ -70,19 +70,22 @@ class ReportClientTest {
     }
 
     @Test
-    fun sendsTheInstalledVersionOfEveryManagedPackage() {
+    fun sendsInstalledAndExpectedVersions() {
         val transport = FakeTransport()
 
         ReportClient(transport, FakeIdentity()).send(
             steps,
             linkedMapOf("app.example.companion" to 78L, "app.example.absent" to null),
+            mapOf("app.example.companion" to 152L),
         )
 
         val packages = sent(transport).getJSONArray("packages")
         assertEquals("app.example.companion", packages.getJSONObject(0).getString("package"))
         assertEquals(78L, packages.getJSONObject(0).getLong("version_code"))
+        assertEquals(152L, packages.getJSONObject(0).getLong("expected_version_code"))
         // NULL, NOT ZERO. Zero is a versionCode; "not installed" is not one.
         assertTrue(packages.getJSONObject(1).isNull("version_code"))
+        assertTrue(packages.getJSONObject(1).isNull("expected_version_code"))
     }
 
     @Test

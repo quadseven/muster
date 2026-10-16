@@ -34,10 +34,14 @@ class ReportClient(
      * @param versions every managed package to its installed versionCode, null
      *   where it is not installed - which is an answer, not a missing one.
      */
-    fun send(steps: List<SyncReport.Step>, versions: Map<String, Long?>): ProvenPost.Sent {
+    fun send(
+        steps: List<SyncReport.Step>,
+        versions: Map<String, Long?>,
+        expectedVersions: Map<String, Long> = emptyMap(),
+    ): ProvenPost.Sent {
         val fields = JSONObject()
             .put("steps", bounded(steps))
-            .put("packages", packages(versions))
+            .put("packages", packages(versions, expectedVersions))
         return post.send(REPORT_PATH, fields)
     }
 
@@ -89,9 +93,15 @@ class ReportClient(
         )
     }
 
-    private fun packages(versions: Map<String, Long?>): JSONArray = JSONArray(
+    private fun packages(
+        versions: Map<String, Long?>,
+        expectedVersions: Map<String, Long>,
+    ): JSONArray = JSONArray(
         versions.entries.take(MAX_PACKAGES).map { (name, code) ->
-            JSONObject().put("package", name).put("version_code", code ?: JSONObject.NULL)
+            JSONObject()
+                .put("package", name)
+                .put("version_code", code ?: JSONObject.NULL)
+                .put("expected_version_code", expectedVersions[name] ?: JSONObject.NULL)
         }
     )
 

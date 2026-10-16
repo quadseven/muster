@@ -591,10 +591,17 @@ is limited to 16 lines and 4 KiB, and each proven device may send once per
 minute. This is the check-in report, not raw logcat: raw logs can contain
 configuration values and are not uploaded.
 
-**So does the stored check-in report (muster#146).** After every step has run,
-the agent also sends `POST /v1/device/report`: each step's name, outcome and
-concerns, and the installed `versionCode` of every package `install-apps`
-names (null where it is not installed). Unlike diagnostics it is KEPT - the
+**So does the stored check-in report (muster#146, muster#162).** After every
+step has run, the agent also sends `POST /v1/device/report`: each step's name,
+outcome and concerns, and installed `versionCode`s for policy-managed packages
+plus the launcher-visible installed apps (up to the report's package limit).
+Managed entries carry the expected version from `install-apps`; the kith read
+marks drift when an expected version is newer than the installed one or the
+managed package is absent. Android package visibility filters this inventory to
+the packages exposed by the manifest's launcher query, and the report does not
+enumerate the Play update queue. Muster can silently install APKs it owns via
+the existing digest-pinned `install-apps` policy; Play-managed app updates stay
+under Play's control. Unlike diagnostics it is KEPT - the
 newest per device, in `kith_report` - and returned as `report` on
 `GET /v1/kith/{key_id}`, so whether an install worked is answerable without
 holding the phone. Each field is bounded, the whole report is capped at 16 KiB,

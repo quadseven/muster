@@ -362,6 +362,9 @@ class PackageIn(BaseModel):
     package: str = Field(..., max_length=255, pattern=_PACKAGE)
     # None is "not installed", which is an answer and not a missing field.
     version_code: int | None = Field(..., ge=0)
+    # Present for packages named in install-apps; derived from that policy by
+    # the agent after fetching it. Play-managed packages have no expected value.
+    expected_version_code: int | None = Field(None, ge=0)
 
 
 def _kept_step(step: StepIn) -> kith_store.StepReport:
@@ -394,7 +397,15 @@ def _report_view(report: kith_store.Report | None) -> dict | None:
             for s in report.steps
         ],
         "packages": [
-            {"package": p.package, "version_code": p.version_code}
+            {
+                "package": p.package,
+                "version_code": p.version_code,
+                "expected_version_code": p.expected_version_code,
+                "drift": (
+                    p.expected_version_code is not None
+                    and (p.version_code is None or p.version_code < p.expected_version_code)
+                ),
+            }
             for p in report.packages
         ],
     }
@@ -1598,7 +1609,11 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                 proven,
                 kept,
                 tuple(
-                    kith_store.PackageReport(package=p.package, version_code=p.version_code)
+                    kith_store.PackageReport(
+                        package=p.package,
+                        version_code=p.version_code,
+                        expected_version_code=p.expected_version_code,
+                    )
                     for p in packages
                 ),
             )

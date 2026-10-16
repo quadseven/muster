@@ -268,10 +268,11 @@ class StepReport:
 
 @dataclass(frozen=True)
 class PackageReport:
-    """A managed application's installed versionCode. None: not installed."""
+    """A visible installed package and the version muster expects, if managed."""
 
     package: str
     version_code: int | None
+    expected_version_code: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1236,7 +1237,11 @@ def _report_from_row(row) -> Report:
             for step in row[1]
         ),
         packages=tuple(
-            PackageReport(package=package["package"], version_code=package["version_code"])
+            PackageReport(
+                package=package["package"],
+                version_code=package["version_code"],
+                expected_version_code=package.get("expected_version_code"),
+            )
             for package in row[2]
         ),
     )

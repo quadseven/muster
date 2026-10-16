@@ -651,8 +651,10 @@ def test_a_device_report_is_stored_and_an_administrator_can_read_it(state):
             {"name": "install-apps", "outcome": "installed=[]", "concerns": [_WELDED]},
         ],
         packages=[
-            {"package": "app.example.companion", "version_code": 78},
-            {"package": "app.example.other", "version_code": None},
+            {"package": "app.example.companion", "version_code": 78,
+             "expected_version_code": 152},
+            {"package": "app.example.other", "version_code": None,
+             "expected_version_code": None},
         ],
     )
 
@@ -662,13 +664,34 @@ def test_a_device_report_is_stored_and_an_administrator_can_read_it(state):
         "name": "install-apps", "outcome": "installed=[]", "concerns": [_WELDED],
     }
     assert report["packages"] == [
-        {"package": "app.example.companion", "version_code": 78},
-        {"package": "app.example.other", "version_code": None},
+        {"package": "app.example.companion", "version_code": 78,
+         "expected_version_code": 152, "drift": True},
+        {"package": "app.example.other", "version_code": None,
+         "expected_version_code": None, "drift": False},
     ]
     assert report["concerns"] == 1
     assert report["received_at"]
     assert "custom.muster.device.report.received:1|c" in state.telemetry.sent
     assert "custom.muster.device.report.concerns:1|c" in state.telemetry.sent
+
+
+@pytest.mark.parametrize(
+    "installed,expected,drift",
+    [(152, 152, False), (180, 152, False), (78, 152, True), (None, 152, True)],
+)
+def test_inventory_marks_only_versions_behind_policy_as_drift(
+    state, installed, expected, drift
+):
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    response = _send_report(
+        client, key, identity, [],
+        [{"package": "app.example.companion", "version_code": installed,
+          "expected_version_code": expected}],
+    )
+    assert response.status_code == 202
+    package = client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["report"]["packages"][0]
+    assert package["drift"] is drift
 
 
 def test_a_device_that_never_reported_shows_no_report_rather_than_an_empty_one(state):

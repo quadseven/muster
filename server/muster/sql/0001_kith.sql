@@ -208,9 +208,9 @@ ALTER TABLE kith_device
 -- Until this existed the only answer was the device's own status screen, which
 -- needs somebody holding the phone, or an inference from repeated asset
 -- downloads in the server log. `steps` is every BootPlan step with its outcome
--- and concerns; `packages` is the versionCode of each managed application as
--- the platform reported it after the install attempts, null where it is not
--- installed.
+-- and concerns; `packages` records installed versions visible to the agent,
+-- with an expected version for packages named by its install policy and null
+-- where a managed package is not installed. The API derives drift on read.
 --
 -- A NEW TABLE RATHER THAN COLUMNS ON kith_device, so the roll query and its
 -- positional row reader are untouched, and so a report - device-reported and
