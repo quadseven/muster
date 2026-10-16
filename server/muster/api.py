@@ -537,7 +537,7 @@ def _proven_device(
 
     Returns the key_id, which is the device's identity across renewals
     (enroll.key_id) and therefore the right thing to key policy and reports on.
-    A certificate serial changes every ninety days; the key does not.
+    A certificate serial changes at every renewal; the key does not.
     """
     # NO-STORE ON THE REFUSALS TOO, not only on the answer. FastAPI merges an
     # injected Response's headers on a normal return and NOT when the endpoint
@@ -590,7 +590,7 @@ def _proven_device(
     # IT LIVES IN THE ONE PLACE A DEVICE IS AUTHENTICATED, per this function's
     # own docstring. A revocation enforced on the config route and not on the
     # renewal route would be a revoked device that cannot be configured and can
-    # still extend its own certificate for another ninety days, forever. Every
+    # still extend its own certificate for another three weeks, forever. Every
     # route a device reaches calls this; that is the whole reason it exists.
     #
     # 503 ON AN UNREACHABLE STORE, NOT AN ALLOW. This module's read contract is
@@ -598,8 +598,8 @@ def _proven_device(
     # is a revocation an attacker can defeat by making the database unreachable.
     # The cost is real and bounded: while the store is down, devices cannot
     # refresh or renew. They keep working on what they have cached, and muster
-    # issues at a third of certificate life, so a device has sixty days of slack
-    # before an outage could cost it anything at all.
+    # issues at a third of certificate life, so a device has fourteen days of
+    # slack before an outage could cost it anything at all (DECISIONS.md D8).
     try:
         member = state.kith.member(proven)
     except kith_store.Unreachable as unreachable:
@@ -751,7 +751,7 @@ def _register_revocation_routes(app: FastAPI, state: State) -> None:
     # do not follow an https one. An https URL here is therefore not extra
     # safety; it is a revocation check that silently never happens. The pod
     # refuses at startup, where the misconfiguration is one log line, rather
-    # than stamping it into certificates that live for ninety days.
+    # than stamping it into certificates that live for three weeks.
     crl_url = urllib.parse.urlsplit(state.authority.crl_url)
     ocsp_url = urllib.parse.urlsplit(state.authority.ocsp_url)
     for label, configured in (("CRL", crl_url), ("OCSP", ocsp_url)):
@@ -851,7 +851,7 @@ def create_app(state: State) -> FastAPI:
         the pairing-code table. WITHOUT EITHER, the mechanism is decoration:
         deferred writes are otherwise replayed only by the next enrollment,
         proof or console load, and muster is quiet by design - devices renew
-        every ninety days. A store that comes back an hour after it went away
+        about once a week. A store that comes back an hour after it went away
         would keep the rows in memory until something happened to knock on it,
         and a pod restarted first loses them; codes minted by every drawn QR
         would accumulate on the CA process for the life of the pod.
@@ -1703,7 +1703,7 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
 
         It is also the property `key_id` was chosen for. `_proven_device` returns
         a key id rather than a certificate serial precisely so that identity
-        survives renewal ("a certificate serial changes every ninety days; the
+        survives renewal ("a certificate serial changes at every renewal; the
         key does not") - and until this route existed, nothing could renew, so
         that property had never once been redeemable.
 

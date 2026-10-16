@@ -291,13 +291,21 @@ certificate, and revocation is not renewing it.
 
 **Chosen, with each number reasoned rather than picked:**
 
-- **90 days.** Long enough that renewal is not constant chatter, short enough
-  that "stop renewing" is a revocation an operator can live with. A stolen
-  device stays trusted for at most that long.
+- **21 days** (was 90 until muster#16). Short enough that "stop renewing" is a
+  revocation an operator can live with: a device nobody renews stays trusted
+  for at most three weeks. Not shorter, because the floor falls out of the next
+  number rather than being picked. The runway after renew-after is two thirds
+  of the life, and a router off for a fortnight must still wake inside it, so
+  (2/3) x L >= 14 days gives L >= 21. Going below 21 means retiring the
+  fortnight tolerance, which is a decision about the travel router, not a
+  constant to tune. The price is that renewal is now safety-critical for the
+  whole fleet: every device renews about weekly, and renewal that silently
+  stops working lapses the estate in three weeks rather than three months.
 - **Renew at a third of life.** Not half, and not at the last minute: a router
   that is off for a fortnight has to wake up still inside the window. Coming
   back with a dead identity means enrolling again from a fresh pairing code with
   a human holding the handset, which on an owned device costs a factory reset.
+  At 21 days the runway is 14 days, plus two thirds of the backdate below.
 - **Backdate twelve hours.** Hardware without a real-time clock, which this
   estate has, can boot believing it is 1970 or several hours off. A not-yet-valid
   certificate is indistinguishable from a broken one on a device that cannot fix
@@ -431,9 +439,17 @@ every device.
 failed store is left alone for a cooldown, and the status the readiness probe
 publishes takes no lock and does no I/O.
 
+**The outage slack is fourteen days.** `_proven_device` fails closed on an
+unreachable store (D7), so while the store is down no device can renew. A
+device starts renewing at a third of life, so it has the remaining two thirds
+to ride an outage out: fourteen days on a 21-day certificate (D6), down from
+sixty at 90. That is still comfortable for an outage, but it is no
+longer ignorable - a store down for more than a fortnight starts lapsing
+devices, and every lapse on an owned handset is a factory reset.
+
 **A device is its key, not its certificate**, so renewal writes a second
-certificate against the same device rather than inventing a second phone every
-ninety days.
+certificate against the same device rather than inventing a second phone at
+every renewal.
 
 ---
 
@@ -1512,7 +1528,7 @@ query per relying party per validation.
 on saying `good` after an administrator has revoked a device, so choosing it is
 choosing how late a third party may act on stale permission.
 
-**Chosen. Five minutes.** Short against a 90-day certificate, so it is a
+**Chosen. Five minutes.** Short against a 21-day certificate, so it is a
 rounding error on the window an attacker gets from lapse anyway. Long against
 the kith store's 30-second breaker cooldown, so an ordinary refresh does not
 land in the database hot path during an outage. One constant feeds both the
