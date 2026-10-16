@@ -430,6 +430,16 @@ Verb first, then the package, then the key, then the value:
     set       app.zippie.companion announceToken  <the write token>
     set-bool  app.zippie.companion autoStartRelay true
     grant     app.zippie.companion android.permission.POST_NOTIFICATIONS
+    wake      app.zippie.companion app.zippie.companion.WakeReceiver app.zippie.WAKE
+
+For any application configured with a `wake` directive, exempting that package
+from battery optimization is a required enrolment precondition: without it,
+Android prevents background wake from starting a foreground service at all.
+Because Device Owner APIs cannot grant this exemption, it must be granted via adb:
+
+```sh
+adb -s <serial> shell dumpsys deviceidle whitelist +<package>
+```
 
 Push it with:
 
@@ -827,6 +837,18 @@ adb -s <serial> shell settings put secure charge_optimization_mode 1
 
 Wireless adb works, so it need not be a cable - but it will never come from the
 QR, and it will never come from this file.
+
+**Battery optimization exemption.** Checked against android-36's own
+`DevicePolicyManager`: no Device Owner API exists to allowlist or exempt an app
+from battery optimization, and `PowerManager.isIgnoringBatteryOptimizations` is
+read-only. For any app-config with a `wake` directive, this exemption is a
+strict precondition: without it, Android prevents background wake from starting
+a foreground service at all. It cannot be granted by muster or delivered via
+policy; it must be requested by the app interactively or granted over adb:
+
+```sh
+adb -s <serial> shell dumpsys deviceidle whitelist +<package>
+```
 
 ## Which applications the device shows
 

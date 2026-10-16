@@ -2815,6 +2815,49 @@ def test_a_role_that_is_not_a_role_is_a_400_rather_than_a_500(state, tmp_path):
         ).status_code == 400, bad
 
 
+def test_provision_qr_surfaces_battery_exemption_when_role_has_wake_directive(
+    state, tmp_path
+):
+    from muster import policy as policy_mod
+
+    root = tmp_path / "policy"
+    root.mkdir()
+    (root / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    (root / "role-zippie.app-config").write_text(
+        "set app.zippie.companion announceToken tok\n"
+        "wake app.zippie.companion app.zippie.companion.WakeReceiver app.zippie.WAKE\n"
+    )
+    state.policies = policy_mod.Policies(root=root)
+    client, _apk = _published_and_proving(state, tmp_path)
+
+    described = client.post(
+        "/v1/provision/qr", json={"role": "zippie"}, cookies=ADMIN
+    ).json()
+    assert described["battery_exemption_required"] is True
+    assert described["pairing"]["battery_exemption_required"] is True
+
+
+def test_provision_qr_reports_no_battery_exemption_when_no_wake_directive(
+    state, tmp_path
+):
+    from muster import policy as policy_mod
+
+    root = tmp_path / "policy"
+    root.mkdir()
+    (root / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    (root / "role-zippie.app-config").write_text(
+        "set app.zippie.companion announceToken tok\n"
+    )
+    state.policies = policy_mod.Policies(root=root)
+    client, _apk = _published_and_proving(state, tmp_path)
+
+    described = client.post(
+        "/v1/provision/qr", json={"role": "zippie"}, cookies=ADMIN
+    ).json()
+    assert described["battery_exemption_required"] is False
+    assert described["pairing"]["battery_exemption_required"] is False
+
+
 # ---- re-roling a device (muster#73) --------------------------------------
 
 

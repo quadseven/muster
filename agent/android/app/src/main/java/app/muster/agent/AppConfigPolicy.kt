@@ -438,6 +438,11 @@ object AppConfigPolicy {
      * `PowerManager` exposes only the READ. Only the app itself can ask, with a
      * dialog a person taps.
      *
+     * EXEMPTION IS A PRECONDITION FOR WAKE FUNCTIONALITY. For any app configured
+     * with a wake directive, battery optimization exemption is not merely a
+     * probabilistic risk of freezing: without it, Android prevents background
+     * wake from starting a foreground service at all.
+     *
      * So why say anything? Because `isIgnoringBatteryOptimizations` is readable
      * by anyone, and the alternative is inference. A zippie bond leg spent a
      * week with its socket bound and nothing servicing it: the relay had
@@ -455,10 +460,11 @@ object AppConfigPolicy {
      */
     fun batteryConcerns(exempt: Map<String, Boolean>): List<String> =
         exempt.filterValues { !it }.keys.sorted().map { packageName ->
-            "$packageName is NOT exempt from battery optimization, so Android " +
-                "may freeze it while it looks configured and running. muster " +
-                "cannot grant this - no Device Owner API exists - the app has " +
-                "to ask for it."
+            "$packageName is NOT exempt from battery optimization: exemption is " +
+                "a required precondition for wake functionality (without it, " +
+                "Android prevents wake from starting a foreground service). " +
+                "muster cannot grant this - no Device Owner API exists - the " +
+                "app has to ask for it."
         }
 
     /**

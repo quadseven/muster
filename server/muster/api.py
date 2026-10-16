@@ -2425,6 +2425,29 @@ _QR_SCALE = 8
 _WIFI_PARAMETERS = frozenset({"wifi_ssid", "wifi_password", "wifi_security"})
 
 
+def _role_has_wake_directive(state: State, role: str) -> bool:
+    """True if the role's app-config contains a wake directive.
+
+    A wake directive requires battery optimization exemption as an enrolment
+    precondition on the device: without it, Android prevents wake broadcasts
+    from starting a foreground service.
+    """
+    if not role or not state.policies or not state.policies.root:
+        return False
+    role_file = state.policies.root / f"role-{role}.app-config"
+    if not role_file.is_file():
+        return False
+    try:
+        content = role_file.read_text(encoding="utf-8")
+        for raw_line in content.splitlines():
+            words = raw_line.strip().split()
+            if words and not words[0].startswith("#") and words[0].lower() == "wake":
+                return True
+    except (OSError, UnicodeDecodeError):
+        return False
+    return False
+
+
 def _provision_qr(
     state: State,
     apk: pathlib.Path,
@@ -2513,6 +2536,7 @@ def _provision_qr(
     # next to the image that already carries it. Popped rather than filtered by
     # a list of allowed keys, so the generic pass-through keeps working.
     carries_code = extras.pop(provisioning.EXTRA_PAIRING_CODE, "") != ""
+    battery_exemption_required = _role_has_wake_directive(state, role)
     described = {
         "component": data[provisioning.COMPONENT],
         "download_url": data[provisioning.DOWNLOAD],
@@ -2523,6 +2547,7 @@ def _provision_qr(
         # travels under.
         "server_url": extras.get(provisioning.EXTRA_SERVER_URL, ""),
         "extras": extras,
+        "battery_exemption_required": battery_exemption_required,
         # WHAT MAKES THIS QR PERISHABLE, and the one field a console has to act
         # on. Everything else here is stable for the life of the signing key; a
         # pairing code dies in minutes, and a QR left on a monitor past that is a
@@ -2538,6 +2563,7 @@ def _provision_qr(
             # getting it wrong is a phone that comes up the wrong kind of
             # device with nothing on it saying so.
             "role": role if carries_code else "",
+            "battery_exemption_required": battery_exemption_required,
         },
         "wifi": (
             {

@@ -494,6 +494,9 @@ class AppConfigPolicyTest {
         // checked against android-36's own DevicePolicyManager, which contains
         // nothing matching "exempt". Only the app can ask, with a dialog.
         //
+        // Exemption is a required precondition for wake functionality: without
+        // it, Android prevents wake from starting a foreground service at all.
+        //
         // But `PowerManager.isIgnoringBatteryOptimizations` is READABLE by
         // anyone, and that is the difference between "the leg went quiet, we
         // think Android froze it" and muster saying so. A zippie leg spent a
@@ -508,6 +511,7 @@ class AppConfigPolicyTest {
         assertEquals(1, decided.size)
         assertTrue(decided[0], decided[0].contains("app.zippie.companion"))
         assertTrue(decided[0], decided[0].contains("battery"))
+        assertTrue(decided[0], decided[0].contains("precondition for wake"))
     }
 
     @Test

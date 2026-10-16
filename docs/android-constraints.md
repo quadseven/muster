@@ -153,6 +153,9 @@ is the dependable one. What it is for:
   attempting Route 2 a safe thing to do
 - **the 80% charge cap**, which no Device Owner can set by policy at any API
   level (below)
+- **battery optimization exemption** for apps configured with a wake directive:
+  no Device Owner API can grant this (below), so it stays an adb step
+  (`adb shell dumpsys deviceidle whitelist +<package>`) during enrolment
 - **anything that needs a shell**, which today includes getting a configuration
   file into the agent at all: #20
 
@@ -166,6 +169,16 @@ Either route ends at the same place, which is the point of keeping both:
 So the realistic experience is now **wipe, six taps, scan, walk away** - with a
 cable kept in the drawer rather than in the plan.
 
+### Battery optimization exemption (required for wake)
+
+For any application configured with a `wake` directive, battery optimization
+exemption is a required enrolment step: without it, Android prevents wake from
+starting a foreground service at all. Grant it via adb:
+
+```sh
+adb -s <serial> shell dumpsys deviceidle whitelist +<package>
+```
+
 ## What no Device Owner can do
 
 Worth stating because it is always on the wish list: **the 80% charge cap cannot
@@ -175,6 +188,30 @@ step. That used to be free, because route 3 already had a cable attached at
 exactly that moment; on a device provisioned by QR it is a step somebody has to
 go and take. Wireless adb works, so it need not be a cable - but it will never
 come from the QR.
+
+**Battery optimization exemption cannot be granted by policy.** Verified
+against the Android 16 (`android-36`) platform APIs: `DevicePolicyManager` has
+no grant path or method to allowlist or exempt an application from battery
+optimization (the API contains nothing matching "exempt" or any power/idle
+allowlist grant method). `PowerManager.isIgnoringBatteryOptimizations` is
+strictly read-only and provides no setter or grant path for Device Owner.
+
+The platform provides only two mechanisms to grant battery optimization
+exemption:
+1. An interactive prompt initiated by the application itself via
+   `Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, requiring a human to
+   tap a confirmation dialog on screen.
+2. A shell command via adb:
+   ```sh
+   adb shell dumpsys deviceidle whitelist +<package>
+   ```
+
+This is not merely an optimization or a probabilistic risk: **the exemption is a
+strict precondition for wake functionality.** Without it, Android's background
+execution limits prevent background wake broadcasts from starting a foreground
+service at all. Because Device Owner APIs cannot grant the exemption, it cannot
+be delivered via policy or QR provisioning; it must be completed as an adb step
+during device enrolment whenever an app-config carries a `wake` directive.
 
 ## Measured device state, 2026-08-18
 

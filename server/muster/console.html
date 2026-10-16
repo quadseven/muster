@@ -437,6 +437,12 @@
             is made, because that is the only moment anything knows what this
             device will be - it has no identity yet.
           </p>
+          <p class="caption breath">
+            If the role's app-config contains a <code>wake</code> directive, exempting that
+            application from battery optimization is a required enrolment precondition:
+            without it, Android prevents wake from starting a foreground service
+            (<code>adb shell dumpsys deviceidle whitelist +&lt;package&gt;</code>).
+          </p>
         </div>
 
         <div class="panel">
@@ -1253,6 +1259,14 @@
       fact(facts, key, String(value));
     }
     describePairing(facts, qr.pairing);
+    if (qr.battery_exemption_required || (qr.pairing && qr.pairing.battery_exemption_required)) {
+      fact(
+        facts,
+        'Battery exemption',
+        'Required: app-config carries a wake directive (adb shell dumpsys deviceidle whitelist +<package>)',
+        'plain',
+      );
+    }
     if (qr.wifi) {
       fact(facts, 'Wi-Fi network', qr.wifi.ssid, 'plain');
       fact(
