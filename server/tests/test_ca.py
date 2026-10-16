@@ -155,20 +155,20 @@ def test_the_certificate_is_backdated_for_devices_with_no_clock(ca, clock):
     assert identity.not_before == clock() - BACKDATE
 
 
-def test_the_default_lifetime_is_ninety_days(ca, clock):
+def test_the_default_lifetime_is_twenty_one_days(ca, clock):
     csr_der, _ = _csr()
     _cert, identity = _issued(ca, csr_der)
+    assert DEFAULT_VALIDITY_DAYS == 21
     assert identity.not_after == clock() + dt.timedelta(days=DEFAULT_VALIDITY_DAYS)
 
 
 def test_renewal_starts_at_a_third_of_life(ca, clock):
-    """Wide enough that a router switched off for a fortnight still wakes inside
-    the window. At 90 days that is a 60-day runway."""
+    """The 21-day lifetime leaves 14 days plus backdate slack after renewal starts."""
     csr_der, _ = _csr()
     _cert, identity = _issued(ca, csr_der)
 
     runway = identity.not_after - identity.renew_after()
-    assert dt.timedelta(days=59) < runway < dt.timedelta(days=62)
+    assert runway == dt.timedelta(days=14, hours=8)
 
 
 def test_two_devices_do_not_share_a_serial(ca):

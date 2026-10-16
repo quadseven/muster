@@ -31,14 +31,15 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509 import ocsp
 from cryptography.x509.oid import AuthorityInformationAccessOID, NameOID
 
-# 90 days, as specified. Long enough that renewal is not constant chatter, short
-# enough that "stop renewing" is a revocation an operator can live with - a
-# stolen device stays trusted for at most this long.
-DEFAULT_VALIDITY_DAYS = 90
+# 21 days: renewal starts after one third of life, leaving 21 * (1 - 1/3) =
+# 14 days to renew, matching the accepted offline tolerance before the
+# additional eight hours contributed by the 12-hour not-before backdate.
+DEFAULT_VALIDITY_DAYS = 21
 
 # Renew at a third of life. Not half, and not at the last minute: these devices
-# travel, and the window has to be wide enough that a router which is off for a
-# fortnight still wakes up inside it. At 90 days this gives a 60-day runway.
+# travel, and the window has to let a router that is off for a fortnight still
+# wake up inside it. With a 21-day lifetime, that leaves 14 days plus eight
+# hours from the not-before backdate.
 RENEW_AFTER_FRACTION = 1 / 3
 
 # Clock skew allowance on not_valid_before. The GL-MT3000 has no RTC and often

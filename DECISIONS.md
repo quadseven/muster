@@ -291,13 +291,16 @@ certificate, and revocation is not renewing it.
 
 **Chosen, with each number reasoned rather than picked:**
 
-- **90 days.** Long enough that renewal is not constant chatter, short enough
-  that "stop renewing" is a revocation an operator can live with. A stolen
-  device stays trusted for at most that long.
-- **Renew at a third of life.** Not half, and not at the last minute: a router
-  that is off for a fortnight has to wake up still inside the window. Coming
-  back with a dead identity means enrolling again from a fresh pairing code with
-  a human holding the handset, which on an owned device costs a factory reset.
+- **21 days.** A stolen device stays trusted for at most that long if it is
+  offline. This is the shortest lifetime that preserves the chosen 14-day
+  offline tolerance with renewal at a third of life: `21 * (1 - 1/3) = 14`.
+- **Renew at a third of life.** Not half, and not at the last minute: the
+  remaining two thirds of a 21-day lifetime give a 14-day renewal window, just
+  enough for a router that is off for a fortnight to wake inside it. The
+  twelve-hour not-before backdate adds eight hours of actual outage slack.
+  Coming back with a dead identity means enrolling again from a fresh pairing
+  code with a human holding the handset, which on an owned device costs a
+  factory reset.
 - **Backdate twelve hours.** Hardware without a real-time clock, which this
   estate has, can boot believing it is 1970 or several hours off. A not-yet-valid
   certificate is indistinguishable from a broken one on a device that cannot fix
@@ -433,7 +436,8 @@ publishes takes no lock and does no I/O.
 
 **A device is its key, not its certificate**, so renewal writes a second
 certificate against the same device rather than inventing a second phone every
-ninety days.
+21 days. A router offline for the full 14-day tolerance leaves eight hours of
+additional renewal slack after accounting for the not-before backdate.
 
 ---
 
