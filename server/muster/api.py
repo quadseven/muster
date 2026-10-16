@@ -87,6 +87,7 @@ import hashlib
 import io
 import os
 import pathlib
+import re
 import threading
 import time
 import urllib.parse
@@ -348,6 +349,13 @@ REPORT_MAX_BYTES = 16384
 # The agent's own package-name rule (AppInstallPolicy.PACKAGE), so a name the
 # device could never have installed cannot become a row.
 _PACKAGE = r"^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$"
+_INSTALL_REPORT_LINE = re.compile(
+    r"(?i:install)\s+(?P<package>[a-zA-Z][a-zA-Z0-9_]*"
+    r"(?:\.[a-zA-Z][a-zA-Z0-9_]*)+)\s+"
+    r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}\s+sha256\s+[0-9a-f]{64}"
+    r"\s+version\s+(?P<version>[0-9]+)"
+    r"(?P<replace>\s+replace-if-signer-differs)?"
+)
 
 
 class StepIn(BaseModel):
@@ -398,6 +406,45 @@ def _report_view(report: kith_store.Report | None) -> dict | None:
             for p in report.packages
         ],
     }
+
+
+def _expected_install_version(line: str) -> tuple[str, int] | None:
+    """Read only instructions the Android install policy would accept."""
+    match = _INSTALL_REPORT_LINE.fullmatch(line.strip())
+    if match is None:
+        return None
+    package = match.group("package")
+    if match.group("replace") and package == "app.muster.agent":
+        return None
+    version = int(match.group("version"))
+    if version > 2**63 - 1:
+        return None
+    return package, version
+
+
+def _report_drift(report: kith_store.Report, install_apps: str) -> list[dict]:
+    """Compare the device's reading with valid install instructions it received."""
+    installed = {entry.package: entry.version_code for entry in report.packages}
+    drift = []
+    named = set()
+    for line in install_apps.splitlines():
+        instruction = _expected_install_version(line)
+        if instruction is None:
+            continue
+        package, expected = instruction
+        if package in named:
+            continue
+        named.add(package)
+        if package not in installed:
+            continue
+        actual = installed[package]
+        if actual is None or actual < expected:
+            drift.append({
+                "package": package,
+                "expected_version_code": expected,
+                "installed_version_code": actual,
+            })
+    return drift
 
 
 def _issue(state: "State", request_id: str, pending) -> dict:
@@ -2303,12 +2350,24 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
             report = state.kith.report(key_id)
         except kith_store.Unreachable as exc:
             raise _unreachable(exc) from exc
+        report_view = _report_view(report)
+        if report_view is not None:
+            try:
+                configured = state.policies.for_device(key_id, role=member.device.role)
+            except policy.NoSource:
+                report_view["drift"] = None
+            except policy.Unreadable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            else:
+                report_view["drift"] = _report_drift(
+                    report, configured.files.get(policy.INSTALL_APPS_FILE, "")
+                )
         return {
             "device": _member(member),
             # WHAT IT LAST SAID IT DID (muster#146), or null if it never said.
             # Null and not an empty report: an empty one would read as every
             # step fine and nothing installed.
-            "report": _report_view(report),
+            "report": report_view,
             "certificates": [
                 {
                     "serial": c.serial,

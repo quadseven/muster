@@ -666,9 +666,36 @@ def test_a_device_report_is_stored_and_an_administrator_can_read_it(state):
         {"package": "app.example.other", "version_code": None},
     ]
     assert report["concerns"] == 1
+    assert report["drift"] is None  # no policy source means unknown, not current
     assert report["received_at"]
     assert "custom.muster.device.report.received:1|c" in state.telemetry.sent
     assert "custom.muster.device.report.concerns:1|c" in state.telemetry.sent
+
+
+def test_a_report_shows_version_drift_against_effective_install_policy(state, tmp_path):
+    """The administrator sees an outdated and an absent managed app."""
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    (tmp_path / "kith.install-apps").write_text(
+        "install app.example.companion companion.apk sha256 " + "a" * 64 + " version 80\n"
+        "install app.example.other other.apk sha256 " + "b" * 64 + " version 4\n"
+    )
+    state.policies = _policy_root(tmp_path)
+    assert _send_report(
+        client, key, identity, [],
+        [
+            {"package": "app.example.companion", "version_code": 78},
+            {"package": "app.example.other", "version_code": None},
+        ],
+    ).status_code == 202
+
+    report = client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["report"]
+    assert report["drift"] == [
+        {"package": "app.example.companion", "expected_version_code": 80,
+         "installed_version_code": 78},
+        {"package": "app.example.other", "expected_version_code": 4,
+         "installed_version_code": None},
+    ]
 
 
 def test_a_device_that_never_reported_shows_no_report_rather_than_an_empty_one(state):

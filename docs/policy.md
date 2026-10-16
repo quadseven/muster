@@ -605,6 +605,18 @@ one at its next check-in. One post per check-in rather than one per step, for
 the same reason - and the only check-in that ends before posting is one where
 muster installed itself, whose new version the next report carries.
 
+The administrator's device detail response compares each reported version with
+the effective `install-apps` version for that device. `report.drift` lists
+managed packages that are absent or behind. An empty list means no reported
+managed package is behind; an omitted package has an unknown state. `null`
+means no policy source was available for
+comparison. The report is a snapshot from the last check-in, not a live query.
+It covers packages named by `install-apps`, not every app on the handset:
+Android package visibility filters other apps, and this agent does not request
+`QUERY_ALL_PACKAGES`. Play-managed apps and Play's update queue are outside
+this install path; the silent installer acts only on APKs in muster's asset
+store named by `install-apps`.
+
 **It writes the same files this document already describes**, into the same
 device-protected directory, so everything the stewards do - reconciling both
 ways, refusing a name they do not know, reading the platform back, withholding a
