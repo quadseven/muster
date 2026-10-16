@@ -18,6 +18,7 @@ WHO CAN REACH WHAT, because this is the part that gets it wrong:
                                POST /v1/provision/qr
                                GET  /v1/kith
                                GET  /v1/kith/{key_id}
+                               GET  /v1/kith/{key_id}/packages
     public, on their own       GET  https://<MUSTER_CRL_URL>
        hostnames               POST https://<MUSTER_OCSP_URL>
 
@@ -90,7 +91,7 @@ import pathlib
 import threading
 import time
 import urllib.parse
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Annotated, Callable
 from email.utils import format_datetime
 
@@ -105,6 +106,7 @@ from muster.ca import Authority, Identity, Untrusted
 from muster.proof import Proofs, Verdict
 from muster import administrator, console, policy, provisioning, revocation
 from muster import assets as asset_store
+from muster import drift
 from muster import kith as kith_store
 from muster.enroll import (
     DEFAULT_CODE_TTL_S,
@@ -2321,6 +2323,62 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
                 for c in history
             ],
         }
+
+    @app.get("/v1/kith/{key_id}/packages", dependencies=[admin])
+    def device_packages(key_id: str):
+        """What is on that phone, against what its policy says should be (muster#162).
+
+        The device's last report beside the `install-apps` this device is
+        served, one entry per package with a state from `muster/drift.py`.
+        `drifted` counts the packages muster owns that are behind or missing,
+        which are the ones the next check-in installs on its own.
+
+        A ROUTE OF ITS OWN, NOT A FIELD ON `GET /v1/kith/{key_id}`, because it
+        needs the policy and that view does not. When the policy cannot be read
+        this is 503 - an empty expectation would show every app as out of reach
+        and none as behind - and that refusal must not take the device's
+        certificates and report down with it.
+        """
+        try:
+            member = state.kith.member(key_id)
+            if member is None:
+                raise HTTPException(status_code=404, detail="no such device")
+            report = state.kith.report(key_id)
+        except kith_store.Unreachable as exc:
+            raise _unreachable(exc) from exc
+        expected = drift.expected_versions(
+            _install_apps_for(state, key_id, member.device.role)
+        )
+        entries = drift.compare(expected, report.packages if report else None)
+        return {
+            "key_id": key_id,
+            "reported_at": report.received_at.isoformat() if report else None,
+            "drifted": drift.drifted(entries),
+            "packages": [asdict(entry) for entry in entries],
+        }
+
+
+def _install_apps_for(state: State, key_id: str, role: str) -> str | None:
+    """The `install-apps` text this device is served, or 503 if muster cannot say.
+
+    Through `for_device` rather than reading the file, so drift uses the same
+    scope merge and the same refusals as the configuration the device fetches.
+    """
+    try:
+        return state.policies.for_device(key_id, role=role).files.get(
+            policy.INSTALL_APPS_FILE
+        )
+    except (policy.Unreadable, policy.NoSource) as cannot_say:
+        reason = "no-source" if isinstance(cannot_say, policy.NoSource) else "unreadable"
+        state.telemetry.count("kith.packages.refused", tags=[f"reason:{reason}"])
+        telemetry.event(
+            "muster cannot say what a device should carry",
+            key_id=key_id, reason=reason, error=str(cannot_say),
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"{cannot_say} muster cannot say what this device should carry.",
+        ) from cannot_say
 
 
 def _agent_version_code() -> int | None:

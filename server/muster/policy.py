@@ -322,6 +322,23 @@ def _refuse_unusable_scope(key_id: str, role: str) -> None:
         )
 
 
+def install_package(line: str) -> str | None:
+    """The package an `install-apps` line names, or None if it names none.
+
+    The keyword is case-insensitive, exactly like the agent reads it
+    (AppInstallPolicy.read: `words[0].lowercase() != INSTALL`). The package is
+    NOT normalized: the agent keys its own table by the raw package string, so
+    `App.foo` and `app.foo` are two packages to it, not one. Normalizing case
+    here would merge what the agent keeps apart - the one drift this merge must
+    never introduce. Shared with `drift.py`, so the merge and the drift report
+    cannot disagree about which package a line is for.
+    """
+    words = line.split()
+    if len(words) >= 2 and words[0].lower() == "install":
+        return words[1]
+    return None
+
+
 def _merge_install_apps(scoped: list[str]) -> str:
     """Merge `install-apps` file texts, least specific scope first.
 
@@ -341,24 +358,11 @@ def _merge_install_apps(scoped: list[str]) -> str:
     validator, and a server that second-guessed the grammar would be a second
     vocabulary nobody asked for.
     """
-
-    def package_of(line: str) -> str | None:
-        # The keyword is case-insensitive, exactly like the agent reads it
-        # (AppInstallPolicy.read: `words[0].lowercase() != INSTALL`). The
-        # package is NOT normalized: the agent keys its own table by the raw
-        # package string, so `App.foo` and `app.foo` are two packages to it,
-        # not one. Normalizing case here would merge what the agent keeps
-        # apart - the one drift this merge must never introduce.
-        words = line.split()
-        if len(words) >= 2 and words[0].lower() == "install":
-            return words[1]
-        return None
-
     # Most specific first: the first scope naming a package wins it.
     winners: dict[str, str] = {}
     for text in reversed(scoped):
         for line in text.splitlines():
-            package = package_of(line)
+            package = install_package(line)
             if package is not None and package not in winners:
                 winners[package] = line
 
@@ -369,7 +373,7 @@ def _merge_install_apps(scoped: list[str]) -> str:
     out: list[str] = []
     for text in scoped:
         for line in text.splitlines():
-            package = package_of(line)
+            package = install_package(line)
             if package is None:
                 out.append(line)
             elif package not in emitted and winners[package] == line:

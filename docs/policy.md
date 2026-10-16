@@ -298,6 +298,51 @@ That makes the keystore the single most valuable thing in this project. See
 mind wiping, because every device enrolled before it is enrolled against a key
 that is going to change.
 
+### Drift: what is on that phone, against what it should carry
+
+`GET /v1/kith/{key_id}/packages` (administrator only, muster#162) puts the
+device's last check-in report next to the `install-apps` that device is
+served. That is the merged file `/v1/device/config` would send it, so a role
+that pins a newer build is checked against that build. Each package gets one
+state:
+
+    current      at or past the version named
+    behind       installed, below the version named       drift
+    missing      the device reported it is not installed    drift
+    unreported   named, but the report does not mention it
+    unmanaged    reported, but no line names it
+    unreadable   named, but no version can be read off the line
+
+`drifted` counts `behind` and `missing`. `unreported` is not drift: the device
+never said the package was absent. That happens when it has not reported since
+the line was added, or has never reported at all. The answer is 503 when the
+policy cannot be read, rather than an empty expectation that would show every
+app as out of reach.
+
+**Pushing a newer APK is how drift closes, and it already exists.** Upload the
+build as an asset, then raise its line's digest and `version`. At its next
+check-in the agent downloads the bytes, checks the digest, and installs them
+silently as Device Owner. A device that is switched off picks it up when it
+next checks in, and not before.
+
+**Play-managed apps are out of reach, and muster does not pretend otherwise.**
+An app Play installed has no `install-apps` line. Play keeps its own update
+queue, and a Device Owner can neither read nor drive it. With the store hidden,
+nothing updates such an app. The agent only reports the packages `install-apps`
+names, so the report does not list it. If an app no line names does show up in
+a report (for example, one whose line was just removed), it is `unmanaged`.
+The only way to keep such an app current is to take it over: publish its APK
+and add a line for it. That works only if the build is signed with the key
+the installed copy already carries (see above). Nothing here reads or
+schedules Play updates, and `server/tests/test_no_play_update_queue.py` fails
+if code that would starts to appear.
+
+**What the report does not cover yet.** It lists only the packages
+`install-apps` names, not every package on the device. Listing everything needs
+`QUERY_ALL_PACKAGES`, a fifth permission that D25 requires an argument for.
+Listing launcher apps through the existing `<queries>` visibility would work
+without one, but needs an agent change that is still to be made.
+
 ## Roles: what a device is FOR
 
 A role is chosen when a provisioning QR is minted, and it is the only moment
@@ -597,7 +642,8 @@ concerns, and the installed `versionCode` of every package `install-apps`
 names (null where it is not installed). Unlike diagnostics it is KEPT - the
 newest per device, in `kith_report` - and returned as `report` on
 `GET /v1/kith/{key_id}`, so whether an install worked is answerable without
-holding the phone. Each field is bounded, the whole report is capped at 16 KiB,
+holding the phone. `GET /v1/kith/{key_id}/packages` compares those versions with
+the policy (see "Drift" above). Each field is bounded, the whole report is capped at 16 KiB,
 and one is accepted per device per minute. It is written synchronously and
 answered 503 while the kith store is down rather than queued: a report is far
 larger than the timestamps the backlog holds, and the device sends a fresher

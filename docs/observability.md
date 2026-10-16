@@ -62,6 +62,7 @@ agent at `status.hostIP:8125`.
     kith.deferred                   gauge, how much is owed to the store
     kith.read.unreachable           a read short-circuited by the cooldown
     kith.read.refused               /v1/kith answered 503
+    kith.packages.refused           #reason:no-source|unreadable
     enroll.collect.from_store       a certificate collected after a pod restart
     enroll.collect.unreachable      collection answered 503 rather than 404
 
@@ -126,6 +127,12 @@ so a rate above zero is a device somebody should look at, and the
 `device report received` log line beside it names the `key_id`, the
 `concerns`, and the `versions`. The count is not tagged by step: step names
 arrive from the device, and a tag a device chooses is unbounded cardinality.
+
+**Drift is read, not alerted on (muster#162).** `GET /v1/kith/{key_id}/packages`
+holds that report against the `install-apps` the device is served and labels
+each package; see `docs/policy.md` under "Drift". It is computed when asked, so
+there is no drift metric. `kith.packages.refused` counts that route answering
+503 because the policy could not be read.
 
 **`shape` is the same argument one level out.** A QR whose code expired before a
 phone finished downloading and installing the agent, and an operator mistyping

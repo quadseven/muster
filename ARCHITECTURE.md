@@ -579,6 +579,7 @@ a third-party script on that page.
   server/muster/proof.py          proving possession after enrollment
   server/muster/kith.py           what muster remembers, and why the store may fail
   server/muster/policy.py         what one device is told to be, and from where
+  server/muster/drift.py          what a device reported, against what policy names
   server/muster/assets.py         bytes too big for a policy file
   server/muster/administrator.py  who the human is, and how they sign in
   server/muster/console.py        sessions, and what gets recorded

@@ -755,6 +755,142 @@ def test_a_report_and_diagnostics_from_one_check_in_do_not_share_a_limit(state):
     assert _send_report(client, key, identity, [], []).status_code == 202
 
 
+# ---- what is on that phone, against what it should carry (muster#162) -----
+
+
+def _install_line(package, version):
+    return f"install {package} {package}.apk sha256 {'0' * 64} version {version}\n"
+
+
+def test_an_administrator_sees_a_version_behind_policy_as_drift(state, tmp_path):
+    """The whole of the issue in one exchange: a device reports over its own
+    identity, no cable, and the control plane says which app is behind."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.install-apps").write_text(
+        _install_line("app.example.companion", 80) + _install_line("app.example.other", 5)
+    )
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    sent = _send_report(
+        client, key, identity, steps=[],
+        packages=[
+            {"package": "app.example.companion", "version_code": 78},
+            {"package": "app.example.other", "version_code": 5},
+        ],
+    )
+    assert sent.status_code == 202, sent.text
+
+    response = client.get(f"/v1/kith/{device_id}/packages", cookies=ADMIN)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["key_id"] == device_id
+    assert body["reported_at"]
+    assert body["drifted"] == 1
+    assert body["packages"] == [
+        {
+            "package": "app.example.companion",
+            "expected_version_code": 80,
+            "reported_version_code": 78,
+            "state": "behind",
+        },
+        {
+            "package": "app.example.other",
+            "expected_version_code": 5,
+            "reported_version_code": 5,
+            "state": "current",
+        },
+    ]
+
+
+def test_drift_is_judged_against_the_role_the_device_actually_has(state, tmp_path):
+    """`install-apps` merges by package, most specific scope winning
+    (muster#109). Drift read against the kith file alone would call a device
+    pinned by its role current when it is not."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.install-apps").write_text(_install_line("app.example.companion", 80))
+    (tmp_path / "role-kiosk.install-apps").write_text(
+        _install_line("app.example.companion", 90)
+    )
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    assert client.post(
+        f"/v1/kith/{device_id}/role", json={"role": "kiosk"}, cookies=ADMIN
+    ).status_code == 200
+    _send_report(
+        client, key, identity, steps=[],
+        packages=[{"package": "app.example.companion", "version_code": 85}],
+    )
+
+    entry = client.get(f"/v1/kith/{device_id}/packages", cookies=ADMIN).json()[
+        "packages"
+    ][0]
+
+    assert (entry["expected_version_code"], entry["state"]) == (90, "behind")
+
+
+def test_a_device_that_never_reported_is_unreported_rather_than_missing(state, tmp_path):
+    """No report is not "nothing installed". The answer says what muster expects
+    and that the device has not said."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.install-apps").write_text(_install_line("app.example.companion", 80))
+    client = _proof_client(state)
+    _key, _identity, device_id = _enrolled(state, record=True)
+
+    body = client.get(f"/v1/kith/{device_id}/packages", cookies=ADMIN).json()
+
+    assert body["reported_at"] is None
+    assert body["drifted"] == 0
+    assert body["packages"] == [
+        {
+            "package": "app.example.companion",
+            "expected_version_code": 80,
+            "reported_version_code": None,
+            "state": "unreported",
+        }
+    ]
+
+
+def test_packages_for_a_device_not_in_the_kith_is_404(state, tmp_path):
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.install-apps").write_text(_install_line("app.example.companion", 80))
+    client = _proof_client(state)
+
+    assert client.get(f"/v1/kith/{'a' * 64}/packages", cookies=ADMIN).status_code == 404
+
+
+def test_packages_with_no_policy_source_is_503_not_everything_unmanaged(state):
+    """Without the policy muster cannot say what a device should carry. Answering
+    "nothing expected" would show every app as out of reach and none as behind."""
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    _send_report(
+        client, key, identity, steps=[],
+        packages=[{"package": "app.example.companion", "version_code": 78}],
+    )
+
+    response = client.get(f"/v1/kith/{device_id}/packages", cookies=ADMIN)
+
+    assert response.status_code == 503
+    assert "custom.muster.kith.packages.refused:1|c|#reason:no-source" in (
+        state.telemetry.sent
+    )
+
+
+def test_packages_while_the_kith_is_down_is_503(state, tmp_path):
+    class Down(kith_store.MemoryRecords):
+        def report(self, key_id):
+            raise OSError("connection refused")
+
+    state.kith = kith_store.Kith(Down())
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.install-apps").write_text(_install_line("app.example.companion", 80))
+    client = _proof_client(state)
+    _key, _identity, device_id = _enrolled(state, record=True)
+
+    assert client.get(f"/v1/kith/{device_id}/packages", cookies=ADMIN).status_code == 503
+
+
 def _policy_root(tmp_path):
     from muster import policy
 
@@ -2258,6 +2394,10 @@ ADMINISTRATOR_ONLY = {
     # the internet gets to ask.
     ("GET", "/v1/kith"),
     ("GET", "/v1/kith/{key_id}"),
+    # muster#162: what that device reported, against what its policy says it
+    # should carry. Administrator-only for the roll's reason, and because the
+    # answer names every application muster manages on it.
+    ("GET", "/v1/kith/{key_id}/packages"),
     # muster#73: changing what a device is FOR. Administrator-only rather than
     # device-proven, because a role selects which policy scope is served -
     # including app-config, which carries write tokens.
