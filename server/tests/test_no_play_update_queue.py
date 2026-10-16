@@ -34,9 +34,11 @@ FORBIDDEN = (
     "AppUpdateManager",
     # The store's internal package, which is what a queue hack would target.
     "finsky",
-    # Deep links that hand an update to the store to perform.
+    # Deep links that hand an update to the store to perform: the store's own
+    # scheme, and the path of its web listing (matched by path so this file
+    # names no live host - test_no_live_hostnames.py).
     "market://",
-    "play.google.com/store",
+    "/store/apps/details",
 )
 
 
