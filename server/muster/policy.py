@@ -322,6 +322,21 @@ def _refuse_unusable_scope(key_id: str, role: str) -> None:
         )
 
 
+def _install_package(line: str) -> str | None:
+    """The package an `install` line names, or None for any other line.
+
+    The keyword is case-insensitive, exactly like the agent reads it
+    (AppInstallPolicy.read: `words[0].lowercase() != INSTALL`). The package is
+    NOT normalized: the agent keys its own table by the raw package string, so
+    `App.foo` and `app.foo` are two packages to it, not one. Normalizing case
+    here would merge what the agent keeps apart.
+    """
+    words = line.split()
+    if len(words) >= 2 and words[0].lower() == "install":
+        return words[1]
+    return None
+
+
 def _merge_install_apps(scoped: list[str]) -> str:
     """Merge `install-apps` file texts, least specific scope first.
 
@@ -342,23 +357,11 @@ def _merge_install_apps(scoped: list[str]) -> str:
     vocabulary nobody asked for.
     """
 
-    def package_of(line: str) -> str | None:
-        # The keyword is case-insensitive, exactly like the agent reads it
-        # (AppInstallPolicy.read: `words[0].lowercase() != INSTALL`). The
-        # package is NOT normalized: the agent keys its own table by the raw
-        # package string, so `App.foo` and `app.foo` are two packages to it,
-        # not one. Normalizing case here would merge what the agent keeps
-        # apart - the one drift this merge must never introduce.
-        words = line.split()
-        if len(words) >= 2 and words[0].lower() == "install":
-            return words[1]
-        return None
-
     # Most specific first: the first scope naming a package wins it.
     winners: dict[str, str] = {}
     for text in reversed(scoped):
         for line in text.splitlines():
-            package = package_of(line)
+            package = _install_package(line)
             if package is not None and package not in winners:
                 winners[package] = line
 
@@ -369,13 +372,46 @@ def _merge_install_apps(scoped: list[str]) -> str:
     out: list[str] = []
     for text in scoped:
         for line in text.splitlines():
-            package = package_of(line)
+            package = _install_package(line)
             if package is None:
                 out.append(line)
             elif package not in emitted and winners[package] == line:
                 emitted.add(package)
                 out.append(line)
     return "\n".join(out) + ("\n" if out else "")
+
+
+_VERSION_CODE = re.compile(r"\+?[0-9]+")
+
+
+def expected_versions(install_apps: str) -> dict[str, int | None]:
+    """Each package an `install-apps` text names, to the versionCode it asks for.
+
+    THE NUMBER DRIFT IS MEASURED AGAINST (muster#162), read from the same text
+    a device is served rather than kept anywhere else, so what muster
+    calls "behind" and what the agent will install can never disagree.
+
+    Only the positions the agent reads the version from are read here:
+    `install <package> <asset> sha256 <hex> version <code> [flag]`. Everything
+    else about a line is the agent's to validate, as `_merge_install_apps`
+    says. A line naming a package with no version muster can read maps to
+    None rather than being dropped: the agent refuses that line, so nothing
+    will update the package, and leaving it out would hide exactly that.
+    """
+    expected: dict[str, int | None] = {}
+    for line in install_apps.splitlines():
+        package = _install_package(line)
+        if package is not None:
+            expected[package] = _version_of(line.split())
+    return expected
+
+
+def _version_of(words: list[str]) -> int | None:
+    """The versionCode an `install` line's words ask for, or None if unreadable."""
+    shaped = len(words) in (7, 8) and words[3] == "sha256" and words[5] == "version"
+    # ASCII digits with an optional plus, like the agent's `toLongOrNull` then
+    # `code < 0`. Not `str.isdigit`, which says yes to digits `int` refuses.
+    return int(words[6]) if shaped and _VERSION_CODE.fullmatch(words[6]) else None
 
 
 @dataclass

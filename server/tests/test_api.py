@@ -755,6 +755,142 @@ def test_a_report_and_diagnostics_from_one_check_in_do_not_share_a_limit(state):
     assert _send_report(client, key, identity, [], []).status_code == 202
 
 
+# ---- drift: what a device carries against what it is told (muster#162) ----
+
+_APK_DIGEST = "3f2a" + "0" * 60
+
+
+def _expecting(state, tmp_path, lines, scope="kith"):
+    """A policy directory whose `install-apps` names these (package, version)s."""
+    from muster import policy
+
+    (tmp_path / f"{scope}.install-apps").write_text("".join(
+        f"install {package} {package}.apk sha256 {_APK_DIGEST} version {version}\n"
+        for package, version in lines
+    ))
+    state.policies = policy.Policies(root=tmp_path)
+
+
+def _drift(client, device_id):
+    return client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["drift"]
+
+
+def test_a_version_behind_the_expected_one_is_drift(state, tmp_path):
+    """THE ACCEPTANCE CRITERION: an operator sees a phone that is behind."""
+    _expecting(state, tmp_path, [("app.muster.agent", 41), ("app.example.companion", 72)])
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    _send_report(client, key, identity, steps=[], packages=[
+        {"package": "app.muster.agent", "version_code": 41},
+        {"package": "app.example.companion", "version_code": 70},
+    ])
+
+    drift = _drift(client, device_id)
+
+    assert drift["known"] is True
+    assert drift["drifted"] == 1
+    assert drift["packages"] == [
+        {"package": "app.muster.agent", "expected_version_code": 41,
+         "installed_version_code": 41, "state": "current"},
+        {"package": "app.example.companion", "expected_version_code": 72,
+         "installed_version_code": 70, "state": "behind"},
+    ]
+
+
+def test_an_expected_package_not_installed_or_not_reported_is_drift(state, tmp_path):
+    """Null from the device is "not installed"; missing is "policy moved on"."""
+    _expecting(state, tmp_path, [("app.example.other", 3), ("app.example.new", 1)])
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    _send_report(client, key, identity, steps=[], packages=[
+        {"package": "app.example.other", "version_code": None},
+    ])
+
+    drift = _drift(client, device_id)
+
+    assert drift["drifted"] == 2
+    assert [(p["package"], p["state"]) for p in drift["packages"]] == [
+        ("app.example.other", "absent"),
+        ("app.example.new", "unreported"),
+    ]
+    assert drift["packages"][1]["installed_version_code"] is None
+
+
+def test_a_newer_installed_version_is_ahead_and_not_drift(state, tmp_path):
+    """The agent leaves a newer build alone; Android refuses the downgrade."""
+    _expecting(state, tmp_path, [("app.example.companion", 72)])
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    _send_report(client, key, identity, steps=[], packages=[
+        {"package": "app.example.companion", "version_code": 80},
+    ])
+
+    drift = _drift(client, device_id)
+
+    assert drift["drifted"] == 0
+    assert drift["packages"][0]["state"] == "ahead"
+
+
+def test_a_package_muster_does_not_ship_is_never_drift(state, tmp_path):
+    """Play-managed apps are out of reach: only `install-apps` sets a version."""
+    _expecting(state, tmp_path, [("app.example.companion", 72)])
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    _send_report(client, key, identity, steps=[], packages=[
+        {"package": "app.example.companion", "version_code": 72},
+        {"package": "com.example.fromplay", "version_code": 1},
+    ])
+
+    drift = _drift(client, device_id)
+
+    assert [p["package"] for p in drift["packages"]] == ["app.example.companion"]
+    assert drift["drifted"] == 0
+
+
+def test_a_device_that_never_reported_has_no_drift_rather_than_none(state, tmp_path):
+    """Null, not an empty list: an empty one would read as "nothing behind"."""
+    _expecting(state, tmp_path, [("app.example.companion", 72)])
+    client = _proof_client(state)
+    _key, _identity, device_id = _enrolled(state, record=True)
+
+    assert _drift(client, device_id) is None
+
+
+def test_drift_muster_cannot_measure_says_so_and_keeps_the_device_readable(state):
+    """No policy source is "unknown", not "nothing expected" - and not a 503
+    that would hide the device's certificates over a question about apps."""
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    _send_report(client, key, identity, steps=[], packages=[
+        {"package": "app.example.companion", "version_code": 70},
+    ])
+
+    response = client.get(f"/v1/kith/{device_id}", cookies=ADMIN)
+
+    assert response.status_code == 200
+    drift = response.json()["drift"]
+    assert drift["known"] is False
+    assert "policy directory" in drift["reason"]
+    assert "packages" not in drift
+
+
+def test_drift_is_measured_against_the_devices_own_scope(state, tmp_path):
+    """The same merge the device is served: a role's version wins its package."""
+    _expecting(state, tmp_path, [("app.example.companion", 72)])
+    _expecting(state, tmp_path, [("app.example.companion", 90)], scope="role-zippie")
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    assert state.kith.set_role(device_id, "zippie")
+    _send_report(client, key, identity, steps=[], packages=[
+        {"package": "app.example.companion", "version_code": 72},
+    ])
+
+    drift = _drift(client, device_id)
+
+    assert drift["packages"][0]["expected_version_code"] == 90
+    assert drift["packages"][0]["state"] == "behind"
+
+
 def _policy_root(tmp_path):
     from muster import policy
 

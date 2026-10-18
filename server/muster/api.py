@@ -400,6 +400,74 @@ def _report_view(report: kith_store.Report | None) -> dict | None:
     }
 
 
+# WHAT COUNTS AS DRIFT (muster#162). `ahead` is not: the agent leaves a newer
+# build alone because Android refuses the downgrade, and a newer version is what
+# a hand-installed build looks like. `unreadable` is: muster cannot read a
+# version from the line, the agent refuses it, and nothing will update it.
+_DRIFTED = frozenset({"behind", "absent", "unreported", "unreadable"})
+
+
+def _package_state(expected: int | None, reported: bool, installed: int | None) -> str:
+    """Where one package a device is told to carry stands against its report."""
+    if expected is None:
+        return "unreadable"
+    if not reported:
+        # Named now, and not in the report: the policy moved on after it.
+        return "unreported"
+    if installed is None:
+        return "absent"
+    if installed < expected:
+        return "behind"
+    return "current" if installed == expected else "ahead"
+
+
+def _drift_view(report: kith_store.Report, expected: dict[str, int | None]) -> dict:
+    """Each package `install-apps` names for this device, against what it reported.
+
+    ONLY WHAT MUSTER SHIPS. The expectation is `install-apps` and nothing
+    else, so a package the device reports that muster does not install - a
+    Play-managed application, say - is never drift. muster cannot update it,
+    and a row saying it is behind would be a promise nothing here can keep.
+    """
+    installed = {p.package: p.version_code for p in report.packages}
+    packages = [
+        {
+            "package": package,
+            "expected_version_code": wanted,
+            "installed_version_code": installed.get(package),
+            "state": _package_state(wanted, package in installed, installed.get(package)),
+        }
+        for package, wanted in expected.items()
+    ]
+    return {
+        "known": True,
+        "drifted": sum(p["state"] in _DRIFTED for p in packages),
+        "packages": packages,
+    }
+
+
+def _drift(state: State, device: kith_store.Device, report) -> dict | None:
+    """The device's drift, null if it never reported, or why it is unknown.
+
+    UNKNOWN IS SAID, NOT SHORTENED. A policy muster cannot read is not "nothing
+    expected", so it does not become an empty list that reads as nothing
+    behind. Nor is it a 503: this route also carries the device's certificates,
+    and a question about applications should not hide them.
+    """
+    if report is None:
+        return None
+    try:
+        served = state.policies.for_device(device.key_id, role=device.role)
+    except (policy.Unreadable, policy.NoSource) as cannot_say:
+        telemetry.event(
+            "muster cannot say what a device should carry",
+            key_id=device.key_id, error=str(cannot_say),
+        )
+        return {"known": False, "reason": str(cannot_say)}
+    install_apps = served.files.get(policy.INSTALL_APPS_FILE, "")
+    return _drift_view(report, policy.expected_versions(install_apps))
+
+
 def _issue(state: "State", request_id: str, pending) -> dict:
     """Sign a vouched-for request and write the device into the kith.
 
@@ -2309,6 +2377,9 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
             # Null and not an empty report: an empty one would read as every
             # step fine and nothing installed.
             "report": _report_view(report),
+            # WHAT IT CARRIES AGAINST WHAT IT IS TOLD (muster#162), or null
+            # when there is no report to compare.
+            "drift": _drift(state, member.device, report),
             "certificates": [
                 {
                     "serial": c.serial,

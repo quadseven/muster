@@ -126,6 +126,12 @@ so a rate above zero is a device somebody should look at, and the
 `device report received` log line beside it names the `key_id`, the
 `concerns`, and the `versions`. The count is not tagged by step: step names
 arrive from the device, and a tag a device chooses is unbounded cardinality.
+Beside `report` the same route returns `drift` (muster#162): each package
+`install-apps` names for the device against the version it reported, with
+`drifted` counting the ones behind, absent, unreported or unreadable. Drift is
+computed when the route is read, not at check-in, so it is a question to ask of
+one device rather than a metric; the concern rate above is still what to alert
+on.
 
 **`shape` is the same argument one level out.** A QR whose code expired before a
 phone finished downloading and installing the agent, and an operator mistyping
