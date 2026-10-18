@@ -230,6 +230,15 @@ so the only exposure is an observer photographing the monitor; 10 minutes strict
 bounds that physical exposure window to minutes rather than hours. Typed pairing
 codes remain at 300s.
 
+Two TTLs also left `CODE_RETENTION_S` claiming to be "a multiple of the TTL so
+the two windows stay proportional if the TTL moves", while still being derived
+from the typed one alone: four lives of a typed code and two of a scanned one,
+and a scanned window longer than the constant would have bought a dead QR no
+grace at all. It is now `4 * max(DEFAULT_CODE_TTL_S, DEFAULT_SCANNED_CODE_TTL_S)`,
+so retention is a whole multiple of every code's life and follows whichever
+default moves (muster#170). The refusals that window exists to preserve -
+CODE_USED for a replay, CODE_EXPIRED for a stale QR - survive it.
+
 ---
 
 ### D5. Nothing in a signing request is trusted except the public key

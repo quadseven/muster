@@ -86,17 +86,6 @@ CODE_DIGITS = 6
 # the first thing that treats the payload as URL-shaped.
 SCANNED_CODE_BYTES = 24
 
-# The longest string this will even look at as a code. UNAUTHENTICATED INPUT
-# with no ceiling of its own: `code` arrives in a JSON body from the open
-# internet, and every wrong guess costs one `compare_digest` pass per live code.
-# Without this, one POST carrying a multi-megabyte string buys an attacker that
-# work for free, repeatedly.
-#
-# 256 mirrors ProvisioningPolicy.MAX_PAIRING_CODE in the agent, which bounds the
-# same value coming the other way out of a QR. Generous against the 32 a scanned
-# code actually is, so lengthening SCANNED_CODE_BYTES cannot silently strand a
-# fleet - and a code this long was never minted here, so refusing it turns
-# nothing legitimate away.
 # What a role may be called, and it is narrow on purpose.
 #
 # A ROLE BECOMES HALF OF A POLICY FILE NAME - `role-zippie.app-config` - and
@@ -121,11 +110,25 @@ SCANNED_CODE_BYTES = 24
 # that exists, is served to nothing, and looks exactly like one that works.
 _ROLE = re.compile(r"^[a-z]([a-z0-9-]{0,29}[a-z0-9])?\Z")
 
+# The longest string this will even look at as a code. UNAUTHENTICATED INPUT
+# with no ceiling of its own: `code` arrives in a JSON body from the open
+# internet, and every wrong guess costs one `compare_digest` pass per live code.
+# Without this, one POST carrying a multi-megabyte string buys an attacker that
+# work for free, repeatedly.
+#
+# 256 mirrors ProvisioningPolicy.MAX_PAIRING_CODE in the agent, which bounds the
+# same value coming the other way out of a QR. Generous against the 32 a scanned
+# code actually is, so lengthening SCANNED_CODE_BYTES cannot silently strand a
+# fleet - and a code this long was never minted here, so refusing it turns
+# nothing legitimate away.
 MAX_CODE_LENGTH = 256
 
-# A pairing code is alive for minutes, not hours. It bounds how long a guessing
-# attack has a target to hit at all, and it matches the real gesture: an
-# administrator generates a code because they are holding the device now.
+# A TYPED pairing code is alive for minutes, not hours: six digits are guessable,
+# and this window is the only thing bounding how long a guessing run has a
+# target at all. It matches the real gesture too - an administrator generates
+# one because they are holding the device now. A code that rides in a QR is 192
+# bits and has a whole provisioning run to survive, so it has its own default
+# below (muster#154); this one is the typed half of the pair.
 DEFAULT_CODE_TTL_S = 300.0
 
 # A scanned pairing code travels inside a provisioning QR and must survive the
@@ -148,7 +151,6 @@ DEFAULT_CODE_TTL_S = 300.0
 # than leaving an unspent QR alive for hours.
 DEFAULT_SCANNED_CODE_TTL_S = 600.0
 
-
 # How many wrong guesses a single code tolerates before it is burned. Not the
 # primary defense, but it turns "seconds to brute force" into "you get 5 tries
 # and then this code is gone", which is the difference between a background
@@ -167,14 +169,21 @@ log = logging.getLogger("muster.enroll")
 # helps nobody - not the operator holding a stale QR, and not anyone watching
 # for a second presentation of a spent code.
 #
-# A multiple of the TTL so the two windows stay proportional if the TTL ever
-# moves (see muster#113 for why it might), and deliberately generous: keeping a
-# dead code is a bounded dict entry, while dropping one early is a lost refusal.
-CODE_RETENTION_S = 4 * DEFAULT_CODE_TTL_S
+# A multiple of the LONGEST of the two TTL defaults above, so it is a whole
+# multiple of every code's life and the two windows stay in proportion when
+# either default moves (muster#113 for why it might, muster#154 for when it
+# did). Deriving it from the typed TTL alone was true when there was one TTL and
+# quietly stopped being true the moment a second shape arrived: retention was
+# then four lives of a typed code and two of a scanned one, and a scanned
+# window longer than the constant would have bought a dead QR no grace at all.
+#
+# And deliberately generous: keeping a dead code is a bounded dict entry, while
+# dropping one early is a lost refusal.
+CODE_RETENTION_S = 4 * max(DEFAULT_CODE_TTL_S, DEFAULT_SCANNED_CODE_TTL_S)
 
-# How often the sweeper runs. Codes live minutes and retention is twenty of
-# them; a one-minute pass is frequent enough that the bound is real and cheap
-# enough that the scan is noise.
+# How often the sweeper runs. Codes live minutes and retention is tens of them;
+# a one-minute pass is frequent enough that the bound is real and cheap enough
+# that the scan is noise.
 SWEEP_INTERVAL_S = 60.0
 
 
