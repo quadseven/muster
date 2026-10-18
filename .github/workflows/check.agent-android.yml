@@ -20,10 +20,18 @@ on:
       - 'agent/android/**'
       - '.github/workflows/check.agent-android.yml'
   workflow_dispatch:
-  # Keep the server's source APK younger than the artifact retention window,
-  # even when the agent source has not changed.
-  schedule:
-    - cron: "17 6 * * 1"
+  # NO `schedule`, ON PURPOSE (muster#123). A weekly run was added to keep the
+  # server's source APK inside the 14-day artifact retention window, but a
+  # scheduled run is never handed the signing secrets (see "Materialize the
+  # release keystore" below: only a push to main signs), so it would build a
+  # DEBUG-signed APK and succeed. build.server-image.yml bakes the newest
+  # successful main run whatever its event, and it also fires on this
+  # workflow's completion, so every Monday the published image would have
+  # swapped the release agent for a debug one: an APK no release-signed handset
+  # can upgrade to, and a key every newly provisioned device would bind to.
+  # Whether a scheduled run may sign is a signing-policy decision for the
+  # operator; until it is made, an expired artifact fails the image build with
+  # a clear "missing or expired" error instead.
 
 permissions:
   contents: read
