@@ -692,3 +692,39 @@ def test_install_apps_keyword_is_case_insensitive_like_the_agent(tmp_path):
         "the kith's INSTALL line and the role's install line name one package"
     )
     assert "b.apk" in served, "the role's line wins for the package"
+
+
+# ---- the version a device is told to carry (muster#162) -------------------
+
+_DIGEST = "3f2a" + "0" * 60
+
+
+def test_expected_versions_reads_each_install_lines_versioncode():
+    """The number drift is measured against is the one the device is told."""
+    text = (
+        "# the agent\n"
+        f"install app.muster.agent agent.apk sha256 {_DIGEST} version 41\n"
+        f"INSTALL app.example.companion c.apk sha256 {_DIGEST} version 72 "
+        "replace-if-signer-differs\n"
+    )
+
+    assert policy.expected_versions(text) == {
+        "app.muster.agent": 41,
+        "app.example.companion": 72,
+    }
+
+
+@pytest.mark.parametrize("line", [
+    f"install app.example.x x.apk sha256 {_DIGEST} version seventy",
+    f"install app.example.x x.apk sha256 {_DIGEST} version -1",
+    f"install app.example.x x.apk sha256 {_DIGEST} version 7\u00b2",
+    f"install app.example.x x.apk sha256 {_DIGEST}",
+    f"install app.example.x x.apk md5 {_DIGEST} version 72",
+])
+def test_a_line_muster_cannot_read_a_version_from_still_names_its_package(line):
+    """None, not absent: dropping it would hide a package nobody can update."""
+    assert policy.expected_versions(line + "\n") == {"app.example.x": None}
+
+
+def test_lines_that_are_not_install_lines_set_no_expectation():
+    assert policy.expected_versions("# nothing\n\nwallpaper w.png\n") == {}

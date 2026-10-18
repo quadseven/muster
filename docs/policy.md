@@ -274,6 +274,53 @@ muster has no uninstall verb, so a refusal is resolved by re-signing the build
 with the installed key, adding `replace-if-signer-differs` (which deletes the
 app's data), or wiping the device.
 
+### What muster can keep current, and what it cannot
+
+Hiding the Play Store made muster responsible for keeping a device's
+applications current. It can do that for the applications it ships, and only
+those (muster#162).
+
+**Pushing a newer build of an application muster owns** is: publish the APK
+into the asset store, then raise `version` (and the digest and asset name) on
+its `install-apps` line. At its next check-in the device sees it is behind and
+installs the new build silently as Device Owner, over its own identity, with
+no cable and nobody holding it. muster's own agent updates the same way.
+
+**Whether it worked is drift.** `GET /v1/kith/{key_id}` returns `drift` beside
+`report`: every package the device's `install-apps` names (merged across
+scopes exactly as it is served), the `versionCode` asked for, the one the
+device last reported, and a `state`:
+
+    current      installed at the version asked for
+    ahead        installed newer; left alone, Android refuses a downgrade
+    behind       installed older                                  (drift)
+    absent       not installed                                    (drift)
+    unreported   named now, not in the last report; policy moved on (drift)
+    unreadable   no version muster can read from the line         (drift)
+
+`drifted` counts the drift rows. `drift` is null for a device that never
+reported, and `{"known": false, "reason": ...}` when muster cannot read the
+device's policy - never an empty list, which would read as nothing behind.
+A row that stays `behind` across check-ins is an install that did not take,
+and the `install-apps` step's concerns in `report` say why.
+
+**Play-managed applications are out of reach, and nothing here pretends
+otherwise.** The expectation is `install-apps` and nothing else, so an
+application muster did not ship is never drift: muster cannot update it, and a
+row saying it is behind would promise something nothing here can do. A device
+muster owns is not enrolled in managed Google Play (`provisioning-a-pixel.md`),
+so there is no enterprise Play update queue to drive, and
+muster neither reads nor drives one. Updating such an application means
+taking it over: ship its APK through `install-apps`, signed by the key the
+installed copy was signed with.
+
+**The report names the managed packages, not everything installed.** The agent
+can see only what its manifest's `queries` block lets it see (below); listing
+every installed package needs `QUERY_ALL_PACKAGES`, a fifth permission, and
+the four-permission profile is the only input to Play Protect's approved-DPC
+heuristic this project controls. So "what is on that phone" is answered for
+what muster manages, which is also the set it can act on.
+
 ### muster updates itself last, twice over
 
 Committing muster's own install ends the process. So `install-apps` is the LAST
@@ -604,6 +651,8 @@ larger than the timestamps the backlog holds, and the device sends a fresher
 one at its next check-in. One post per check-in rather than one per step, for
 the same reason - and the only check-in that ends before posting is one where
 muster installed itself, whose new version the next report carries.
+The same route compares those versions against `install-apps` and returns
+them as `drift` (muster#162, "What muster can keep current" above).
 
 **It writes the same files this document already describes**, into the same
 device-protected directory, so everything the stewards do - reconciling both
