@@ -13,6 +13,7 @@ which is the same reasoning `policy.NoSource` exists for.
 from __future__ import annotations
 
 import hashlib
+import os
 import pathlib
 
 import pytest
@@ -53,6 +54,34 @@ def test_an_operator_upload_replaces_an_asset_atomically(store, tmp_path):
     assert uploaded.content == content
     assert uploaded.digest == hashlib.sha256(content).hexdigest()
     assert store.fetch("wall.png") == uploaded
+    assert not list(tmp_path.glob(".upload-*"))
+
+
+def test_a_failed_upload_closes_its_temporary_file(store, tmp_path, monkeypatch):
+    # muster#141: mkstemp hands back an open descriptor. If wrapping it in a
+    # file object fails, nothing else will ever close it, and a store that
+    # keeps failing uploads leaks one descriptor per attempt until the process
+    # cannot open the files it serves.
+    opened = []
+    real_mkstemp = assets.tempfile.mkstemp
+
+    def recording_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        opened.append(fd)
+        return fd, path
+
+    def failing_fdopen(*args, **kwargs):
+        raise OSError("simulated fdopen failure")
+
+    monkeypatch.setattr(assets.tempfile, "mkstemp", recording_mkstemp)
+    monkeypatch.setattr(assets.os, "fdopen", failing_fdopen)
+
+    with pytest.raises(assets.Unavailable):
+        store.put("wall.png", b"new bytes")
+
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
     assert not list(tmp_path.glob(".upload-*"))
 
 
