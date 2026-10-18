@@ -126,7 +126,14 @@ def _replace_file(root: pathlib.Path, name: str, content: bytes) -> None:
     """Publish complete bytes atomically, so readers never see a partial file."""
     fd, temporary = tempfile.mkstemp(prefix=".upload-", dir=root)
     try:
-        with os.fdopen(fd, "wb") as target:
+        try:
+            target = os.fdopen(fd, "wb")
+        except BaseException:
+            # Until fdopen succeeds nothing owns the descriptor, so a failure
+            # here would leak it (muster#141). Once it does, `with` closes it.
+            os.close(fd)
+            raise
+        with target:
             target.write(content)
             target.flush()
             os.fsync(target.fileno())
