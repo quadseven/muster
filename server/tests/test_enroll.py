@@ -247,6 +247,31 @@ def test_an_unused_expired_code_stays_reportable_through_retention(enroll):
     assert caught.value.outcome is Outcome.CODE_EXPIRED
 
 
+@pytest.mark.parametrize("shape", [Shape.TYPED, Shape.SCANNED])
+def test_a_dead_code_is_kept_for_four_of_its_own_lifetimes(enroll, shape):
+    """CODE_RETENTION_S claims to be a multiple of a code's TTL so the two
+    windows stay in proportion when the TTL moves.
+
+    That was one TTL when the claim was written. muster#154 gave codes two and
+    left the constant tracking the typed one only, so the claim stopped holding
+    for the shape that lives longest: a scanned code kept two of its lives
+    rather than four, and a scanned window longer than the retention constant
+    would have kept it less than one.
+
+    What the window buys goes with it - past retention a stale QR and a replayed
+    code are both answered NO_SUCH_CODE, which is the one answer that helps
+    nobody.
+    """
+    code = enroll.mint(shape=shape)
+    ttl = enroll.codes[code].ttl_s
+    enroll.clock.advance(ttl + 4 * ttl - 1.0)  # dead, inside four of its lives
+
+    assert enroll.sweep() == 0, "a code inside retention is still evidence"
+    with pytest.raises(Refused) as caught:
+        _present(enroll, code)
+    assert caught.value.outcome is Outcome.CODE_EXPIRED
+
+
 def test_sweep_drops_codes_only_after_retention(enroll):
     """muster#103: past TTL + retention the code is gone for good, and a replay
     is NO_SUCH_CODE - expiry is the honest answer once the window has passed."""
