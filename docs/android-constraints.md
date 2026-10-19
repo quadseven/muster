@@ -168,6 +168,21 @@ cable kept in the drawer rather than in the plan.
 
 ## What no Device Owner can do
 
+**Battery optimization exemption for a wake target is an enrolment
+precondition.** Android 36 API check (2026-10-18): the
+[`DevicePolicyManager` API](https://developer.android.com/reference/android/app/admin/DevicePolicyManager)
+has no method that grants a package this exemption. Its runtime permission grant
+methods do not change the power allowlist. The
+[`PowerManager.isIgnoringBatteryOptimizations` API](https://developer.android.com/reference/android/os/PowerManager#isIgnoringBatteryOptimizations(java.lang.String))
+reads the allowlist state; it does not grant it. Android's
+[`Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` API](https://developer.android.com/reference/android/provider/Settings#ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+asks the user to allow the app. The
+[foreground service background-start rules](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start)
+list the user's battery optimization exemption among their exceptions.
+Consequently, provisioning
+and Device Owner policy cannot complete this step for a `wake` directive: the
+operator must grant and verify it during enrolment.
+
 Worth stating because it is always on the wish list: **the 80% charge cap cannot
 be set by policy.** Android allowlists which secure settings a Device Owner may
 write, and the charging-optimization setting is not among them. It stays an adb

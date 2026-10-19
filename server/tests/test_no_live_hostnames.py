@@ -63,6 +63,7 @@ ALLOWED = frozenset(
         "api.cloudflare.com",
         "api.nextdns.io",
         "datadoghq.eu",
+        "developer.android.com",
         "developers.google.com",
         "files.pythonhosted.org",
         "fonts.googleapis.com",

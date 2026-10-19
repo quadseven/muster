@@ -224,6 +224,20 @@ left behind are in the agent's device-protected files directory:
     pairing-code      the code out of the QR, deleted once used or refused
     enroll-request    the id of a request already lodged with muster
 
+### A4c. Grant the battery exemption if app configuration uses wake
+
+Once the wake target app is installed, exempt it from battery optimization
+before relying on its `wake` directive to start a foreground service. Grant it
+in Android's battery settings and verify the exemption is active. With wireless
+adb available, the shell route is:
+
+```sh
+adb shell dumpsys deviceidle whitelist +<package>
+```
+
+Repeat for each wake target package. The provisioning QR cannot grant this
+exemption, so a wake configuration requires this operator step after the scan.
+
 ### A5. Check it, later, over adb
 
 Verification still goes over adb - wireless is fine, it does not need the cable
@@ -379,6 +393,12 @@ runtime permissions the app needs.
 
 `policy.md` has the format, the merge rule the receiving app imposes, and why a
 blank value is refused rather than pushed.
+
+**Required when `app-config` contains a `wake` directive:** follow step A4c
+for each wake target package after installing it. The agent reports a concern
+when `PowerManager.isIgnoringBatteryOptimizations` returns false. A Device
+Owner cannot grant the exemption through a public policy API; the `grant`
+directive cannot perform this step.
 
 **The `grant` line above is for Android 13 or later.** `POST_NOTIFICATIONS` does
 not exist below API 33, so on an older handset the agent reports it as not
