@@ -328,8 +328,8 @@ def _take_diagnostic_slot(
         ]
         for device in expired:
             del sent[device]
-        last = sent.get(key_id)
-        if last is not None and now - last < DIAGNOSTIC_INTERVAL_S:
+        last = sent.get(key_id, float("-inf"))
+        if now - last < DIAGNOSTIC_INTERVAL_S:
             return False
         sent[key_id] = now
         return True
