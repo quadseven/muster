@@ -335,6 +335,14 @@ So:
   store is therefore asked to classify its own failures, and a row that was
   *refused* is dropped loudly, while anything that did not reach a server at all
   is always retried.
+- **A certificate the store missed is written when the device proves.** The
+  first device muster enrolled did so before the store existed and was on no
+  roll. Every proof checks that the kith holds the certificate presented, and
+  one this CA signed that it does not hold is recorded from the certificate
+  itself - never before the proof, so nothing can write a row for a certificate
+  another CA signed. Until then `GET /v1/kith/unrecorded` names each issuance
+  the store has not taken, by device, because a count cannot say whether a
+  particular phone is on the roll (muster#166).
 - **Nothing may hang.** Queries have timeouts, connections have keepalives, a
   failed store is left alone for a cooldown, and the readiness status takes no
   lock and does no I/O - so a slow database can never make the orchestrator pull

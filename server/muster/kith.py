@@ -59,7 +59,9 @@ issuance through the health check.
 WHAT IS STILL LOST. A deferred write lives in one pod's memory. If the store is
 unreachable AND that pod restarts before it recovers, those rows are gone for
 good - the device keeps working, because its certificate is its membership, but
-muster will not list it until it renews or proves possession again. The backlog
+muster will not list it until it next proves possession: `_proven_device` writes
+a certificate this CA signed and the store does not hold (muster#166). Until
+then `unrecorded()` names each issuance still owed, by device. The backlog
 is bounded for the same reason: an unbounded one turns a store outage into an
 out-of-memory kill, which would take issuance down by the back door.
 """
@@ -250,6 +252,21 @@ class Member:
     certificates: int
     current_serial: str | None
     not_after: dt.datetime | None
+
+
+@dataclass(frozen=True)
+class Unrecorded:
+    """A certificate muster signed and the store does not hold (muster#166).
+
+    `state` is "deferred" while the write is still in the backlog and will be
+    retried, and "dropped" once it fell off a full backlog or the store refused
+    it - the case where nothing will write it until the device presents the
+    certificate in a proof.
+    """
+
+    device: Device
+    certificate: Certificate
+    state: str
 
 
 @dataclass(frozen=True)
@@ -1300,6 +1317,10 @@ class Kith:
         # the guard that gets forgotten is always on the failure path.
         self._telemetry = emitter or telemetry.Telemetry()
         self._backlog: deque = deque()
+        # Issuances that left the backlog WITHOUT being written, by serial, so
+        # `unrecorded` can still name them. Bounded like the backlog, and in
+        # this pod's memory like it, for the same reasons.
+        self._dropped: dict[str, _Issuance] = {}
         self._backlog_max = backlog_max
         self._cooldown_s = cooldown_s
         self._quiet_until: dt.datetime | None = None
@@ -1347,6 +1368,34 @@ class Kith:
             "state": "deferring" if self._quiet_until is not None else "ok",
             "deferred": len(self._backlog),
         }
+
+    def unrecorded(self) -> list[Unrecorded]:
+        """Every certificate signed here that the store does not hold, by device.
+
+        `status()` COUNTS the backlog, and a count cannot answer the question an
+        operator actually asks, which is whether THIS phone is on the roll.
+        This names each one. Deferred entries come first, oldest first, then
+        the dropped ones.
+
+        No I/O, so it answers while the store is down, which is when it matters.
+        It takes the lock, unlike `status()`, because it walks the backlog
+        rather than reading its length; nothing calls it from a health probe.
+
+        It knows only what THIS process signed and still remembers. A pod that
+        restarted has forgotten its backlog, and a device whose row was lost
+        that way is recorded the next time it proves possession (muster#166).
+        """
+        with self._lock:
+            deferred = [
+                Unrecorded(entry.device, entry.certificate, "deferred")
+                for entry in self._backlog
+                if isinstance(entry, _Issuance)
+            ]
+            dropped = [
+                Unrecorded(entry.device, entry.certificate, "dropped")
+                for entry in self._dropped.values()
+            ]
+        return deferred + dropped
 
     # ---- writes: deferred, never refused ---------------------------------
 
@@ -1514,10 +1563,10 @@ class Kith:
         with self._lock:
             if len(self._backlog) >= self._backlog_max:
                 # The oldest goes. Every dropped entry is a device that exists
-                # and will not be listed until it renews, so this is counted
+                # and will not be listed until it next proves, so this is counted
                 # rather than merely bounded - a silent bound is a fleet that
-                # quietly stops appearing.
-                self._backlog.popleft()
+                # quietly stops appearing. Kept by name too (`unrecorded`).
+                self._lost(self._backlog.popleft())
                 self._telemetry.count("kith.write.dropped")
                 telemetry.event(
                     "kith backlog full, dropped the oldest deferred write",
@@ -1561,7 +1610,7 @@ class Kith:
                 if not self._is_permanent(exc):
                     self._failed("write", exc)
                     return
-                self._backlog.popleft()
+                self._lost(self._backlog.popleft())
                 self._telemetry.count("kith.write.poison")
                 # Named in the log, because this is a device that exists and
                 # will never be listed, and the only way anybody learns which
@@ -1572,7 +1621,7 @@ class Kith:
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 continue
-            self._backlog.popleft()
+            self._written(self._backlog.popleft())
             applied = True
         # Recovery is declared on a DEMONSTRATED success, never on an empty
         # backlog and never on the clock alone. Draining nothing proves nothing,
@@ -1580,6 +1629,19 @@ class Kith:
         # be state this process made up.
         if applied:
             self._recovered()
+
+    def _lost(self, entry) -> None:
+        """Remember an issuance that left the backlog unwritten, oldest out first."""
+        if not isinstance(entry, _Issuance):
+            return
+        self._dropped[entry.certificate.serial] = entry
+        while len(self._dropped) > self._backlog_max:
+            del self._dropped[next(iter(self._dropped))]
+
+    def _written(self, entry) -> None:
+        """An issuance the store took is no longer unrecorded, however late it came."""
+        if isinstance(entry, _Issuance):
+            self._dropped.pop(entry.certificate.serial, None)
 
     def _is_permanent(self, exc: Exception) -> bool:
         """Ask the store to classify a failure, and survive it not being able to.
@@ -1771,7 +1833,7 @@ def from_env(
             "MUSTER_DATABASE_URL is not set: the kith is in memory only and will "
             "not survive a restart. Devices already issued to keep working - "
             "their certificate is their membership - but muster will not list "
-            "them after a restart until they renew.",
+            "them after a restart until they next prove possession.",
             kith_durable=False,
         )
     return Kith(records, clock=clock, emitter=emitter)

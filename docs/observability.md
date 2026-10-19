@@ -39,6 +39,8 @@ agent at `status.hostIP:8125`.
     ca.issue.duration               ms, emitted even when signing raises
     proof.verified                  #verdict:ok
     proof.refused                   #verdict:<why>
+    proof.unrecorded                a proof carried a certificate the kith did not
+                                    hold, and it was written from the certificate
     device.check_in                 successful signed device check-ins
     device.config.served            a device fetched its own configuration
     device.config.refused           #reason:no-source|unreadable
@@ -172,8 +174,9 @@ unreachable - muster keeps issuing and holds what it recorded to write later
 (`what-is-deployed.md`) - so `kith.store.unreachable` on its own is a survivable
 condition and not a page. `kith.write.dropped` is different: the backlog has
 overflowed, and every increment is a device that exists and will not be listed
-again until it renews. That is the point at which an outage has started costing
-something that does not come back on its own.
+again until it next proves possession. That is the point at which an outage has
+started costing something that does not come back on its own. Which devices it
+cost is `GET /v1/kith/unrecorded`, until the pod restarts (muster#166).
 
 `kith.write.poison` is the other one worth an alert, and it means something
 completely different from every metric beside it: the store READ the statement

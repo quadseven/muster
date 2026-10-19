@@ -17,6 +17,7 @@ WHO CAN REACH WHAT, because this is the part that gets it wrong:
                                GET  /v1/provision/qr.svg
                                POST /v1/provision/qr
                                GET  /v1/kith
+                               GET  /v1/kith/unrecorded
                                GET  /v1/kith/{key_id}
     public, on their own       GET  https://<MUSTER_CRL_URL>
        hostnames               POST https://<MUSTER_OCSP_URL>
@@ -101,7 +102,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
 from starlette.routing import Host, Route, Router
 
-from muster.ca import Authority, Identity, Untrusted
+from muster.ca import BACKDATE, Authority, Identity, Untrusted
 from muster.proof import Proofs, Verdict
 from muster import administrator, console, policy, provisioning, revocation
 from muster import assets as asset_store
@@ -586,6 +587,76 @@ def _refusal_detail(verdict: Verdict, expired_detail: str | None) -> str:
     return verdict.value
 
 
+def _holds_certificate(
+    state: State, member: kith_store.Member | None, serial: str
+) -> bool:
+    """Whether the kith already records the certificate a device presented.
+
+    The current serial answers the ordinary case without a second query. A
+    device still presenting the certificate before its latest renewal costs one
+    lookup by serial. Raises `Unreachable`, like every read.
+    """
+    if member is None:
+        return False
+    if member.current_serial == serial:
+        return True
+    return state.kith.certificate_status(serial) is not None
+
+
+def _record_presented(state: State, proven: str, certificate_pem: bytes) -> None:
+    """Write down a certificate this CA signed and the kith never recorded (muster#166).
+
+    CALLED ONLY AFTER `proofs.verify` ANSWERED OK, and that is the whole of its
+    safety: the certificate verified against muster's own CA certificate and
+    the device signed the nonce with its key. A certificate another CA signed,
+    or a copy of one of ours presented without the key, is refused before this
+    runs, so it can never write a row.
+
+    Everything recorded is read off the certificate itself, so the row carries
+    its real serial and dates. `issued_at` and `first_seen` are when it was
+    SIGNED, which the CA backdated `not_before` from, so a certificate recorded
+    late takes its true place in the device's history rather than becoming the
+    current one. The role is NOT recoverable - it is in the pairing code, not
+    the certificate - so the device has none until an administrator sets it.
+
+    Deferred like the issuance it replaces. A write that cannot land joins the
+    backlog and `Kith.unrecorded` names it, rather than failing a proof.
+    """
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+
+    certificate = x509.load_pem_x509_certificate(certificate_pem)
+    serial = f"{certificate.serial_number:X}"
+    signed_at = certificate.not_valid_before_utc + BACKDATE
+    common = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    state.kith.issued(
+        kith_store.Device(
+            key_id=proven,
+            fingerprint=fingerprint(_spki_der(certificate.public_key())),
+            name=str(common[0].value) if common else "",
+            first_seen=signed_at,
+            last_seen=signed_at,
+        ),
+        kith_store.Certificate(
+            serial=serial,
+            # Which enrollment it came from is not in the certificate. Named
+            # after its source the way renewals are (`renew-<serial>`).
+            request_id=f"presented-{serial}",
+            not_before=certificate.not_valid_before_utc,
+            not_after=certificate.not_valid_after_utc,
+            issued_at=signed_at,
+            certificate_pem=certificate_pem.decode(),
+            # The device is holding it, so it has been collected. NULL would
+            # leave it open to collection by its made-up request id.
+            collected_at=state.kith.now(),
+        ),
+    )
+    telemetry.event(
+        "recorded a certificate the kith did not hold", key_id=proven, serial=serial
+    )
+    state.telemetry.count("proof.unrecorded")
+
+
 def _proven_device(
     state: State,
     nonce: str,
@@ -640,14 +711,13 @@ def _proven_device(
     state.telemetry.count("proof.verified", tags=["verdict:ok"])
     state.telemetry.check_in()
     proven = _key_id_of(certificate_pem.encode())
+    presented = _serial_of(certificate_pem.encode())
     # WHICH CERTIFICATE, NOT ONLY WHICH DEVICE (muster#66). After a renewal
     # the previous certificate stays valid for months, so "this key proved" is
     # the same line whether the device moved to its new certificate or never
     # did. The serial of the one actually presented is what tells them apart,
     # and it is public - it is printed on every certificate and served by OCSP.
-    telemetry.event(
-        "device proven", key_id=proven, serial=_serial_of(certificate_pem.encode())
-    )
+    telemetry.event("device proven", key_id=proven, serial=presented)
 
     # STILL OURS? A valid signature over a valid certificate proves the device
     # is who it says. It does not prove anybody still wants to hear from it, and
@@ -670,6 +740,7 @@ def _proven_device(
     # slack before an outage could cost it anything at all (DECISIONS.md D8).
     try:
         member = state.kith.member(proven)
+        recorded = _holds_certificate(state, member, presented)
     except kith_store.Unreachable as unreachable:
         state.telemetry.count("proof.revocation.unreachable")
         raise HTTPException(
@@ -687,6 +758,15 @@ def _proven_device(
     # "did we sign this" is the CA and the proof, which have already answered
     # above; the kith answers only the narrower question of whether somebody has
     # since said stop.
+    #
+    # SO A MISSING ROW IS WRITTEN, FROM THE CERTIFICATE (muster#166). The read
+    # above drained the backlog first, so a certificate still absent was never
+    # recorded: signed before the store existed, or lost with a pod's backlog.
+    # The proof just showed this CA signed it, so it is the evidence. Done
+    # BEFORE the revocation check, so a revoked device's unrecorded certificate
+    # reaches the CRL, which is built from these rows.
+    if not recorded:
+        _record_presented(state, proven, certificate_pem.encode())
     if member is not None and member.device.revoked_at is not None:
         # COUNTED AND NAMED. A revoked device that keeps calling is either a
         # machine nobody switched off or a machine somebody took, and the two
@@ -1242,6 +1322,7 @@ def create_app(state: State) -> FastAPI:
     _register_proof_routes(app, state)
     _register_device_routes(app, state)
     _register_agent_routes(app, state, admin)
+    _register_unrecorded_route(app, state, admin)
     _register_kith_routes(app, state, admin)
     console.register_console_routes(app, state)
 
@@ -1811,8 +1892,9 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         )
 
         # A certificate signed by this CA proves its key, but renewal belongs
-        # only to a device already recorded in the kith. A missing row is normal
-        # during initial issuance, but that path does not call this endpoint.
+        # only to a device already recorded in the kith. `_proven_device` has
+        # just written the row if it was missing (muster#166), so a device with
+        # none here is one whose record the store has not taken yet.
         try:
             member = state.kith.member(proven)
         except kith_store.Unreachable as unreachable:
@@ -2010,6 +2092,25 @@ def _refuse_reboot_on_a_revoked_device(
         )
 
 
+def _register_unrecorded_route(app: FastAPI, state: State, admin) -> None:
+    """What muster signed and the store does not hold (muster#166).
+
+    ITS OWN REGISTRAR, CALLED BEFORE `_register_kith_routes`, because
+    `/v1/kith/{key_id}` would otherwise take "unrecorded" as a key id and
+    answer 404.
+    """
+
+    @app.get("/v1/kith/unrecorded", dependencies=[admin])
+    def unrecorded():
+        """Every certificate signed here that the store does not hold, by device.
+
+        NEVER 503. It reads only this process's memory, so it answers while the
+        store is down, which is when the roll cannot and when the question "is
+        THIS phone on the roll" has an interesting answer.
+        """
+        return {"store": state.kith.status(), "unrecorded": _unrecorded(state)}
+
+
 def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
     """Who muster has issued to. The first endpoints that can answer at all.
 
@@ -2156,7 +2257,14 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
             members = state.kith.roll()
         except kith_store.Unreachable as exc:
             raise _unreachable(exc) from exc
-        return {"store": state.kith.status(), "devices": [_member(m) for m in members]}
+        return {
+            "store": state.kith.status(),
+            "devices": [_member(m) for m in members],
+            # BESIDE THE ROLL, the devices muster signed for and the store does
+            # not hold (muster#166). After an outage that dropped writes, the
+            # roll answers again and these are the phones missing from it.
+            "unrecorded": _unrecorded(state),
+        }
 
     @app.post("/v1/kith/{key_id}/role", dependencies=[admin])
     def set_device_role(key_id: str, role: str = Body(default="", embed=True)):
@@ -2415,6 +2523,25 @@ def _agent_version_code() -> int | None:
         return int(raw)
     except ValueError:
         return None
+
+
+def _unrecorded(state: State) -> list[dict]:
+    """Each certificate the store does not hold, with the device it was signed for."""
+    return [
+        {
+            "key_id": entry.device.key_id,
+            "fingerprint": entry.device.fingerprint,
+            "name": entry.device.name,
+            "serial": entry.certificate.serial,
+            "not_before": entry.certificate.not_before.isoformat(),
+            "not_after": entry.certificate.not_after.isoformat(),
+            "issued_at": entry.certificate.issued_at.isoformat(),
+            # "deferred": still in the backlog, will be written when the store
+            # answers. "dropped": nothing will write it until the device proves.
+            "state": entry.state,
+        }
+        for entry in state.kith.unrecorded()
+    ]
 
 
 def _member(member: kith_store.Member) -> dict:
