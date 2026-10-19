@@ -892,7 +892,7 @@ async def _check_in_absence_ticks(
 async def _check_in_metric_lifecycle(emitter: telemetry.Telemetry):
     """Run and stop the periodic check-in metric task with the application."""
     stop = asyncio.Event()
-    task = asyncio.create_task(_check_in_absence_ticks(emitter, stop))
+task = asyncio.create_task(_check_in_absence_ticks(emitter, stop))
     try:
         yield
     finally:
