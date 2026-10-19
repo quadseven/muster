@@ -19,6 +19,7 @@ exist on condition of.
 from __future__ import annotations
 
 import datetime as dt
+import os
 
 import pytest
 
@@ -1595,3 +1596,149 @@ def test_the_schema_creates_the_report_table():
     assert "REFERENCES kith_device (key_id) ON DELETE CASCADE" in schema.split(
         "kith_report"
     )[1]
+
+
+# ---- issued but unrecorded, per device (muster#166) -----------------------
+#
+# A count of deferred writes says how much the record is behind. It cannot say
+# whether THIS phone is on the roll, which is the question an operator asks, so
+# every issuance the store has not taken is listed by device.
+
+
+def test_an_issuance_the_store_has_not_taken_is_listed_by_device(kith, records):
+    records.up = False
+    kith.issued(a_device(key=b"device-one"), a_certificate("AAAA", request_id="r1"))
+    kith.issued(a_device(key=b"device-two"), a_certificate("BBBB", request_id="r2"))
+
+    owed = kith.unrecorded()
+
+    assert [(u.device.key_id, u.certificate.serial, u.state) for u in owed] == [
+        (key_id(b"device-one"), "AAAA", "deferred"),
+        (key_id(b"device-two"), "BBBB", "deferred"),
+    ]
+
+
+def test_only_issuances_are_listed_not_every_deferred_write(kith, records):
+    """A late `seen` is a timestamp, not a device missing from the roll."""
+    records.up = False
+    kith.seen(key_id(b"device-one"))
+    kith.collected("r1")
+
+    assert kith.unrecorded() == []
+
+
+def test_the_unrecorded_list_answers_without_asking_the_store(kith, records):
+    """It is the one view of the kith that has to work while the store is down."""
+    records.up = False
+    kith.issued(a_device(), a_certificate("AAAA"))
+    before = records.attempts
+
+    assert len(kith.unrecorded()) == 1
+    assert records.attempts == before
+
+
+def test_an_issuance_leaves_the_list_once_the_store_takes_it(kith, records, clock):
+    records.up = False
+    kith.issued(a_device(), a_certificate("AAAA"))
+    records.up = True
+    clock.advance(kith_store.COOLDOWN_S + 1)
+
+    assert kith.flush() == 0
+    assert kith.unrecorded() == []
+
+
+def test_an_issuance_that_fell_off_a_full_backlog_is_still_listed(records, clock):
+    """THE DROP IS WHERE A DEVICE BECOMES INVISIBLE, so it must not vanish here too.
+
+    Before this, an overflowing backlog said how many it dropped and never
+    which: the device kept working, on no roll, with nothing anywhere naming it.
+    """
+    kith = Kith(records, clock=clock, backlog_max=1)
+    records.up = False
+    kith.issued(a_device(key=b"device-one"), a_certificate("AAAA", request_id="r1"))
+    kith.issued(a_device(key=b"device-two"), a_certificate("BBBB", request_id="r2"))
+
+    owed = {u.certificate.serial: u.state for u in kith.unrecorded()}
+
+    assert owed == {"AAAA": "dropped", "BBBB": "deferred"}
+
+
+def test_an_issuance_the_store_refused_is_still_listed(clock):
+    kith = Kith(Rejecting("BAD"), clock=clock)
+
+    kith.issued(a_device(key=b"device-one"), a_certificate("BAD", request_id="r1"))
+    kith.issued(a_device(key=b"device-two"), a_certificate("GOOD", request_id="r2"))
+
+    assert [(u.certificate.serial, u.state) for u in kith.unrecorded()] == [
+        ("BAD", "dropped")
+    ]
+
+
+def test_a_dropped_issuance_leaves_the_list_once_it_is_recorded(records, clock):
+    """Recorded later - by the device presenting the certificate - is recorded."""
+    kith = Kith(records, clock=clock, backlog_max=1)
+    records.up = False
+    kith.issued(a_device(key=b"device-one"), a_certificate("AAAA", request_id="r1"))
+    kith.issued(a_device(key=b"device-two"), a_certificate("BBBB", request_id="r2"))
+    records.up = True
+    clock.advance(kith_store.COOLDOWN_S + 1)
+    assert kith.flush() == 0
+
+    kith.issued(a_device(key=b"device-one"), a_certificate("AAAA", request_id="r1"))
+
+    assert kith.unrecorded() == []
+    assert {m.device.key_id for m in kith.roll()} == {
+        key_id(b"device-one"), key_id(b"device-two")
+    }
+
+
+def test_the_dropped_list_is_bounded_like_the_backlog(records, clock):
+    """It lives in the same pod as the CA, for the same reason the backlog is bounded."""
+    kith = Kith(records, clock=clock, backlog_max=2)
+    records.up = False
+    for n in range(10):
+        kith.issued(
+            a_device(key=f"device-{n}".encode()),
+            a_certificate(f"CERT{n}", request_id=f"r{n}"),
+        )
+
+    states = [u.state for u in kith.unrecorded()]
+
+    assert states.count("deferred") == 2
+    assert states.count("dropped") == 2
+
+
+# ---- against a real PostgreSQL ----------------------------------------------
+#
+# Everything above runs on dicts or a fake cursor, which proves the policy and
+# the shape of the SQL but not what a server does with it. This one does: set
+# MUSTER_TEST_DATABASE_URL to a database you can write to and it runs. It only
+# ever touches the rows it creates, keyed on a fresh random key, and deletes them
+# afterwards, so it is safe against a database that holds other devices.
+
+_LIVE_DSN = os.environ.get("MUSTER_TEST_DATABASE_URL", "").strip()
+
+
+@pytest.mark.skipif(not _LIVE_DSN, reason="MUSTER_TEST_DATABASE_URL is not set")
+def test_recording_one_certificate_twice_is_one_row_in_a_real_store():
+    import psycopg
+
+    key = os.urandom(32)
+    device = a_device(key=key)
+    serial = os.urandom(16).hex().upper()
+    records = kith_store.PostgresRecords(_LIVE_DSN)
+    try:
+        records.record_issuance(device, a_certificate(serial))
+        records.record_issuance(device, a_certificate(serial))
+
+        member = records.member(device.key_id)
+        assert member.certificates == 1
+        assert member.current_serial == serial
+        with psycopg.connect(_LIVE_DSN) as connection:
+            rows = connection.execute(
+                "SELECT count(*) FROM kith_device WHERE key_id = %s", (device.key_id,)
+            ).fetchone()
+        assert rows == (1,)
+    finally:
+        with psycopg.connect(_LIVE_DSN) as connection:
+            connection.execute("DELETE FROM kith_device WHERE key_id = %s", (device.key_id,))

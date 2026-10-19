@@ -402,6 +402,11 @@ So, concretely, while Postgres is away:
 - **Reads return 503, never an empty list.** `GET /v1/kith` says the store is
   unreachable. An empty list reads exactly like a fleet that has vanished, and
   sends whoever is looking after phones instead of after a database.
+- **`GET /v1/kith/unrecorded` still answers**, from the pod's memory: every
+  certificate signed and not yet written, by device, `deferred` while it is in
+  the backlog and `dropped` once it fell off it. The roll carries the same list
+  as `unrecorded` once the store is back, so a device the outage cost is named
+  beside the devices it did not (muster#166).
 - **`/readyz` stays 200** and reports the store as a field. Going unready would
   have Kubernetes pull the pod out of the Service, which stops enrollment and
   renewal for everything - the outage this design survives, arrived at through
@@ -433,7 +438,11 @@ So, concretely, while Postgres is away:
 **What is genuinely lost.** A deferred write lives in one pod's memory. If the
 store is unreachable AND the pod restarts before it recovers, those rows are gone
 - the devices keep working, because their certificates are their membership, but
-muster will not list them again until they renew or prove possession. The backlog
+muster will not list them again until they next prove possession, which every
+device does at boot and at every check-in: a proof carrying a certificate this CA
+signed and the kith does not hold writes the row from the certificate, with its
+real serial and dates (muster#166). The role is not in the certificate, so a
+device recorded that way has none until an administrator sets it. The backlog
 holds 512 entries and drops the oldest beyond that, counting
 `custom.muster.kith.write.dropped` when it does; an unbounded one would turn a
 store outage into an OOM kill, which would stop issuance by the back door.

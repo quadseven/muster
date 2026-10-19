@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import io
+import os
 import urllib.parse
 from email.utils import format_datetime
 
@@ -2403,6 +2404,9 @@ ADMINISTRATOR_ONLY = {
     # the internet gets to ask.
     ("GET", "/v1/kith"),
     ("GET", "/v1/kith/{key_id}"),
+    # muster#166: certificates signed here that the store does not hold, by
+    # device. The same question as the roll, so the same audience.
+    ("GET", "/v1/kith/unrecorded"),
     # muster#73: changing what a device is FOR. Administrator-only rather than
     # device-proven, because a role selects which policy scope is served -
     # including app-config, which carries write tokens.
@@ -3240,9 +3244,10 @@ def _revoked_device(state, tmp_path):
 
     THROUGH THE WHOLE CEREMONY, not `_enrolled` beside it. That helper mints a
     certificate straight off the authority and never writes a kith row, so a
-    device built with it is not revocable and never was - the revoke route would
-    answer 404 and a careless test would "fix" that by writing the column
-    directly, proving nothing about the route an administrator uses.
+    device built with it is not revocable until its first proof records it
+    (muster#166) - the revoke route would answer 404 and a careless test would
+    "fix" that by writing the column directly, proving nothing about the route
+    an administrator uses.
     """
     client, _apk = _published_and_proving(state, tmp_path)
     key_id, key = _enrolled_device(client, state, tmp_path)
@@ -3843,6 +3848,309 @@ def test_a_device_with_no_kith_row_yet_is_still_answered(state, tmp_path):
 
     assert state.kith.member(key_id) is None, "this test needs a device with no row"
     assert _fetch_asset(client, key, identity, "wall.png").status_code == 200
+
+
+# ---- a certificate muster signed and never wrote down (muster#166) --------
+#
+# The first device muster enrolled did so before the store existed: it holds a
+# certificate this CA signed, and the kith had no row for it, so it could not be
+# listed or revoked. The device already proves possession on every boot, and
+# `_proven_device` has checked the CA signed the certificate before it reads
+# the kith, so that proof is the evidence. It needs no new trust.
+
+
+def _prove(client, key, certificate_pem: bytes):
+    """One proof of possession, the way a device makes it at boot."""
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    signature = key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+    return client.post("/v1/auth/verify", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(signature).decode(),
+        "certificate_pem": certificate_pem.decode(),
+    })
+
+
+def _reissued(authority, key, name="pixel"):
+    """Another certificate over the SAME key, signed by `authority` and recorded nowhere."""
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+        .sign(key, hashes.SHA256())
+    )
+    return authority.issue(csr.public_bytes(serialization.Encoding.DER), name)
+
+
+def test_a_device_the_kith_never_recorded_is_recorded_by_its_proof(state):
+    """Its REAL serial and dates, read off the certificate it presented."""
+    client = _proof_client(state)
+    key, identity, key_id = _enrolled(state, name="Pixel 6a", record=False)
+
+    assert _prove(client, key, identity.certificate_pem).status_code == 200
+
+    body = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()
+    assert body["device"]["name"] == "Pixel 6a"
+    assert body["device"]["serial"] == f"{identity.serial:X}"
+    assert body["device"]["not_after"] == identity.not_after.isoformat()
+    [certificate] = body["certificates"]
+    assert certificate["serial"] == f"{identity.serial:X}"
+    assert certificate["not_before"] == identity.not_before.isoformat()
+    assert certificate["not_after"] == identity.not_after.isoformat()
+    assert certificate["certificate_pem"] == identity.certificate_pem.decode()
+
+
+def test_a_recorded_device_joined_when_its_certificate_was_signed(state):
+    """first_seen is when it joined the kith, which is the signing, not this proof.
+
+    The CA backdates not_before for devices with no clock, so the signing time
+    is not_before plus that allowance, and that is what the lost write would
+    have recorded.
+    """
+    from muster.ca import BACKDATE
+
+    client = _proof_client(state)
+    key, identity, key_id = _enrolled(state, record=False)
+
+    _prove(client, key, identity.certificate_pem)
+
+    member = state.kith.member(key_id)
+    assert member.device.first_seen == identity.not_before + BACKDATE
+    assert state.kith.history(key_id)[0].issued_at == identity.not_before + BACKDATE
+
+
+def test_a_certificate_recorded_from_a_proof_cannot_be_collected_again(state):
+    """It is recorded as collected: the device is holding it."""
+    client = _proof_client(state)
+    key, identity, key_id = _enrolled(state, record=False)
+
+    _prove(client, key, identity.certificate_pem)
+
+    [certificate] = state.kith.history(key_id)
+    assert certificate.collected_at is not None
+    assert state.kith.awaiting_collection(certificate.request_id) is None
+
+
+def test_a_certificate_another_ca_signed_writes_no_row(state):
+    """NOTHING CAN WRITE A ROW FOR A CERTIFICATE THIS CA DID NOT ISSUE.
+
+    A real certificate from a real CA, with a real signature from its key: the
+    only thing wrong with it is who signed it, which is the only thing that
+    decides whether it is ours.
+    """
+    from muster.ca import Authority as _Authority
+
+    client = _proof_client(state)
+    stranger = _Authority.create("not muster")
+    key = ec.generate_private_key(ec.SECP256R1())
+    identity = _reissued(stranger, key)
+
+    assert _prove(client, key, identity.certificate_pem).status_code == 401
+    assert client.get("/v1/kith", cookies=ADMIN).json()["devices"] == []
+
+
+def test_a_failed_proof_over_our_own_certificate_writes_no_row(state):
+    """Holding a copy of a certificate is not holding its key.
+
+    Certificates are public, so a stranger can present a real one of ours. Only
+    a signature over the nonce with the matching key may record it.
+    """
+    client = _proof_client(state)
+    _key, identity, _key_id = _enrolled(state, record=False)
+    impostor = ec.generate_private_key(ec.SECP256R1())
+
+    assert _prove(client, impostor, identity.certificate_pem).status_code == 401
+    assert client.get("/v1/kith", cookies=ADMIN).json()["devices"] == []
+
+
+def test_a_device_that_proves_twice_is_still_one_device(state):
+    client = _proof_client(state)
+    key, identity, key_id = _enrolled(state, record=False)
+
+    _prove(client, key, identity.certificate_pem)
+    _prove(client, key, identity.certificate_pem)
+
+    devices = client.get("/v1/kith", cookies=ADMIN).json()["devices"]
+    assert [(d["key_id"], d["certificates"]) for d in devices] == [(key_id, 1)]
+
+
+def test_an_unrecorded_certificate_for_a_recorded_device_joins_its_history(state):
+    """The device has a row and the certificate it holds is not on it.
+
+    A renewal signed during an outage, lost with the pod that held the backlog,
+    is the same gap one certificate later: the device works and the roll
+    describes a certificate it no longer carries.
+    """
+    client = _proof_client(state)
+    key, first, key_id = _enrolled(state, record=True)
+    second = _reissued(state.authority, key)
+
+    assert _prove(client, key, second.certificate_pem).status_code == 200
+
+    member = state.kith.member(key_id)
+    assert member.certificates == 2
+    assert {c.serial for c in state.kith.history(key_id)} == {
+        f"{first.serial:X}", f"{second.serial:X}"
+    }
+
+
+def test_an_older_certificate_recorded_late_does_not_become_the_current_one(state):
+    """Ordered by when it was SIGNED, so a late record cannot jump the queue.
+
+    The fixture's CA clock stands still, which would sign both on the same
+    instant and leave the order to the serials; this one moves a week.
+    """
+    signing = [dt.datetime(2026, 8, 18, tzinfo=dt.timezone.utc)]
+    state.authority = Authority.create("muster test CA", clock=lambda: signing[0])
+    client = _proof_client(state)
+    key, older, key_id = _enrolled(state, record=False)
+    signing[0] += dt.timedelta(days=7)
+    newer = _reissued(state.authority, key)
+    _prove(client, key, newer.certificate_pem)
+
+    _prove(client, key, older.certificate_pem)
+
+    assert state.kith.member(key_id).current_serial == f"{newer.serial:X}"
+
+
+def test_a_recorded_certificate_costs_no_extra_read_on_the_next_proof(state):
+    """The ordinary case - the certificate on the row - asks the store once."""
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state, record=True)
+    calls = []
+    original = state.kith.certificate_status
+    state.kith.certificate_status = lambda serial: calls.append(serial) or original(serial)
+
+    _prove(client, key, identity.certificate_pem)
+
+    assert calls == []
+
+
+def test_a_revoked_device_presenting_an_unrecorded_certificate_puts_it_on_the_crl(state):
+    """Refused, AND written down, because the CRL is built from these rows.
+
+    A certificate the kith never recorded is a certificate no revocation list
+    names - a relying party outside muster would keep accepting it from a
+    device an administrator cut off.
+    """
+    client = _proof_client(state)
+    key, _first, key_id = _enrolled(state, record=True)
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
+    ).status_code == 200
+    unrecorded = _reissued(state.authority, key)
+
+    assert _prove(client, key, unrecorded.certificate_pem).status_code == 403
+
+    status = state.kith.certificate_status(f"{unrecorded.serial:X}")
+    assert status is not None and status.revoked_at is not None
+
+
+def test_a_device_recorded_by_its_proof_can_renew(state, monkeypatch):
+    """Renewal needs a row, and the proof that opens renewal writes one."""
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state, record=False)
+    _past_renew_after(state, monkeypatch, identity)
+
+    assert _renew(client, key, identity).status_code == 201
+
+
+def test_a_proof_while_the_store_is_down_refuses_and_records_nothing():
+    """The store could not be asked whether the certificate is recorded, so it is 503."""
+    from tests.test_kith import Breakable
+
+    records = Breakable()
+    state, _ = _kith_state(records=records)
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state, record=False)
+    records.up = False
+
+    assert _prove(client, key, identity.certificate_pem).status_code == 503
+    assert state.kith.unrecorded() == []
+
+
+# ---- seeing what is not on the roll (muster#166) -------------------------
+
+
+def test_an_issuance_during_an_outage_is_listed_by_device_while_the_roll_is_503():
+    from muster.enroll import key_id as _key_id
+    from tests.test_kith import Breakable
+
+    records = Breakable()
+    state, _ = _kith_state(records=records)
+    client = TestClient(create_app(state))
+    records.up = False
+    key, _presented, issued = _enroll(client, name="Pixel 6a")
+
+    assert client.get("/v1/kith", cookies=ADMIN).status_code == 503
+    response = client.get("/v1/kith/unrecorded", cookies=ADMIN)
+
+    assert response.status_code == 200, response.text
+    [owed] = response.json()["unrecorded"]
+    assert owed["key_id"] == _key_id(
+        key.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    assert owed["name"] == "Pixel 6a"
+    assert owed["serial"] == f"{issued['serial']:X}"
+    assert owed["state"] == "deferred"
+    assert owed["not_after"]
+
+
+def test_an_issuance_dropped_in_an_outage_is_on_the_roll_once_the_store_is_back():
+    """The roll answers again; the device it never got is named beside it."""
+    from tests.test_kith import Breakable
+
+    records = Breakable()
+    state, _ = _kith_state(records=records)
+    state.kith = kith_store.Kith(records, clock=state.kith.now, backlog_max=1, cooldown_s=0)
+    client = TestClient(create_app(state))
+    records.up = False
+    _enroll(client, name="first", collect=False)
+    _enroll(client, name="second", collect=False)
+    records.up = True
+
+    body = client.get("/v1/kith", cookies=ADMIN).json()
+
+    assert [d["name"] for d in body["devices"]] == ["second"]
+    assert [(u["name"], u["state"]) for u in body["unrecorded"]] == [("first", "dropped")]
+
+
+def test_the_unrecorded_list_is_for_administrators(client):
+    assert client.get("/v1/kith/unrecorded").status_code == 401
+
+
+# ---- against a real PostgreSQL (muster#166) ---------------------------------
+#
+# Set MUSTER_TEST_DATABASE_URL to a database you can write to. The test touches
+# only the rows for the fresh key it generates and deletes them afterwards.
+
+_LIVE_DSN = os.environ.get("MUSTER_TEST_DATABASE_URL", "").strip()
+
+
+@pytest.mark.skipif(not _LIVE_DSN, reason="MUSTER_TEST_DATABASE_URL is not set")
+def test_an_unrecorded_device_is_recorded_once_in_a_real_store():
+    import psycopg
+
+    state, _ = _kith_state(records=kith_store.PostgresRecords(_LIVE_DSN))
+    client = _proof_client(state)
+    key, identity, key_id = _enrolled(state, name="Pixel 6a", record=False)
+    try:
+        assert _prove(client, key, identity.certificate_pem).status_code == 200
+        assert _prove(client, key, identity.certificate_pem).status_code == 200
+
+        body = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()
+        [certificate] = body["certificates"]
+        assert certificate["serial"] == f"{identity.serial:X}"
+        assert dt.datetime.fromisoformat(certificate["not_before"]) == identity.not_before
+        assert dt.datetime.fromisoformat(certificate["not_after"]) == identity.not_after
+        with psycopg.connect(_LIVE_DSN) as connection:
+            rows = connection.execute(
+                "SELECT count(*) FROM kith_device WHERE key_id = %s", (key_id,)
+            ).fetchone()
+        assert rows == (1,)
+    finally:
+        with psycopg.connect(_LIVE_DSN) as connection:
+            connection.execute("DELETE FROM kith_device WHERE key_id = %s", (key_id,))
 
 
 # ---- the public revocation surface: CRL and OCSP (muster#17) ------------
@@ -4528,8 +4836,17 @@ def test_other_proof_routes_keep_the_unchanged_expiry_refusal(
 
 
 def test_a_key_missing_from_the_kith_cannot_renew(state, monkeypatch):
-    client = _proof_client(state)
+    """Renewal still needs a row, when the proof could not write one.
+
+    A proof records a certificate the kith did not hold (muster#166), so the
+    only device that reaches renewal with no row is one whose record the store
+    refused. That device is still told to enroll.
+    """
+    from tests.test_kith import Rejecting
+
     key, identity, _key_id = _enrolled(state, record=False)
+    state.kith = kith_store.Kith(Rejecting(f"{identity.serial:X}"))
+    client = _proof_client(state)
     _past_renew_after(state, monkeypatch, identity)
 
     response = _renew(client, key, identity)
