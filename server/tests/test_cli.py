@@ -325,15 +325,22 @@ def test_a_missing_app_configuration_is_refused_before_the_device_is_touched(
 # `muster asset` (muster#45)
 
 
-def _asset_output(capsys, tmp_path, **kwargs) -> str:
+def _asset_output(capsys, tmp_path, monkeypatch, **kwargs) -> str:
     import hashlib
 
     from muster import cli
 
+    monkeypatch.setenv("MUSTER_ASSET_DIR", str(tmp_path / "assets"))
+    (tmp_path / "assets").mkdir()
     image = tmp_path / "wall.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 100)
     args = argparse.Namespace(
-        image=str(image), name="", scope="kith", surfaces=["system", "lock"], **kwargs
+        image=str(image),
+        name="",
+        scope="kith",
+        surfaces=["system", "lock"],
+        check=False,
+        **kwargs,
     )
     assert cli.cmd_asset(args) == 0
     out = capsys.readouterr().out
@@ -341,13 +348,15 @@ def _asset_output(capsys, tmp_path, **kwargs) -> str:
     return out
 
 
-def test_asset_prints_the_control_plane_upload_route(capsys, tmp_path):
-    out = _asset_output(capsys, tmp_path)
+def test_asset_prints_the_control_plane_upload_route(capsys, tmp_path, monkeypatch):
+    out = _asset_output(capsys, tmp_path, monkeypatch)
     assert "PUT /v1/assets/wall.png" in out
 
 
-def test_asset_prints_the_policy_stanza_the_device_will_read(capsys, tmp_path):
-    out = _asset_output(capsys, tmp_path)
+def test_asset_prints_the_policy_stanza_the_device_will_read(
+    capsys, tmp_path, monkeypatch
+):
+    out = _asset_output(capsys, tmp_path, monkeypatch)
     assert "image wall.png sha256 " in out
     assert "surfaces system lock" in out
     assert "kith.wallpaper" in out
@@ -369,5 +378,64 @@ def test_asset_refuses_a_file_that_is_not_there(tmp_path):
 
     args = argparse.Namespace(
         image=str(tmp_path / "nope.png"), name="", scope="kith", surfaces=["system"]
+    )
+    assert cli.cmd_asset(args) == 2
+
+
+def test_asset_output_names_the_pvc_not_a_secret(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("MUSTER_ASSET_DIR", str(tmp_path / "assets"))
+    (tmp_path / "assets").mkdir()
+    image = tmp_path / "wall.png"
+    image.write_bytes(b"\x89PNG")
+    args = argparse.Namespace(
+        image=str(image), name="", scope="kith", surfaces=["system"], check=False
+    )
+    assert cli.cmd_asset(args) == 0
+    out = capsys.readouterr().out
+    assert "muster-assets" in out
+    assert "PVC" in out
+    assert "secret" not in out
+
+
+def test_asset_check_reports_the_assets_volume_and_what_backs_it(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setenv("MUSTER_ASSET_DIR", str(tmp_path / "assets"))
+    (tmp_path / "assets").mkdir()
+    image = tmp_path / "wall.png"
+    image.write_bytes(b"\x89PNG")
+    args = argparse.Namespace(
+        image=str(image), name="", scope="kith", surfaces=["system"], check=True
+    )
+    assert cli.cmd_asset(args) == 0
+    out = capsys.readouterr().out
+    assert str(tmp_path / "assets") in out
+    assert "muster-assets" in out
+    assert "PVC" in out
+
+
+def test_asset_refuses_to_print_instructions_when_the_destination_is_missing(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.delenv("MUSTER_ASSET_DIR", raising=False)
+    image = tmp_path / "wall.png"
+    image.write_bytes(b"\x89PNG")
+    args = argparse.Namespace(
+        image=str(image), name="", scope="kith", surfaces=["system"]
+    )
+    assert cli.cmd_asset(args) == 2
+    captured = capsys.readouterr()
+    assert "PUT /v1/assets" not in captured.out
+    assert "destination" in captured.err
+
+
+def test_asset_check_refuses_when_the_destination_is_missing(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.delenv("MUSTER_ASSET_DIR", raising=False)
+    image = tmp_path / "wall.png"
+    image.write_bytes(b"\x89PNG")
+    args = argparse.Namespace(
+        image=str(image), name="", scope="kith", surfaces=["system"], check=True
     )
     assert cli.cmd_asset(args) == 2
