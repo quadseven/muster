@@ -1,6 +1,7 @@
 package app.muster.agent
 
 import android.content.Context
+import android.util.Log
 
 /** Builds the same platform-only transport used by the other device clients. */
 class DiagnosticsSteward(private val context: Context) {
@@ -16,7 +17,12 @@ class DiagnosticsSteward(private val context: Context) {
             )
             client.send(report)
         } catch (e: Exception) {
+            Log.e(TAG, "diagnostics steward failed", e)
             ProvenPost.Sent.Unreachable(e.javaClass.simpleName)
         }
+    }
+
+    private companion object {
+        const val TAG = "muster"
     }
 }
