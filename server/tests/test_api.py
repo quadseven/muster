@@ -28,7 +28,7 @@ from starlette.routing import Host
 
 from muster import console
 from muster import kith as kith_store
-from muster.api import State, create_app
+from muster.api import State, _take_diagnostic_slot, create_app
 from muster.ca import Authority
 from muster.enroll import (
     DEFAULT_CODE_TTL_S,
@@ -611,6 +611,15 @@ def test_diagnostic_upload_is_rate_limited_per_device(state):
     )
     assert _send_diagnostics(client, key, identity, ["one"]).status_code == 202
     assert _send_diagnostics(client, key, identity, ["two"]).status_code == 429
+
+
+def test_diagnostic_upload_is_not_suppressed_when_monotonic_clock_starts_at_zero(
+    state, monkeypatch
+):
+    monkeypatch.setattr("muster.api.time.monotonic", lambda: 0.0)
+
+    assert _take_diagnostic_slot(state, "device") is True
+    assert _take_diagnostic_slot(state, "device") is False
 
 
 # ---- what a device says it did (muster#146) -------------------------------
