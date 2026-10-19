@@ -433,10 +433,11 @@ object AppConfigPolicy {
      *
      * MUSTER REPORTS THIS AND CANNOT FIX IT, which is worth stating rather than
      * hiding. There is no public Device Owner API to allowlist an app from
-     * battery optimization - checked against android-36's own
-     * `DevicePolicyManager`, which contains nothing matching "exempt", and
-     * `PowerManager` exposes only the READ. Only the app itself can ask, with a
-     * dialog a person taps.
+     * battery optimization. `DevicePolicyManager.setApplicationExemptions`
+     * (API 34+) can grant it, but only to the DEVICE_POLICY_MANAGEMENT role
+     * holder, which a Device Owner is not; `PowerManager` exposes only the READ.
+     * Only the app itself can ask, with a dialog a person taps, or an operator
+     * grants it during enrolment (docs/android-constraints.md).
      *
      * So why say anything? Because `isIgnoringBatteryOptimizations` is readable
      * by anyone, and the alternative is inference. A zippie bond leg spent a

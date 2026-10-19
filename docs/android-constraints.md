@@ -171,8 +171,14 @@ cable kept in the drawer rather than in the plan.
 **Battery optimization exemption for a wake target is an enrolment
 precondition.** Android 36 API check (2026-10-18): the
 [`DevicePolicyManager` API](https://developer.android.com/reference/android/app/admin/DevicePolicyManager)
-has no method that grants a package this exemption. Its runtime permission grant
-methods do not change the power allowlist. The
+has no method a Device Owner may call that grants a package this exemption. Its
+runtime permission grant methods do not change the power allowlist.
+`setApplicationExemptions` (API 34+) can exempt an app from power restrictions,
+but it requires the holder of the `DEVICE_POLICY_MANAGEMENT` role, which a
+Device Owner is not. On an android-36 handset (2026-08-23) the
+`MANAGE_DEVICE_POLICY_APP_EXEMPTIONS` permission was not present on the build,
+and `cmd device_policy help` offered only `list-policy-exempt-apps`, which lists
+apps exempt FROM policies, a different mechanism. The
 [`PowerManager.isIgnoringBatteryOptimizations` API](https://developer.android.com/reference/android/os/PowerManager#isIgnoringBatteryOptimizations(java.lang.String))
 reads the allowlist state; it does not grant it. Android's
 [`Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` API](https://developer.android.com/reference/android/provider/Settings#ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
@@ -181,7 +187,12 @@ asks the user to allow the app. The
 list the user's battery optimization exemption among their exceptions.
 Consequently, provisioning
 and Device Owner policy cannot complete this step for a `wake` directive: the
-operator must grant and verify it during enrolment.
+operator must grant and verify it during enrolment. The shell route is
+`adb shell dumpsys deviceidle whitelist +<package>`, which persists across reboot.
+Without the exemption, a wake broadcast cannot start the app's foreground service
+(`ForegroundServiceStartNotAllowedException`, background FGS start denied), while
+a cold boot still works because `LOCKED_BOOT_COMPLETED` is an exempt start reason.
+That asymmetry points at the wake; the wake is not the problem.
 
 Worth stating because it is always on the wish list: **the 80% charge cap cannot
 be set by policy.** Android allowlists which secure settings a Device Owner may
