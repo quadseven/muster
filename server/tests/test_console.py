@@ -501,6 +501,13 @@ def test_the_provisioning_qr_is_reachable_from_the_page(client):
     assert "/agent.json" in body
 
 
+def test_provisioning_page_names_battery_exemption_for_wake_config(client):
+    body = client.get("/").text
+    assert "app-config contains a wake directive for this device" in body
+    assert "battery optimization exemption" in body
+    assert "before wake can start a foreground service" in body
+
+
 def test_the_console_draws_no_qr_that_nothing_can_read(client):
     """The pairing QR had no consumer: the agent declares no CAMERA permission,
     contains no scanner, and EnrollActivity has only MAIN/LAUNCHER. Drawing it

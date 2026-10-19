@@ -429,7 +429,7 @@ object AppConfigPolicy {
     }
 
     /**
-     * What to say about applications Android may be freezing.
+     * What to say when a configured app lacks its battery exemption.
      *
      * MUSTER REPORTS THIS AND CANNOT FIX IT, which is worth stating rather than
      * hiding. There is no public Device Owner API to allowlist an app from
@@ -455,10 +455,10 @@ object AppConfigPolicy {
      */
     fun batteryConcerns(exempt: Map<String, Boolean>): List<String> =
         exempt.filterValues { !it }.keys.sorted().map { packageName ->
-            "$packageName is NOT exempt from battery optimization, so Android " +
-                "may freeze it while it looks configured and running. muster " +
-                "cannot grant this - no Device Owner API exists - the app has " +
-                "to ask for it."
+            "$packageName is NOT exempt from battery optimization. This is " +
+                "required before wake can start a foreground service. Muster " +
+                "cannot grant this - no Device Owner API exists. Grant the " +
+                "exemption during enrolment."
         }
 
     /**

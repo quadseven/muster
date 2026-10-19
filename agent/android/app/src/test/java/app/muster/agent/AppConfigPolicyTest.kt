@@ -488,7 +488,7 @@ class AppConfigPolicyTest {
     // ---- battery exemption, reported (muster#79) --------------------------
 
     @Test
-    fun anAppMusterConfiguredButAndroidMayFreezeIsAConcern() {
+    fun aWakeTargetWithoutBatteryExemptionReportsItsPrecondition() {
         // WHY MUSTER REPORTS SOMETHING IT CANNOT CHANGE. There is no public
         // Device Owner API to allowlist an app from battery optimization -
         // checked against android-36's own DevicePolicyManager, which contains
@@ -508,6 +508,7 @@ class AppConfigPolicyTest {
         assertEquals(1, decided.size)
         assertTrue(decided[0], decided[0].contains("app.zippie.companion"))
         assertTrue(decided[0], decided[0].contains("battery"))
+        assertTrue(decided[0], decided[0].contains("required before wake can start a foreground service"))
     }
 
     @Test

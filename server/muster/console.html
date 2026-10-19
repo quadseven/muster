@@ -437,6 +437,12 @@
             is made, because that is the only moment anything knows what this
             device will be - it has no identity yet.
           </p>
+          <p class="warn breath-more">
+            If app-config contains a wake directive for this device, grant
+            the target app a battery optimization exemption during enrolment,
+            before wake can start a foreground service. The QR cannot grant it.
+            See the enrolment runbook for the required step.
+          </p>
         </div>
 
         <div class="panel">
