@@ -161,6 +161,29 @@ SHARED_FILES: tuple[str, ...] = (
 # and silently picking one installs software nobody chose.
 INSTALL_APPS_FILE = "install-apps"
 
+
+@dataclass(frozen=True)
+class ShadowedInstall:
+    """One kith-level `install-apps` line a more specific scope replaced.
+
+    THE OVERRIDE, NOT THE WITHDRAWAL (muster#181). A role may pin its own
+    version of a package the kith names - that is the merge's job, and the
+    device gets the more specific line. What the override must not be is
+    silent: an operator who writes "every device runs agent N" at the kith
+    level deserves to see, on the device's report, which devices are carrying
+    a different line for that package.
+    """
+
+    package: str
+    # The kith's line for this package, which this device does not get.
+    shadowed_line: str
+    # "role" or "device": whose file carries the winning line.
+    scope: str
+    # The role's name when `scope` is "role", empty otherwise.
+    role: str
+    # The line the device is actually served.
+    winner_line: str
+
 # The scope every device in the kith reads from, when it has no file of its own.
 # CONTEXT.md's word for "the set of devices muster recognizes", used here rather
 # than "default" so the directory says which devices it applies to.
@@ -487,27 +510,86 @@ class Policies:
             "files": self.files_held(),
         }
 
-    def _install_apps_scopes(self, key_id: str, role: str) -> list[str]:
-        """The `install-apps` file texts present, least specific scope first.
+    def _install_scope_texts(self, key_id: str, role: str) -> list[tuple[str, str]]:
+        """The `install-apps` file texts present, with their scope, least
+        specific scope first.
 
-        Extracted from `for_device`: the merge needs every scope that names
-        the file, and collecting them inline tripled the branch's nesting.
-        The SHARED_FILES / ROLE_FILES memberships are the same gates the
-        per-file fallback below applies - a scope that may not carry this
+        Extracted from `_install_apps_scopes`: the merge needs every scope's
+        text, and the shadowing report needs to know which scope each text
+        came from. The SHARED_FILES / ROLE_FILES memberships are the same
+        gates the per-file fallback applies - a scope that may not carry this
         file may not merge into it either.
         """
-        scoped: list[str] = []
+        scoped: list[tuple[str, str]] = []
         theirs = self.root / f"{KITH_SCOPE}.{INSTALL_APPS_FILE}"
         if INSTALL_APPS_FILE in SHARED_FILES and theirs.is_file():
-            scoped.append(_read(theirs))
+            scoped.append((KITH_SCOPE, _read(theirs)))
         if role and INSTALL_APPS_FILE in ROLE_FILES:
             ours = self.root / f"{ROLE_SCOPE_PREFIX}{role}.{INSTALL_APPS_FILE}"
             if ours.is_file():
-                scoped.append(_read(ours))
+                scoped.append(("role", _read(ours)))
         mine = self.root / f"{key_id}.{INSTALL_APPS_FILE}"
         if mine.is_file():
-            scoped.append(_read(mine))
+            scoped.append(("device", _read(mine)))
         return scoped
+
+    def _install_apps_scopes(self, key_id: str, role: str) -> list[str]:
+        """The `install-apps` file texts present, least specific scope first."""
+        return [text for _, text in self._install_scope_texts(key_id, role)]
+
+    def install_apps_shadowed(self, key_id: str, role: str) -> list[ShadowedInstall]:
+        """Kith-level `install-apps` lines this device does not get (muster#181).
+
+        One entry per kith-level package a role or device file replaced with a
+        DIFFERENT line, in the order the kith file declares them, so the
+        concern reads in the same order as the file that states the intent.
+        The identical-line case is not a concern: the merge serves it once and
+        the device gets exactly what the kith said. Non-`install` lines are
+        not keyed by the merge and cannot be shadowed, so they are skipped.
+        """
+        _refuse_unusable_scope(key_id, role)
+        if self.root is None:
+            # The same refusal `for_device` makes: without a directory there
+            # is no kith file to be shadowed, and an empty answer would read
+            # as "nothing is shadowed" rather than "muster cannot say".
+            raise NoSource(
+                "this muster has no policy directory, so it cannot say what a "
+                f"device should be (MUSTER_POLICY_DIR={self.configured or 'unset'})"
+            )
+        scoped = self._install_scope_texts(key_id, role)
+        kith_text = next(
+            (text for scope, text in scoped if scope == KITH_SCOPE), None
+        )
+        if kith_text is None:
+            # Shadowing is kith lines being replaced; with no kith file there
+            # is nothing to replace.
+            return []
+        # Most specific first: the first scope naming a package wins it, which
+        # is exactly the merge's rule - this report describes the merge, it
+        # does not recompute it a different way.
+        winners: dict[str, tuple[str, str]] = {}
+        for scope, text in reversed(scoped):
+            for line in text.splitlines():
+                package = _install_package(line)
+                if package is not None and package not in winners:
+                    winners[package] = (scope, line)
+        shadowed: list[ShadowedInstall] = []
+        for line in kith_text.splitlines():
+            package = _install_package(line)
+            if package is None:
+                continue
+            scope, winner = winners[package]
+            if scope != KITH_SCOPE and winner != line:
+                shadowed.append(
+                    ShadowedInstall(
+                        package=package,
+                        shadowed_line=line,
+                        scope=scope,
+                        role=role if scope == "role" else "",
+                        winner_line=winner,
+                    )
+                )
+        return shadowed
 
     def _text_for(self, name: str, key_id: str, role: str) -> str | None:
         """One managed file's served text for this device, or None when no scope

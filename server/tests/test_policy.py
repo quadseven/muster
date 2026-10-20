@@ -694,6 +694,104 @@ def test_install_apps_keyword_is_case_insensitive_like_the_agent(tmp_path):
     assert "b.apk" in served, "the role's line wins for the package"
 
 
+# ---- kith-level install-apps lines a more specific scope replaces (muster#181)
+
+
+def test_shadowed_install_reports_a_role_override_with_both_lines(tmp_path):
+    """muster#181: a role may override a kith-level package - it may not do it
+    silently. The served file still carries the role's line (the override is
+    the merge working), and the concern records which kith line lost and which
+    line the device actually gets."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _role(tmp_path, "zippie", "install-apps").write_text(ROLE_APPS)
+
+    shadowed = policy.Policies(root=tmp_path).install_apps_shadowed(A, role="zippie")
+
+    assert len(shadowed) == 1
+    only = shadowed[0]
+    assert only.package == "app.muster.agent"
+    assert only.scope == "role"
+    assert only.role == "zippie"
+    assert only.shadowed_line == KITH_APPS.splitlines()[0]
+    assert only.winner_line == ROLE_APPS.splitlines()[0]
+    # The override still stands: it is loud, not forbidden.
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie").files[
+        "install-apps"
+    ]
+    assert "agent-77.apk" in served
+
+
+def test_shadowed_install_reports_a_device_scope_override(tmp_path):
+    """The device file is the most specific scope; its override is a concern
+    too, named as this device's own file rather than a role's."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _own(tmp_path, A, "install-apps").write_text(DEVICE_APPS)
+
+    shadowed = policy.Policies(root=tmp_path).install_apps_shadowed(A, role="zippie")
+
+    assert len(shadowed) == 1
+    only = shadowed[0]
+    assert only.package == "app.muster.agent"
+    assert only.scope == "device"
+    assert only.role == ""
+    assert only.winner_line == DEVICE_APPS.splitlines()[0]
+
+
+def test_shadowed_install_names_each_shadowed_package_in_kith_order(tmp_path):
+    """Two shadowed packages read in the order the kith file declares them,
+    so the concern follows the file the operator wrote."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _role(tmp_path, "zippie", "install-apps").write_text(
+        "install app.muster.agent agent-77.apk sha256 "
+        "7aa9000000000000000000000000000000000000000000000000000000000000 version 77\n"
+        "install app.zippie.companion zippie-0.2.0.apk sha256 "
+        "1c4d000000000000000000000000000000000000000000000000000000000000 version 73\n"
+    )
+
+    shadowed = policy.Policies(root=tmp_path).install_apps_shadowed(A, role="zippie")
+
+    assert [s.package for s in shadowed] == [
+        "app.muster.agent",
+        "app.zippie.companion",
+    ]
+
+
+def test_identical_lines_across_scopes_are_no_concern(tmp_path):
+    """The same line in kith and role reaches the device once; nothing changed
+    for this device, so there is nothing to be loud about."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _role(tmp_path, "zippie", "install-apps").write_text(KITH_APPS)
+
+    assert policy.Policies(root=tmp_path).install_apps_shadowed(A, role="zippie") == []
+
+
+def test_packages_no_more_specific_scope_names_are_no_concern(tmp_path):
+    """A role that pins only its own packages leaves the kith's alone: no
+    shadowing, and the kith's line still reaches the device (muster#181's
+    fourth criterion - a robed device still gets the kith-level entry)."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _role(tmp_path, "zippie", "install-apps").write_text(
+        "install app.zippie.only zippie-only-1.0.apk sha256 "
+        "1c4d000000000000000000000000000000000000000000000000000000000000 version 1\n"
+    )
+
+    policies = policy.Policies(root=tmp_path)
+
+    assert policies.install_apps_shadowed(A, role="zippie") == []
+    served = policies.for_device(A, role="zippie").files["install-apps"]
+    assert "agent-76.apk" in served, "the kith's entry still reaches a robed device"
+    assert "zippie-only-1.0.apk" in served
+
+
+def test_no_kith_install_apps_means_no_shadowing(tmp_path):
+    """Shadowing is kith lines being replaced; with no kith file there is
+    nothing to replace, even when a role names packages."""
+    _role(tmp_path, "zippie", "install-apps").write_text(ROLE_APPS)
+
+    assert policy.Policies(root=tmp_path).install_apps_shadowed(A, role="zippie") == []
+
+
+
 # ---- the version a device is told to carry (muster#162) -------------------
 
 _DIGEST = "3f2a" + "0" * 60
