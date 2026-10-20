@@ -469,6 +469,48 @@ def _drift(state: State, device: kith_store.Device, report) -> dict | None:
     return _drift_view(report, policy.expected_versions(install_apps))
 
 
+def _policy_concerns(state: State, device: kith_store.Device) -> dict:
+    """Policy shadowing this device's operator should see (muster#181).
+
+    A role or device file may override a kith-level `install-apps` package -
+    the merge allows it, and the device gets the more specific line. This is
+    where that override is said out loud: an operator writing "every device
+    runs agent N" at the kith level can see which of their devices are
+    actually carrying a different line for that package.
+
+    THE SHAPE IS DRIFT'S SHAPE, and for the same reason. A policy muster
+    cannot read is not "nothing shadowed", so it says `known: False` and the
+    reason rather than an empty list - but it is still not a 503, because this
+    route also carries the device's certificates and a question about policy
+    should not hide them.
+    """
+    try:
+        shadowed = state.policies.install_apps_shadowed(
+            device.key_id, role=device.role
+        )
+    except (policy.Unreadable, policy.NoSource) as cannot_say:
+        telemetry.event(
+            "muster cannot say what a device should carry",
+            key_id=device.key_id,
+            error=str(cannot_say),
+        )
+        return {"known": False, "reason": str(cannot_say)}
+    return {
+        "known": True,
+        "concerns": [
+            {
+                "package": s.package,
+                "scope": s.scope,
+                # Which role, when the role file won; null for a device file.
+                "role": s.role or None,
+                "shadowed_line": s.shadowed_line,
+                "winner_line": s.winner_line,
+            }
+            for s in shadowed
+        ],
+    }
+
+
 def _issue(state: "State", request_id: str, pending) -> dict:
     """Sign a vouched-for request and write the device into the kith.
 
@@ -2488,6 +2530,11 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
             # WHAT IT CARRIES AGAINST WHAT IT IS TOLD (muster#162), or null
             # when there is no report to compare.
             "drift": _drift(state, member.device, report),
+            # WHERE WHAT IT IS TOLD DIFFERS FROM THE KITH'S INTENT (muster#181):
+            # a role or device file overriding a kith-level install-apps line.
+            # Unlike drift this does not need the device to have reported -
+            # it is a property of the policy, not of the last check-in.
+            "concerns": _policy_concerns(state, member.device),
             "certificates": [
                 {
                     "serial": c.serial,

@@ -901,6 +901,63 @@ def test_drift_is_measured_against_the_devices_own_scope(state, tmp_path):
     assert drift["packages"][0]["state"] == "behind"
 
 
+# ---- concerns: shadowing the operator should see (muster#181) ----
+
+
+def _concerns(client, device_id):
+    return client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["concerns"]
+
+
+def test_a_shadowed_kith_install_line_is_a_concern_on_the_device_report(state, tmp_path):
+    """muster#181: the kith says "everyone runs agent 72" and the device's role
+    pins 90. The device still gets the role's line (the override is allowed),
+    but the device report says so out loud instead of carrying on silently."""
+    _expecting(state, tmp_path, [("app.example.companion", 72)])
+    _expecting(state, tmp_path, [("app.example.companion", 90)], scope="role-zippie")
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    assert state.kith.set_role(device_id, "zippie")
+
+    concerns = _concerns(client, device_id)
+
+    assert concerns["known"] is True
+    assert len(concerns["concerns"]) == 1
+    only = concerns["concerns"][0]
+    assert only["package"] == "app.example.companion"
+    assert only["scope"] == "role"
+    assert only["role"] == "zippie"
+    assert "version 72" in only["shadowed_line"]
+    assert "version 90" in only["winner_line"]
+
+
+def test_no_shadowing_means_a_quiet_concerns_list(state, tmp_path):
+    """A kith-only estate has nothing to report: known, and an empty list -
+    not null, which would read as "the check did not run"."""
+    _expecting(state, tmp_path, [("app.example.companion", 72)])
+    client = _proof_client(state)
+    _key, _identity, device_id = _enrolled(state, record=True)
+
+    concerns = _concerns(client, device_id)
+
+    assert concerns == {"known": True, "concerns": []}
+
+
+def test_concerns_say_unknown_when_policy_cannot_be_read(state):
+    """No policy source is "unknown", not "nothing shadowed" - and not a 503
+    that would hide the device's certificates over a question about policy,
+    the same bargain `_drift` makes."""
+    client = _proof_client(state)
+    _key, _identity, device_id = _enrolled(state, record=True)
+
+    response = client.get(f"/v1/kith/{device_id}", cookies=ADMIN)
+
+    assert response.status_code == 200
+    concerns = response.json()["concerns"]
+    assert concerns["known"] is False
+    assert "policy directory" in concerns["reason"]
+    assert "concerns" not in concerns
+
+
 def _policy_root(tmp_path):
     from muster import policy
 
