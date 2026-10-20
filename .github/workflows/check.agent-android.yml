@@ -80,7 +80,7 @@ jobs:
       run:
         working-directory: agent/android
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
           # NO `fetch-depth: 0`, AND THAT IS NOW DELIBERATE RATHER THAN AN
@@ -353,6 +353,7 @@ jobs:
         env:
           MUSTER_VERSION_CODE: ${{ steps.version.outputs.code }}
           MUSTER_VERSION_LABEL: ${{ github.sha }}
+          SIGNED: ${{ steps.keystore.outputs.signed }}
           # Guarded the same way the keystore itself is: a pull request runs
           # candidate build logic, and must never be handed these.
           MUSTER_KEYSTORE_PASSWORD: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && secrets.MUSTER_KEYSTORE_PASSWORD || '' }}
@@ -364,7 +365,7 @@ jobs:
         # the debug path would happily verify an APK this build did not ship.
         run: |
           set -euo pipefail
-          if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
+          if [ "$SIGNED" = "true" ]; then
             ./gradlew --no-daemon assembleRelease
             echo "MUSTER_APK=app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
           else
@@ -377,12 +378,13 @@ jobs:
       # applied, which is the same class of lie as a green suite that ran no
       # tests. aapt reads what actually shipped.
       - name: Prove the version reached the APK
+        env:
+          WANTED: ${{ steps.version.outputs.code }}
         run: |
           set -euo pipefail
           BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
           APK="$MUSTER_APK"
           SHIPPED="$("$BT/aapt" dump badging "$APK" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
-          WANTED="${{ steps.version.outputs.code }}"
           [ "$SHIPPED" = "$WANTED" ] \
             || { echo "::error::asked for versionCode $WANTED, the APK carries $SHIPPED"; exit 1; }
           echo "::notice::the shipped APK carries versionCode $SHIPPED"
@@ -588,7 +590,7 @@ jobs:
           # what this line is for.
           ls -l "$STAGE" | awk '{print $1, $5, $9}'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           # NOT "-debug-apk" ANY MORE. The name was a claim about how the
           # bytes were signed, and once this workflow can emit either, a name
