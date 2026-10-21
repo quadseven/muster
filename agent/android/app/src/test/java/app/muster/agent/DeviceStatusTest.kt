@@ -27,6 +27,7 @@ class DeviceStatusTest {
         lastCheckIn: Long? = 1_000_000L,
         restrictions: List<String> = listOf("no_safe_boot"),
         telephony: List<String> = listOf("no_outgoing_calls"),
+        telephonyBlockIncomingRequested: Boolean = false,
         agentVersion: String = "0.1.0",
         hasIdentity: Boolean = stance !is Stance.Unenrolled,
     ) = DeviceStatus.Facts(
@@ -39,6 +40,7 @@ class DeviceStatusTest {
         serverUrl = "https://enroll.muster.example",
         restrictions = restrictions,
         telephony = telephony,
+        telephonyBlockIncomingRequested = telephonyBlockIncomingRequested,
         agentVersion = agentVersion,
         lastCheckIn = lastCheckIn,
         now = 1_000_060L,
@@ -125,6 +127,37 @@ class DeviceStatusTest {
         assertEquals("none", none.rows.single { it.label == "Restrictions in force" }.value)
         val some = DeviceStatus.render(facts(restrictions = listOf("no_safe_boot", "no_add_user")))
         assertTrue(some.rows.single { it.label == "Restrictions in force" }.value.contains("no_add_user"))
+    }
+
+    @Test
+    fun telemetryShowsEnforcedRestrictionAndBlockIncomingAsDistinctStatus() {
+        // `block-incoming` has no platform key, so it is reported as requested
+        // but not device-enforceable, distinct from what is actually enforced.
+        val view = DeviceStatus.render(
+            facts(telephony = listOf("no_outgoing_calls"), telephonyBlockIncomingRequested = true),
+        )
+        val value = view.rows.single { it.label == "Telemetry in force" }.value
+        assertTrue(value, value.contains("no_outgoing_calls"))
+        assertTrue(value, value.contains("block-incoming (not device-enforceable)"))
+    }
+
+    @Test
+    fun telemetryShowsBlockIncomingRequestedAlone() {
+        val view = DeviceStatus.render(
+            facts(telephony = emptyList(), telephonyBlockIncomingRequested = true),
+        )
+        assertEquals(
+            "block-incoming (not device-enforceable)",
+            view.rows.single { it.label == "Telemetry in force" }.value,
+        )
+    }
+
+    @Test
+    fun telemetrySaysNoneWhenNothingEnforcedAndNothingRequested() {
+        val view = DeviceStatus.render(
+            facts(telephony = emptyList(), telephonyBlockIncomingRequested = false),
+        )
+        assertEquals("none", view.rows.single { it.label == "Telemetry in force" }.value)
     }
 
     @Test

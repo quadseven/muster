@@ -68,6 +68,7 @@ object DeviceStatus {
         val serverUrl: String?,
         val restrictions: List<String>,
         val telephony: List<String>,
+        val telephonyBlockIncomingRequested: Boolean = false,
         val agentVersion: String,
         val lastCheckIn: Long?,
         val now: Long,
@@ -148,10 +149,12 @@ object DeviceStatus {
             "Telephony in force",
             // Read back from the platform, same rule as restrictions: only the
             // device says what is true. `block-incoming` has no platform key,
-            // so it never appears here - it is an operator step, documented
-            // in docs/policy.md.
-            if (facts.telephony.isEmpty()) "none" else facts.telephony.joinToString("\n"),
-            machine = facts.telephony.isNotEmpty(),
+            // so it is never reported as enforced. When the config file asks
+            // for it, the screen shows it as a distinct status - requested but
+            // not device-enforceable, an operator step documented in
+            // docs/policy.md.
+            telephonyValue(facts),
+            machine = facts.telephony.isNotEmpty() || facts.telephonyBlockIncomingRequested,
         )
         rows += Row("Agent version", shortSha(facts.agentVersion), machine = true)
         rows += Row(
@@ -176,6 +179,23 @@ object DeviceStatus {
         is IdentityLifecycle.Stance.Lapsed -> "lapsed"
         is IdentityLifecycle.Stance.ClockBehind -> "clock behind"
         IdentityLifecycle.Stance.Unenrolled -> if (hasIdentity) "unavailable" else "unenrolled"
+    }
+
+    /**
+     * What the screen says under "Telephony in force".
+     *
+     * Only platform-enforced keys appear as enforced. `block-incoming` has no
+     * platform key, so when the config file asks for it the screen reports it
+     * as a distinct status - requested but not device-enforceable - rather than
+     * claiming a block the device cannot perform.
+     */
+    private fun telephonyValue(facts: Facts): String {
+        val parts = mutableListOf<String>()
+        parts.addAll(facts.telephony)
+        if (facts.telephonyBlockIncomingRequested) {
+            parts.add("block-incoming (not device-enforceable)")
+        }
+        return if (parts.isEmpty()) "none" else parts.joinToString("\n")
     }
 
     /**

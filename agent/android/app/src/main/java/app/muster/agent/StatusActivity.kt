@@ -14,6 +14,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.File
+import java.io.IOException
 import java.security.cert.CertificateFactory
 import java.time.OffsetDateTime
 import java.util.concurrent.Executors
@@ -170,6 +171,7 @@ class StatusActivity : Activity() {
         val notBefore = certificateNotBefore()
         val notAfter = store.notAfter()
         val renewAfter = store.renewAfter()
+        val (telephony, telephonyBlockIncomingRequested) = telephonyInForce()
 
         return DeviceStatus.Facts(
             deviceOwner = MusterDeviceAdminReceiver.isDeviceOwner(this),
@@ -185,7 +187,8 @@ class StatusActivity : Activity() {
             renewAfter = epochOf(renewAfter),
             serverUrl = serverUrl(),
             restrictions = restrictionsInForce(),
-            telephony = telephonyInForce(),
+            telephony = telephony,
+            telephonyBlockIncomingRequested = telephonyBlockIncomingRequested,
             agentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown",
             lastCheckIn = CheckIn.last(this),
             now = now,
@@ -245,19 +248,32 @@ class StatusActivity : Activity() {
     }
 
     /**
-     * Telephony restrictions this admin set and the platform enforces.
-     *
-     * Only `no_outgoing_calls` has a platform key; `block-incoming` has none
-     * and never appears here - it is an operator step.
+     * Telemetry restrictions this admin set and the platform enforces, plus
+     * whether the config file asks for `block-incoming`, which no platform key
+     * exists for and which is an operator step (MMI divert, or a data-only
+     * plan). The screen reports both so it never claims a block that is not
+     * there, and never hides one that was asked for.
      */
-    private fun telephonyInForce(): List<String> {
-        if (!MusterDeviceAdminReceiver.isDeviceOwner(this)) return emptyList()
-        val dpm = getSystemService(DevicePolicyManager::class.java) ?: return emptyList()
+    private fun telephonyInForce(): Pair<List<String>, Boolean> {
+        if (!MusterDeviceAdminReceiver.isDeviceOwner(this)) return emptyList() to false
+        val dpm = getSystemService(DevicePolicyManager::class.java) ?: return emptyList() to false
         val ours = dpm.getUserRestrictions(MusterDeviceAdminReceiver.component(this))
         val effective = getSystemService(UserManager::class.java)?.userRestrictions
-        return ours.keySet()
+        val inForce = ours.keySet()
             .filter { it == "no_outgoing_calls" && ours.getBoolean(it, false) && effective?.getBoolean(it, false) != false }
             .sorted()
+        return inForce to blockIncomingRequested()
+    }
+
+    /** Whether the telephony config file asks for incoming calls to be blocked. */
+    private fun blockIncomingRequested(): Boolean {
+        val file = File(createDeviceProtectedStorageContext().filesDir, TelephonyPolicy.FILE_NAME)
+        return if (!file.isFile) false else try {
+            TelephonyPolicy.read(file.readText()).blockIncoming
+        } catch (e: IOException) {
+            Log.w(TAG, "could not read telemetry file", e)
+            false
+        }
     }
 
     companion object {

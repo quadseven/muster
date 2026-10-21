@@ -276,9 +276,11 @@ factory reset.
 ### What the status screen shows
 
 The status screen reports `Telephony in force` with the platform keys the
-device confirms are active - `no_outgoing_calls`, or `none`. `block-incoming`
-never appears there, because it is not a platform key and the device cannot
-read it back. The operator knows to set it because the step's concern names it:
+device confirms are active - `no_outgoing_calls`, or `none`. When the telephony
+file asks for `block-incoming`, the screen shows it as a distinct status -
+requested but not device-enforceable - because AOSP has no platform key to
+refuse an incoming call and the device cannot read it back. The operator knows
+to set it because the step's concern names it:
 
     telephony: BLOCK_INCOMING requested but not device-enforceable - set an MMI divert or a data-only plan at the carrier
 

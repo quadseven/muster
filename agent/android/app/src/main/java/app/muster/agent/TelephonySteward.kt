@@ -2,9 +2,11 @@ package app.muster.agent
 
 import android.app.admin.DevicePolicyManager
 import android.content.Context
+import android.os.Bundle
 import android.os.UserManager
 import android.util.Log
 import java.io.File
+import java.io.IOException
 
 /**
  * Put the device's telephony restrictions where the config file says they
@@ -94,7 +96,14 @@ class TelephonySteward(private val context: Context) {
         val admin = MusterDeviceAdminReceiver.component(context)
         val users = context.getSystemService(UserManager::class.java)
 
-        val desired = TelephonyPolicy.read(file.readText())
+        val desired = try {
+            TelephonyPolicy.read(file.readText())
+        } catch (e: IOException) {
+            // Device-protected storage can be unreadable at LOCKED_BOOT_COMPLETED
+            // before first unlock. Refuse rather than treat an unreadable file as
+            // "nothing configured" and silently drop a policy the operator set.
+            return Outcome(inert = "telemetry file at ${file.absolutePath} could not be read")
+        }
         // What is ACTUALLY in force, which is what decides whether to add.
         val inForce = users?.userRestrictions.asKeys()
         // What THIS admin recorded setting, which is what may be withdrawn.
