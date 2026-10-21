@@ -104,6 +104,11 @@ REBOOT_COMMAND = "reboot\n"
 MANAGED_FILES: tuple[str, ...] = (
     "restrictions",
     "visible-apps",
+    # Switches telephony off on an appliance: `block-outgoing` sets
+    # `UserManager.DISALLOW_OUTGOING_CALLS`, and `block-incoming` hides the
+    # dialer and in-call packages. Read back from the platform, like every
+    # other policy file - what is applied is what the device says is in force.
+    "telephony",
     "app-config",
     # NAMES an asset and the digest to expect; it is not the image. See the
     # module docstring. Text, like everything else here, which is what lets it
@@ -137,6 +142,9 @@ MANAGED_FILES: tuple[str, ...] = (
 SHARED_FILES: tuple[str, ...] = (
     "restrictions",
     "visible-apps",
+    # A per-device-group switch: every device with this role, or the whole
+    # kith, carries the same telephony policy. It is not a credential.
+    "telephony",
     "wallpaper",
     # HERE, unlike `app-config`: it names public artefacts and their digests,
     # none of which is a credential, and "every device carries the agent" is

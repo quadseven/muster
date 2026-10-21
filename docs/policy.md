@@ -195,9 +195,11 @@ and it was the wrong one.
 receipt.** A device carrying both can still be called, and voicemail still
 gets recorded - AOSP has no user restriction that refuses an INCOMING call,
 and voicemail is a service the CARRIER'S network provides, not anything
-running on the handset. Neither of these is a muster gap; there is no lever
-here for either to pull. What actually stops incoming calls and voicemail is
-one of:
+running on the handset. No restriction is a lever for either. Incoming calls
+have one other route on the handset, the call screener behind `block-incoming`
+in [the telephony file](#the-telephony-file); voicemail has none. What
+actually stops voicemail, and the calls the screener is never shown, is one
+of:
 
 - dropping voice from the line entirely at the carrier, for a data-only SIM
 - deactivating conditional call forwarding on the handset itself (the
@@ -215,6 +217,96 @@ currently in, including ON, and removes the Settings toggle that would have
 turned them off. It is useful only AFTER alerts have already been turned off
 by hand on the device; set first, it locks them on rather than silencing
 them.
+
+## The telephony file
+
+`telephony` is a managed file like `restrictions` and `visible-apps`, and it
+is how muster switches telephony off on an appliance:
+
+    /data/user_de/0/app.muster.agent/files/telephony
+
+One instruction per line, `#` starts a comment, blank lines ignored:
+
+    # kitchen display - it is an appliance, not a phone
+    block-outgoing
+
+Push it with:
+
+```sh
+uv run --group dev python -m muster cli telephony <serial> --file ./kitchen.telephony
+```
+
+Same route as the restrictions file, with the same expiry date on it: written
+as the agent with `run-as`, which needs a debuggable package, so it ends at the
+signing ceremony. An enrolled device fetches this file instead - see ["How
+policy reaches a device"](#how-policy-reaches-a-device).
+
+### What the two instructions mean
+
+| Instruction | What it does | How it is enforced |
+|---|---|---|
+| `block-outgoing` | the device does not originate non-emergency calls | `UserManager.DISALLOW_OUTGOING_CALLS` (`no_outgoing_calls`), applied and read back from the platform at every boot |
+| `block-incoming` | the device does not take incoming calls | Muster's call screener rejects each incoming call before it rings, while Muster holds the call-screening role (read back from the platform); voicemail stays an operator step at the carrier |
+
+**Emergency calls are always allowed.** The platform bypasses
+`DISALLOW_OUTGOING_CALLS` for emergency numbers, and nothing in this file
+touches that. The two instructions are independent: a file can name one, both
+or neither.
+
+**`block-incoming` is a call screener, not a restriction.** AOSP has no user
+restriction that refuses an INCOMING call. Muster declares a
+`CallScreeningService`, and telecom asks the app holding the call-screening role
+about every new call before it rings; while the file asks for `block-incoming`,
+Muster rejects it and asks for no missed-call notification. No device-owner
+call grants that role, so it takes one tap on the device: opening Muster while
+the file asks for `block-incoming` raises the platform's "set as call screening
+app" dialog. Allow it once, at enrollment.
+
+What the screener cannot do, per AOSP `CallScreeningService`:
+
+- Telecom does not show it calls from a withheld or unknown number, or from a
+  number in the device's contacts. An appliance has no contacts; a withheld
+  caller still rings, which the carrier step below covers.
+- A third-party screener cannot keep a call out of the call log. The platform
+  logs a rejected call as BLOCKED regardless.
+- Voicemail is recorded by the carrier's network, not by anything on the
+  handset, and a rejected call can still be diverted to it.
+
+So the operator still sets voicemail at the carrier: drop voice from the line
+for a data-only SIM, or deactivate call forwarding (`##002#` clears all
+forwarding, `##004#` the conditional kind) so a rejected or unanswered call
+does not route to voicemail. Dial the MMI code before `block-outgoing`
+reaches the device: the dialer may refuse it once outgoing calls are
+restricted.
+
+### An absent file and an empty file mean different things
+
+    no file        nothing has been configured; the device is left as it is
+    empty file     no telephony restrictions; anything muster set is withdrawn
+
+The same distinction as the restrictions file, and the same reason: a first
+boot on an unconfigured device must not be indistinguishable from a deliberate
+instruction to withdraw.
+
+Reconciling goes **both ways**. A `block-outgoing` line deleted from the file
+has `no_outgoing_calls` cleared at the next boot. Policy that only ever adds
+is a ratchet, and the only way to undo a ratchet on a Device Owner is a
+factory reset.
+
+### What the status screen shows
+
+The status screen reports `Telephony in force` with what the platform confirms:
+`no_outgoing_calls` when the restriction is active, and, when the telephony file
+asks for `block-incoming`, one of two lines decided by asking `RoleManager`
+whether Muster holds the call-screening role:
+
+    block-incoming (call screening)                                       role held: incoming calls are rejected
+    block-incoming NOT in force - Muster is not the call-screening app    role not held: the handset still rings
+
+With nothing in force and nothing asked for, it says `none`. While the role is
+not held, the telephony step's concern names it too:
+
+    telephony: BLOCK_INCOMING requested but Muster is not the call-screening app - open Muster on the device and allow it
 
 ## Installing applications
 
@@ -724,8 +816,10 @@ A flat directory, `MUSTER_POLICY_DIR`, mounted from the `muster-policy` Secret:
 
     kith.restrictions        every device in the kith
     kith.visible-apps
+    kith.telephony
     <key_id>.restrictions    this device only, and it REPLACES the kith file
     <key_id>.visible-apps
+    <key_id>.telephony
     <key_id>.app-config
 
 `<key_id>` is the device's key id, the 64-character value the console shows and
@@ -802,7 +896,7 @@ safe in the direction that matters, because the agent already treats an absent
 file as "leave this device as it is" rather than as "strip it".
 
 A name outside `ConfigurationPolicy.MANAGED` - `restrictions`, `visible-apps`,
-`app-config`, `wallpaper`, `install-apps`, `wipe` and `reboot` - is refused by
+`telephony`, `app-config`, `wallpaper`, `install-apps`, `wipe` and `reboot` - is refused by
 the device, not just omitted by the server. Anything else would make this a remote
 write into the agent's private storage, and the first file it would be pointed
 at is `server-url` - the one that decides which control plane the device answers

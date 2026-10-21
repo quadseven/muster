@@ -26,6 +26,9 @@ class DeviceStatusTest {
         revoked: Boolean = false,
         lastCheckIn: Long? = 1_000_000L,
         restrictions: List<String> = listOf("no_safe_boot"),
+        telephony: List<String> = listOf("no_outgoing_calls"),
+        telephonyBlockIncomingRequested: Boolean = false,
+        telephonyIncomingScreened: Boolean = false,
         agentVersion: String = "0.1.0",
         hasIdentity: Boolean = stance !is Stance.Unenrolled,
     ) = DeviceStatus.Facts(
@@ -37,6 +40,9 @@ class DeviceStatusTest {
         renewAfter = 1_792_000_000L,
         serverUrl = "https://enroll.muster.example",
         restrictions = restrictions,
+        telephony = telephony,
+        telephonyBlockIncomingRequested = telephonyBlockIncomingRequested,
+        telephonyIncomingScreened = telephonyIncomingScreened,
         agentVersion = agentVersion,
         lastCheckIn = lastCheckIn,
         now = 1_000_060L,
@@ -123,6 +129,59 @@ class DeviceStatusTest {
         assertEquals("none", none.rows.single { it.label == "Restrictions in force" }.value)
         val some = DeviceStatus.render(facts(restrictions = listOf("no_safe_boot", "no_add_user")))
         assertTrue(some.rows.single { it.label == "Restrictions in force" }.value.contains("no_add_user"))
+    }
+
+    @Test
+    fun blockIncomingIsInForceOnlyWhenMusterHoldsTheCallScreeningRole() {
+        // The role is read back from the platform. Held, the screener rejects
+        // every incoming call it is shown, so the screen reports it as in force
+        // beside the outgoing restriction.
+        val view = DeviceStatus.render(
+            facts(
+                telephony = listOf("no_outgoing_calls"),
+                telephonyBlockIncomingRequested = true,
+                telephonyIncomingScreened = true,
+            ),
+        )
+        assertEquals(
+            "no_outgoing_calls\nblock-incoming (call screening)",
+            view.rows.single { it.label == "Telephony in force" }.value,
+        )
+    }
+
+    @Test
+    fun blockIncomingRequestedWithoutTheRoleIsReportedAsNotInForce() {
+        // The screen must never claim a block that is not there: asked for in
+        // the file, but the platform says another app (or none) screens calls.
+        val view = DeviceStatus.render(
+            facts(
+                telephony = emptyList(),
+                telephonyBlockIncomingRequested = true,
+                telephonyIncomingScreened = false,
+            ),
+        )
+        assertEquals(
+            "block-incoming NOT in force - Muster is not the call-screening app",
+            view.rows.single { it.label == "Telephony in force" }.value,
+        )
+    }
+
+    @Test
+    fun holdingTheRoleWithoutTheRequestReportsNoIncomingBlock() {
+        // The screener allows every call when the file does not ask for the
+        // block, so holding the role alone blocks nothing.
+        val view = DeviceStatus.render(
+            facts(telephony = emptyList(), telephonyIncomingScreened = true),
+        )
+        assertEquals("none", view.rows.single { it.label == "Telephony in force" }.value)
+    }
+
+    @Test
+    fun telephonySaysNoneWhenNothingEnforcedAndNothingRequested() {
+        val view = DeviceStatus.render(
+            facts(telephony = emptyList(), telephonyBlockIncomingRequested = false),
+        )
+        assertEquals("none", view.rows.single { it.label == "Telephony in force" }.value)
     }
 
     @Test

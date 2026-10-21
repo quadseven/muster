@@ -82,6 +82,11 @@ object BootPlan {
         // separate precedence guard is needed.
         "reboot" to { context: Context -> RebootSteward(context).reconcile() },
         "restrictions" to { context: Context -> RestrictionSteward(context).reconcile() },
+        // RIGHT AFTER RESTRICTIONS, because it uses the same platform mechanism
+        // - DevicePolicyManager and UserManager restrictions - and a device
+        // that cannot originate calls should not be installing and configuring
+        // apps in the same check-in anyway.
+        "telephony" to { context: Context -> TelephonySteward(context).reconcile() },
         // After restrictions, because the restrictions are what keep a managed
         // app on the handset at all - there is no point configuring an app
         // somebody can still uninstall from Settings.

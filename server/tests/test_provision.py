@@ -667,10 +667,10 @@ def test_the_cli_no_longer_stages_config_in_a_directory_it_cannot_copy_out_of():
     assert "printf %s" not in cli, (
         "the server URL is being written through a shell command line again"
     )
-    assert cli.count("place_file(") == 6, (
-        "all six writes - wallpaper image and policy, restrictions, "
-        "visible-apps, app config, server URL - go to the device the same "
-        "way, or the ones that do not are broken"
+    assert cli.count("place_file(") == 7, (
+        "all seven writes - wallpaper image and policy, restrictions, "
+        "visible-apps, telephony, app config, server URL - go to the device "
+        "the same way, or the ones that do not are broken"
     )
 
 

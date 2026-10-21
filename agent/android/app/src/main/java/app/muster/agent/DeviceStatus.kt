@@ -67,6 +67,9 @@ object DeviceStatus {
         val renewAfter: Long?,
         val serverUrl: String?,
         val restrictions: List<String>,
+        val telephony: List<String>,
+        val telephonyBlockIncomingRequested: Boolean = false,
+        val telephonyIncomingScreened: Boolean = false,
         val agentVersion: String,
         val lastCheckIn: Long?,
         val now: Long,
@@ -143,6 +146,15 @@ object DeviceStatus {
             // Platform restriction keys, not prose.
             machine = facts.restrictions.isNotEmpty(),
         )
+        rows += Row(
+            "Telephony in force",
+            // Read back from the platform, same rule as restrictions: only the
+            // device says what is true. `block-incoming` is in force only while
+            // the platform says Muster holds the call-screening role; asked for
+            // without it, the screen says so rather than claim the block.
+            telephonyValue(facts),
+            machine = facts.telephony.isNotEmpty() || facts.telephonyBlockIncomingRequested,
+        )
         rows += Row("Agent version", shortSha(facts.agentVersion), machine = true)
         rows += Row(
             "Last check-in",
@@ -166,6 +178,27 @@ object DeviceStatus {
         is IdentityLifecycle.Stance.Lapsed -> "lapsed"
         is IdentityLifecycle.Stance.ClockBehind -> "clock behind"
         IdentityLifecycle.Stance.Unenrolled -> if (hasIdentity) "unavailable" else "unenrolled"
+    }
+
+    /**
+     * What the screen says under "Telephony in force".
+     *
+     * Only platform-enforced keys appear as enforced. `block-incoming` has no
+     * restriction key; it is enforced by IncomingCallScreen, so it is reported
+     * in force only when the platform says Muster holds the call-screening
+     * role. Requested without the role, it is reported as not in force, never
+     * as a block the device is not performing.
+     */
+    private fun telephonyValue(facts: Facts): String {
+        val parts = mutableListOf<String>()
+        parts.addAll(facts.telephony)
+        if (facts.telephonyBlockIncomingRequested) {
+            parts.add(
+                if (facts.telephonyIncomingScreened) "block-incoming (call screening)"
+                else "block-incoming NOT in force - Muster is not the call-screening app"
+            )
+        }
+        return if (parts.isEmpty()) "none" else parts.joinToString("\n")
     }
 
     /**

@@ -208,3 +208,26 @@ def test_a_self_update_runs_the_plan_straight_away():
         "android.intent.action.MY_PACKAGE_REPLACED",
     ):
         assert f'<action android:name="{action}" />' in receiver, action
+
+
+def test_the_call_screening_service_is_declared_and_guarded():
+    """`block-incoming` is enforced by a CallScreeningService, and the platform
+    only lets an app take the call-screening role if it declares one.
+
+    Dropping the declaration breaks nothing visibly: the build stays green and
+    the role request is refused, so the status screen reports incoming calls
+    as not blocked on a handset that still rings. Guarded by
+    BIND_SCREENING_SERVICE, which only telecom holds, so no other app can bind
+    it and ask it to reject a call. That is a protection on the component, not
+    a `<uses-permission>`, so the four-permission profile above is unchanged.
+    """
+    manifest = MANIFEST.read_text()
+    service = re.search(
+        r'<service\s+android:name="\.IncomingCallScreen".*?</service>',
+        manifest,
+        re.DOTALL,
+    )
+    assert service, "IncomingCallScreen is not declared as a service"
+    block = service.group(0)
+    assert 'android:permission="android.permission.BIND_SCREENING_SERVICE"' in block
+    assert '<action android:name="android.telecom.CallScreeningService" />' in block

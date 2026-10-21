@@ -60,6 +60,12 @@ object ConfigurationPolicy {
     val MANAGED: Set<String> = linkedSetOf(
         "restrictions",
         "visible-apps",
+        // Switches telephony off on an appliance: `block-outgoing` sets
+        // `UserManager.DISALLOW_OUTGOING_CALLS`. `block-incoming` is an
+        // operator step (MMI divert, data-only plan) - there is no platform
+        // key for refusing an incoming call, so the device records it and
+        // reports it, and the line lives in docs/policy.md.
+        "telephony",
         "app-config",
         // NAMES an asset and the digest to expect; it is not the image. The
         // bytes travel over /v1/device/asset and are checked against it.

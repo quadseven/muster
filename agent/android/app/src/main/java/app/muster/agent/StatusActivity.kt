@@ -2,6 +2,7 @@ package app.muster.agent
 
 import android.app.Activity
 import android.app.admin.DevicePolicyManager
+import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -14,6 +15,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.File
+import java.io.IOException
 import java.security.cert.CertificateFactory
 import java.time.OffsetDateTime
 import java.util.concurrent.Executors
@@ -110,8 +112,18 @@ class StatusActivity : Activity() {
      */
     private var lastReport: SyncReport.View? = null
 
+    /**
+     * Whether the call-screening dialog has been raised in this launch.
+     *
+     * Once per launch, so a person who declines it is not shown it again on
+     * every return to the screen. The status row keeps saying the block is not
+     * in force, and the next launch asks again.
+     */
+    private var askedForCallScreening = false
+
     private fun render() {
-        val view = DeviceStatus.render(gather())
+        val facts = gather()
+        val view = DeviceStatus.render(facts)
         findViewById<TextView>(R.id.headline).text = view.headline
         // The identity detail says whether this device is in the kith. The
         // report says whether being in it changed anything, which is a
@@ -162,6 +174,31 @@ class StatusActivity : Activity() {
             }
             rows.addView(item)
         }
+        if (facts.telephonyBlockIncomingRequested && !facts.telephonyIncomingScreened) {
+            askForCallScreening()
+        }
+    }
+
+    /**
+     * Raise the platform's dialog for the call-screening role.
+     *
+     * No DevicePolicyManager call grants the role, so a person accepts it
+     * once; until then IncomingCallScreen is never bound and the handset
+     * rings. Whether it was granted is not taken from the dialog's result:
+     * the next render asks the platform.
+     */
+    private fun askForCallScreening() {
+        if (askedForCallScreening) return
+        val roles = getSystemService(RoleManager::class.java) ?: return
+        if (!roles.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING)) {
+            Log.w(TAG, "block-incoming requested but this device offers no call-screening role")
+            return
+        }
+        askedForCallScreening = true
+        startActivityForResult(
+            roles.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING),
+            REQUEST_CALL_SCREENING,
+        )
     }
 
     private fun gather(): DeviceStatus.Facts {
@@ -170,6 +207,7 @@ class StatusActivity : Activity() {
         val notBefore = certificateNotBefore()
         val notAfter = store.notAfter()
         val renewAfter = store.renewAfter()
+        val (telephony, telephonyBlockIncomingRequested) = telephonyInForce()
 
         return DeviceStatus.Facts(
             deviceOwner = MusterDeviceAdminReceiver.isDeviceOwner(this),
@@ -185,6 +223,9 @@ class StatusActivity : Activity() {
             renewAfter = epochOf(renewAfter),
             serverUrl = serverUrl(),
             restrictions = restrictionsInForce(),
+            telephony = telephony,
+            telephonyBlockIncomingRequested = telephonyBlockIncomingRequested,
+            telephonyIncomingScreened = IncomingCallScreen.roleHeld(this),
             agentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown",
             lastCheckIn = CheckIn.last(this),
             now = now,
@@ -243,7 +284,38 @@ class StatusActivity : Activity() {
             .sorted()
     }
 
+    /**
+     * Telephony restrictions this admin set and the platform enforces, plus
+     * whether the config file asks for `block-incoming`, which no restriction
+     * key exists for. IncomingCallScreen enforces it, and gather() reads back
+     * whether Muster holds the role that lets it. The screen reports both so
+     * it never claims a block that is not there, and never hides one that was
+     * asked for.
+     */
+    private fun telephonyInForce(): Pair<List<String>, Boolean> {
+        if (!MusterDeviceAdminReceiver.isDeviceOwner(this)) return emptyList<String>() to false
+        val dpm = getSystemService(DevicePolicyManager::class.java) ?: return emptyList<String>() to false
+        val ours = dpm.getUserRestrictions(MusterDeviceAdminReceiver.component(this))
+        val effective = getSystemService(UserManager::class.java)?.userRestrictions
+        val inForce = ours.keySet()
+            .filter { it == "no_outgoing_calls" && ours.getBoolean(it, false) && effective?.getBoolean(it, false) != false }
+            .sorted()
+        return inForce to blockIncomingRequested()
+    }
+
+    /** Whether the telephony config file asks for incoming calls to be blocked. */
+    private fun blockIncomingRequested(): Boolean {
+        val file = File(createDeviceProtectedStorageContext().filesDir, TelephonyPolicy.FILE_NAME)
+        return if (!file.isFile) false else try {
+            TelephonyPolicy.read(file.readText()).blockIncoming
+        } catch (e: IOException) {
+            Log.w(TAG, "could not read telephony file", e)
+            false
+        }
+    }
+
     companion object {
         private const val TAG = "muster"
+        private const val REQUEST_CALL_SCREENING = 1
     }
 }
