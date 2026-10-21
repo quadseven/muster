@@ -118,7 +118,7 @@ object TelephonyPolicy {
             if (line.isEmpty()) continue
 
             val words = line.split(Regex("\\s+"))
-            val name = words[0].uppercase()
+            val name = words[0].uppercase().replace('-', '_')
 
             val managed = MANAGED[name]
             if (managed != null) {

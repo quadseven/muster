@@ -32,6 +32,14 @@ class TelephonyPolicyTest {
     }
 
     @Test
+    fun documentedTelephonyFileRequestsOutgoingRestrictionAndIncomingOperatorStep() {
+        val desired = read("block-outgoing\nblock-incoming\n")
+        assertEquals(setOf("no_outgoing_calls"), desired.keys)
+        assertTrue(desired.blockIncoming)
+        assertTrue(desired.refused.isEmpty())
+    }
+
+    @Test
     fun theKeyIsDeclaredRatherThanDerived() {
         // `no_outgoing_calls` is the AOSP value of DISALLOW_OUTGOING_CALLS.
         // There is no rule to derive it, and a key derived wrongly is not an
