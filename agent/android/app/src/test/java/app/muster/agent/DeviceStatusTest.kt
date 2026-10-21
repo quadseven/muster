@@ -130,34 +130,34 @@ class DeviceStatusTest {
     }
 
     @Test
-    fun telemetryShowsEnforcedRestrictionAndBlockIncomingAsDistinctStatus() {
+    fun telephonyShowsEnforcedRestrictionAndBlockIncomingAsDistinctStatus() {
         // `block-incoming` has no platform key, so it is reported as requested
         // but not device-enforceable, distinct from what is actually enforced.
         val view = DeviceStatus.render(
             facts(telephony = listOf("no_outgoing_calls"), telephonyBlockIncomingRequested = true),
         )
-        val value = view.rows.single { it.label == "Telemetry in force" }.value
+        val value = view.rows.single { it.label == "Telephony in force" }.value
         assertTrue(value, value.contains("no_outgoing_calls"))
         assertTrue(value, value.contains("block-incoming (not device-enforceable)"))
     }
 
     @Test
-    fun telemetryShowsBlockIncomingRequestedAlone() {
+    fun telephonyShowsBlockIncomingRequestedAlone() {
         val view = DeviceStatus.render(
             facts(telephony = emptyList(), telephonyBlockIncomingRequested = true),
         )
         assertEquals(
             "block-incoming (not device-enforceable)",
-            view.rows.single { it.label == "Telemetry in force" }.value,
+            view.rows.single { it.label == "Telephony in force" }.value,
         )
     }
 
     @Test
-    fun telemetrySaysNoneWhenNothingEnforcedAndNothingRequested() {
+    fun telephonySaysNoneWhenNothingEnforcedAndNothingRequested() {
         val view = DeviceStatus.render(
             facts(telephony = emptyList(), telephonyBlockIncomingRequested = false),
         )
-        assertEquals("none", view.rows.single { it.label == "Telemetry in force" }.value)
+        assertEquals("none", view.rows.single { it.label == "Telephony in force" }.value)
     }
 
     @Test

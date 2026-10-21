@@ -248,15 +248,15 @@ class StatusActivity : Activity() {
     }
 
     /**
-     * Telemetry restrictions this admin set and the platform enforces, plus
+     * Telephony restrictions this admin set and the platform enforces, plus
      * whether the config file asks for `block-incoming`, which no platform key
      * exists for and which is an operator step (MMI divert, or a data-only
      * plan). The screen reports both so it never claims a block that is not
      * there, and never hides one that was asked for.
      */
     private fun telephonyInForce(): Pair<List<String>, Boolean> {
-        if (!MusterDeviceAdminReceiver.isDeviceOwner(this)) return emptyList() to false
-        val dpm = getSystemService(DevicePolicyManager::class.java) ?: return emptyList() to false
+        if (!MusterDeviceAdminReceiver.isDeviceOwner(this)) return emptyList<String>() to false
+        val dpm = getSystemService(DevicePolicyManager::class.java) ?: return emptyList<String>() to false
         val ours = dpm.getUserRestrictions(MusterDeviceAdminReceiver.component(this))
         val effective = getSystemService(UserManager::class.java)?.userRestrictions
         val inForce = ours.keySet()
@@ -271,7 +271,7 @@ class StatusActivity : Activity() {
         return if (!file.isFile) false else try {
             TelephonyPolicy.read(file.readText()).blockIncoming
         } catch (e: IOException) {
-            Log.w(TAG, "could not read telemetry file", e)
+            Log.w(TAG, "could not read telephony file", e)
             false
         }
     }
