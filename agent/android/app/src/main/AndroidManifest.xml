@@ -197,5 +197,23 @@
             android:name=".CheckInJob"
             android:permission="android.permission.BIND_JOB_SERVICE"
             android:exported="false" />
+
+        <!-- Enforces `block-incoming` (see IncomingCallScreen). Exported
+             because telecom binds it; BIND_SCREENING_SERVICE, held only by
+             telecom, is what stops any other app binding it. A protection on
+             the component, not a uses-permission, so the profile above is
+             unchanged. Declaring it is also what lets this app take the
+             call-screening role at all. directBootAware because the file it
+             reads is in device-protected storage, and an appliance can sit
+             locked after a reboot for days, ringing. -->
+        <service
+            android:name=".IncomingCallScreen"
+            android:permission="android.permission.BIND_SCREENING_SERVICE"
+            android:directBootAware="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

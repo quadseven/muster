@@ -11,8 +11,8 @@ import org.junit.Test
  *
  * The two that matter most are `aTypoIsRefusedRatherThanSkipped` - a silently
  * ignored line leaves a phone with calls it was meant to block - and
- * `blockIncomingIsRecordedButNotEnforceable`, which is the one line the file
- * can name that the device has no platform key for.
+ * `blockIncomingHasNoRestrictionKey`, which is the one line the file can
+ * name that no user restriction enforces - the call screener does instead.
  */
 class TelephonyPolicyTest {
 
@@ -62,9 +62,10 @@ class TelephonyPolicyTest {
     }
 
     @Test
-    fun blockIncomingIsRecordedButNotEnforceable() {
-        // There is no platform key for refusing an incoming call. The line is
-        // recognized and recorded, but produces no platform key.
+    fun blockIncomingHasNoRestrictionKey() {
+        // There is no user restriction for refusing an incoming call. The line
+        // is recognized and recorded for the call screener, but produces no
+        // restriction key.
         val desired = read("block-incoming")
         assertTrue(desired.keys.isEmpty())
         assertTrue(desired.blockIncoming)
@@ -140,8 +141,8 @@ class TelephonyPolicyTest {
 
     @Test
     fun blockIncomingDoesNotMakeAPlanNotNothing() {
-        // blockIncoming is requested but not enforceable, so it produces no
-        // add or clear and the plan changes nothing at the platform level.
+        // blockIncoming is enforced by the call screener, not a restriction,
+        // so it produces no add or clear for the restriction plan.
         val desired = read("block-incoming")
         val plan = TelephonyPolicy.plan(
             desired,
@@ -150,6 +151,21 @@ class TelephonyPolicyTest {
         )
         assertTrue(plan.changesNothing)
         assertTrue(plan.blockIncoming)
+    }
+
+    @Test
+    fun theScreenerRejectsIncomingCallsOnlyWhenTheFileAsksForIt() {
+        assertTrue(TelephonyPolicy.rejects(read("block-incoming"), incoming = true))
+        assertFalse(TelephonyPolicy.rejects(read("block-outgoing"), incoming = true))
+        assertFalse(TelephonyPolicy.rejects(read(""), incoming = true))
+    }
+
+    @Test
+    fun theScreenerNeverRejectsAnOutgoingCall() {
+        // Telecom shows the screener outgoing calls too. Refusing those is
+        // no_outgoing_calls' job, which lets emergency calls through; the
+        // screener must not get in the way of one.
+        assertFalse(TelephonyPolicy.rejects(read("block-incoming"), incoming = false))
     }
 
     @Test

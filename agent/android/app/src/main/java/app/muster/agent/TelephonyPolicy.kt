@@ -10,12 +10,14 @@ package app.muster.agent
  *
  * WHAT THE PLATFORM CAN AND CANNOT DO. AOSP has
  * `UserManager.DISALLOW_OUTGOING_CALLS` (`no_outgoing_calls`), which the
- * platform enforces and which emergency calls bypass. There is NO platform
- * key for refusing an INCOMING call, and voicemail is recorded by the
- * carrier's network, not by anything on the handset. So `block-outgoing` is
- * device-enforced and `block-incoming` is an operator step (MMI divert, or a
- * data-only plan that never rings). Both are recognized lines; only one has a
- * platform key.
+ * platform enforces and which emergency calls bypass. There is NO user
+ * restriction for refusing an INCOMING call. `block-incoming` is enforced by
+ * IncomingCallScreen instead, a CallScreeningService that rejects the call
+ * before it rings, and only while Muster holds the call-screening role.
+ * Voicemail is recorded by the carrier's network, not by anything on the
+ * handset, so a rejected call can still reach it: that part stays an operator
+ * step (MMI divert, or a data-only plan). Both are recognized lines; only one
+ * has a restriction key.
  *
  * RECONCILING GOES BOTH WAYS. A restriction removed from the file comes off
  * the device. Policy that only ever adds is a ratchet, and the reverse gear
@@ -62,7 +64,7 @@ object TelephonyPolicy {
         "BLOCK_OUTGOING" to "no_outgoing_calls",
     )
 
-    /** Recognized but not device-enforceable: no platform key refuses an incoming call. */
+    /** Recognized, and enforced by IncomingCallScreen: no restriction key refuses an incoming call. */
     const val BLOCK_INCOMING = "block-incoming"
 
     /** A config line that will not be acted on, and the reason, for logging. */
@@ -81,8 +83,8 @@ object TelephonyPolicy {
      * [changesNothing] is what makes a second boot cheap, and what makes
      * "nothing happened" distinguishable from "nothing was configured" in
      * the log. `blockIncoming` being requested does not make this false -
-     * the device cannot enforce it, so there is nothing to add or clear for
-     * it, and it is reported separately.
+     * the call screener enforces it, not a restriction, so there is nothing
+     * to add or clear for it, and it is reported separately.
      */
     data class Plan(
         val add: List<String>,
@@ -137,6 +139,15 @@ object TelephonyPolicy {
         }
         return Desired(keys, blockIncoming, refused)
     }
+
+    /**
+     * Whether IncomingCallScreen should reject a call it is shown.
+     *
+     * Only incoming calls. Telecom shows the screener outgoing calls too, and
+     * refusing those is `no_outgoing_calls`' job, which lets emergency calls
+     * through - the screener must never stand in the way of one.
+     */
+    fun rejects(desired: Desired, incoming: Boolean): Boolean = incoming && desired.blockIncoming
 
     /**
      * Work out the difference between what is wanted and what the device has.

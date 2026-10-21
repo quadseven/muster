@@ -195,9 +195,11 @@ and it was the wrong one.
 receipt.** A device carrying both can still be called, and voicemail still
 gets recorded - AOSP has no user restriction that refuses an INCOMING call,
 and voicemail is a service the CARRIER'S network provides, not anything
-running on the handset. Neither of these is a muster gap; there is no lever
-here for either to pull. What actually stops incoming calls and voicemail is
-one of:
+running on the handset. No restriction is a lever for either. Incoming calls
+have one other route on the handset, the call screener behind `block-incoming`
+in [the telephony file](#the-telephony-file); voicemail has none. What
+actually stops voicemail, and the calls the screener is never shown, is one
+of:
 
 - dropping voice from the line entirely at the carrier, for a data-only SIM
 - deactivating conditional call forwarding on the handset itself (the
@@ -244,20 +246,38 @@ policy reaches a device"](#how-policy-reaches-a-device).
 | Instruction | What it does | How it is enforced |
 |---|---|---|
 | `block-outgoing` | the device does not originate non-emergency calls | `UserManager.DISALLOW_OUTGOING_CALLS` (`no_outgoing_calls`), applied and read back from the platform at every boot |
-| `block-incoming` | the device does not take incoming calls | not device-enforceable at all - an operator step: an MMI divert code (`##002#` clears all forwarding) or a data-only SIM from the carrier |
+| `block-incoming` | the device does not take incoming calls | Muster's call screener rejects each incoming call before it rings, while Muster holds the call-screening role (read back from the platform); voicemail stays an operator step at the carrier |
 
 **Emergency calls are always allowed.** The platform bypasses
 `DISALLOW_OUTGOING_CALLS` for emergency numbers, and nothing in this file
 touches that. The two instructions are independent: a file can name one, both
 or neither.
 
-**`block-incoming` has no platform key.** AOSP has no user restriction that
-refuses an INCOMING call, and voicemail is recorded by the carrier's network,
-not by anything on the handset. So the telephony steward applies `block-outgoing`
-and reports `block-incoming` as requested but not enforceable. The operator
-sets it at the carrier: drop voice from the line for a data-only SIM, or
-deactivate conditional call forwarding (`##004#`) so an unanswered call does
-not route to voicemail.
+**`block-incoming` is a call screener, not a restriction.** AOSP has no user
+restriction that refuses an INCOMING call. Muster declares a
+`CallScreeningService`, and telecom asks the app holding the call-screening role
+about every new call before it rings; while the file asks for `block-incoming`,
+Muster rejects it and asks for no missed-call notification. No device-owner
+call grants that role, so it takes one tap on the device: opening Muster while
+the file asks for `block-incoming` raises the platform's "set as call screening
+app" dialog. Allow it once, at enrollment.
+
+What the screener cannot do, per AOSP `CallScreeningService`:
+
+- Telecom does not show it calls from a withheld or unknown number, or from a
+  number in the device's contacts. An appliance has no contacts; a withheld
+  caller still rings, which the carrier step below covers.
+- A third-party screener cannot keep a call out of the call log. The platform
+  logs a rejected call as BLOCKED regardless.
+- Voicemail is recorded by the carrier's network, not by anything on the
+  handset, and a rejected call can still be diverted to it.
+
+So the operator still sets voicemail at the carrier: drop voice from the line
+for a data-only SIM, or deactivate call forwarding (`##002#` clears all
+forwarding, `##004#` the conditional kind) so a rejected or unanswered call
+does not route to voicemail. Dial the MMI code before `block-outgoing`
+reaches the device: the dialer may refuse it once outgoing calls are
+restricted.
 
 ### An absent file and an empty file mean different things
 
@@ -275,14 +295,18 @@ factory reset.
 
 ### What the status screen shows
 
-The status screen reports `Telephony in force` with the platform keys the
-device confirms are active - `no_outgoing_calls`, or `none`. When the telephony
-file asks for `block-incoming`, the screen shows it as a distinct status -
-requested but not device-enforceable - because AOSP has no platform key to
-refuse an incoming call and the device cannot read it back. The operator knows
-to set it because the step's concern names it:
+The status screen reports `Telephony in force` with what the platform confirms:
+`no_outgoing_calls` when the restriction is active, and, when the telephony file
+asks for `block-incoming`, one of two lines decided by asking `RoleManager`
+whether Muster holds the call-screening role:
 
-    telephony: BLOCK_INCOMING requested but not device-enforceable - set an MMI divert or a data-only plan at the carrier
+    block-incoming (call screening)                                       role held: incoming calls are rejected
+    block-incoming NOT in force - Muster is not the call-screening app    role not held: the handset still rings
+
+With nothing in force and nothing asked for, it says `none`. While the role is
+not held, the telephony step's concern names it too:
+
+    telephony: BLOCK_INCOMING requested but Muster is not the call-screening app - open Muster on the device and allow it
 
 ## Installing applications
 

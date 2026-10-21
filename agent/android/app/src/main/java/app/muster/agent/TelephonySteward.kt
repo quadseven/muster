@@ -26,9 +26,10 @@ import java.io.IOException
  * WHAT THE DEVICE CAN AND CANNOT ENFORCE. `block-outgoing` becomes
  * `no_outgoing_calls` through `DevicePolicyManager.addUserRestriction`, and
  * the platform enforces it (emergency calls always bypass). `block-incoming`
- * has no platform key at all - AOSP refuses nothing incoming - so it is an
- * operator step: an MMI divert code or a data-only plan that never rings. The
- * steward applies what it can and reports what it cannot.
+ * has no restriction key - no user restriction refuses an incoming call - so
+ * IncomingCallScreen enforces it, and only while Muster holds the
+ * call-screening role. This steward reads that role back and reports when it
+ * is not held. Voicemail stays an operator step at the carrier.
  *
  * THE READ-BACK IS THE REASON THIS RETURNS A SHAPE RATHER THAN A BOOLEAN,
  * for the same reason as RestrictionSteward: `addUserRestriction` does not
@@ -48,10 +49,11 @@ class TelephonySteward(private val context: Context) {
     /**
      * What happened, for the caller to log.
      *
-     * [blockIncomingRequested] is the line that matters: the file asked for
-     * incoming calls to be blocked, and the device cannot do it. It is
-     * reported so the operator knows to set an MMI divert or a data-only plan
-     * at the carrier instead.
+     * [blockIncomingRequested] with [incomingScreened] false is the line that
+     * matters: the file asked for incoming calls to be blocked, and the
+     * platform says Muster is not the call screener, so the handset still
+     * rings. The role is granted by a person on the device, so the concern
+     * says where.
      */
     data class Outcome(
         val added: List<String> = emptyList(),
@@ -59,6 +61,7 @@ class TelephonySteward(private val context: Context) {
         val refused: List<TelephonyPolicy.Refusal> = emptyList(),
         val didNotTake: List<String> = emptyList(),
         val blockIncomingRequested: Boolean = false,
+        val incomingScreened: Boolean = false,
         val inert: String? = null,
     ) : StepOutcome {
 
@@ -66,8 +69,8 @@ class TelephonySteward(private val context: Context) {
             inert?.let { add("nothing enforced - $it") }
             refused.forEach { add("REFUSED '${it.line}' - ${it.why}") }
             if (didNotTake.isNotEmpty()) add("DID_NOT_TAKE $didNotTake")
-            if (blockIncomingRequested) {
-                add("BLOCK_INCOMING requested but not device-enforceable - set an MMI divert or a data-only plan at the carrier")
+            if (blockIncomingRequested && !incomingScreened) {
+                add("BLOCK_INCOMING requested but Muster is not the call-screening app - open Muster on the device and allow it")
             }
         }
         override fun toString(): String = when {
@@ -76,7 +79,9 @@ class TelephonySteward(private val context: Context) {
                 append("added=$added cleared=$cleared")
                 if (refused.isNotEmpty()) append(" REFUSED=${refused.map { it.line }}")
                 if (didNotTake.isNotEmpty()) append(" DID_NOT_TAKE=$didNotTake")
-                if (blockIncomingRequested) append(" BLOCK_INCOMING=requested-not-enforceable")
+                if (blockIncomingRequested) {
+                    append(" BLOCK_INCOMING=${if (incomingScreened) "screened" else "requested-not-screened"}")
+                }
             }
         }
     }
@@ -117,6 +122,7 @@ class TelephonySteward(private val context: Context) {
             return Outcome(
                 refused = plan.refused,
                 blockIncomingRequested = plan.blockIncoming,
+                incomingScreened = IncomingCallScreen.roleHeld(context),
             )
         }
 
@@ -141,6 +147,7 @@ class TelephonySteward(private val context: Context) {
             refused = plan.refused,
             didNotTake = didNotTake,
             blockIncomingRequested = plan.blockIncoming,
+            incomingScreened = IncomingCallScreen.roleHeld(context),
         )
     }
 

@@ -430,9 +430,10 @@ def cmd_telephony(args) -> int:
 
     `block-outgoing` becomes `no_outgoing_calls` on the device, which the
     platform enforces (emergency calls always bypass it). `block-incoming` has
-    no platform key at all - AOSP refuses nothing incoming - so it is an
-    operator step: an MMI divert code or a data-only SIM from the carrier. The
-    agent applies what it can and reports what it cannot.
+    no restriction key, so the agent's call screener rejects incoming calls
+    instead, once a person on the device has allowed Muster as the
+    call-screening app. Voicemail is the carrier's: an MMI divert code or a
+    data-only SIM. The agent applies what it can and reports what it cannot.
 
     Telephony is reconciled at boot, so this takes effect on the next one.
     """
@@ -452,8 +453,8 @@ def cmd_telephony(args) -> int:
     print(f"placed: {placed.detail}")
     print("the agent reconciles at the next boot; anything refused is named in")
     print("  adb logcat -s muster")
-    print("block-incoming is requested but not device-enforceable - set an MMI")
-    print("divert or a data-only plan at the carrier")
+    print("block-incoming needs Muster allowed as the call-screening app on the")
+    print("device; voicemail is the carrier's - set an MMI divert or a data-only plan")
     return 0
 
 
