@@ -1,0 +1,155 @@
+package app.muster.agent
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * What a device is asked to enforce about telephony, and what it is protected
+ * from being asked.
+ *
+ * The two that matter most are `aTypoIsRefusedRatherThanSkipped` - a silently
+ * ignored line leaves a phone with calls it was meant to block - and
+ * `blockIncomingIsRecordedButNotEnforceable`, which is the one line the file
+ * can name that the device has no platform key for.
+ */
+class TelephonyPolicyTest {
+
+    private fun read(text: String?) = TelephonyPolicy.read(text)
+
+    @Test
+    fun nothingConfiguredAsksForNothing() {
+        assertTrue(read(null).keys.isEmpty())
+        assertTrue(read("").keys.isEmpty())
+        assertTrue(read("   \n\n  ").keys.isEmpty())
+        assertFalse(read("").blockIncoming)
+    }
+
+    @Test
+    fun aKnownNameBecomesItsPlatformKey() {
+        assertEquals(setOf("no_outgoing_calls"), read("block-outgoing").keys)
+    }
+
+    @Test
+    fun theKeyIsDeclaredRatherThanDerived() {
+        // `no_outgoing_calls` is the AOSP value of DISALLOW_OUTGOING_CALLS.
+        // There is no rule to derive it, and a key derived wrongly is not an
+        // error - the platform stores it and enforces nothing.
+        assertEquals("no_outgoing_calls", TelephonyPolicy.MANAGED["BLOCK_OUTGOING"])
+    }
+
+    @Test
+    fun commentsAndBlankLinesAndSpacingAreIgnored() {
+        val text = """
+            # what this appliance may do on the cellular leg
+            
+              block-outgoing   # no dialling from a data-only handset
+            block-incoming
+        """.trimIndent()
+        val desired = read(text)
+        assertEquals(setOf("no_outgoing_calls"), desired.keys)
+        assertTrue(desired.blockIncoming)
+        assertEquals(emptyList<TelephonyPolicy.Refusal>(), desired.refused)
+    }
+
+    @Test
+    fun blockIncomingIsRecordedButNotEnforceable() {
+        // There is no platform key for refusing an incoming call. The line is
+        // recognized and recorded, but produces no platform key.
+        val desired = read("block-incoming")
+        assertTrue(desired.keys.isEmpty())
+        assertTrue(desired.blockIncoming)
+    }
+
+    @Test
+    fun aTypoIsRefusedRatherThanSkipped() {
+        // The failure being prevented: the device comes up unrestricted, and
+        // the only evidence is a file that appears to ask for a restriction.
+        val desired = read("block-outgoig")
+        assertTrue(desired.keys.isEmpty())
+        assertFalse(desired.blockIncoming)
+        assertEquals(1, desired.refused.size)
+        assertEquals("block-outgoig", desired.refused.single().line)
+    }
+
+    @Test
+    fun unknownInstructionIsRefusedAlongsideKnownOnes() {
+        val desired = read("block-outgoing\nbogus-line\n")
+        assertEquals(setOf("no_outgoing_calls"), desired.keys)
+        assertEquals(1, desired.refused.size)
+        assertEquals("bogus-line", desired.refused.single().line)
+    }
+
+    @Test
+    fun aPlanAddsWhatIsNotInForceAndClearsWhatMusterSet() {
+        val desired = read("block-outgoing")
+        val plan = TelephonyPolicy.plan(
+            desired,
+            inForce = emptySet(),
+            setByUs = setOf("no_outgoing_calls"),
+        )
+        assertEquals(listOf("no_outgoing_calls"), plan.add)
+        assertTrue(plan.clear.isEmpty())
+    }
+
+    @Test
+    fun aPlanClearsWhatMusterSetWhenTheFileRemovesIt() {
+        val desired = read("")
+        val plan = TelephonyPolicy.plan(
+            desired,
+            inForce = setOf("no_outgoing_calls"),
+            setByUs = setOf("no_outgoing_calls"),
+        )
+        assertTrue(plan.add.isEmpty())
+        assertEquals(listOf("no_outgoing_calls"), plan.clear)
+    }
+
+    @Test
+    fun aPlanDoesNotClearWhatAnotherAdminSet() {
+        val desired = read("")
+        val plan = TelephonyPolicy.plan(
+            desired,
+            inForce = setOf("no_outgoing_calls"),
+            setByUs = emptySet(),
+        )
+        assertTrue(plan.add.isEmpty())
+        assertTrue(plan.clear.isEmpty())
+    }
+
+    @Test
+    fun aPlanWithNoChangesIsChangesNothing() {
+        val desired = read("block-outgoing")
+        val plan = TelephonyPolicy.plan(
+            desired,
+            inForce = setOf("no_outgoing_calls"),
+            setByUs = setOf("no_outgoing_calls"),
+        )
+        assertTrue(plan.changesNothing)
+        assertTrue(plan.add.isEmpty())
+        assertTrue(plan.clear.isEmpty())
+    }
+
+    @Test
+    fun blockIncomingDoesNotMakeAPlanNotNothing() {
+        // blockIncoming is requested but not enforceable, so it produces no
+        // add or clear and the plan changes nothing at the platform level.
+        val desired = read("block-incoming")
+        val plan = TelephonyPolicy.plan(
+            desired,
+            inForce = emptySet(),
+            setByUs = emptySet(),
+        )
+        assertTrue(plan.changesNothing)
+        assertTrue(plan.blockIncoming)
+    }
+
+    @Test
+    fun theDataSiphonKeyCarriesItsAospValue() {
+        // A WRONG LITERAL HERE IS SILENT: addUserRestriction stores a key it
+        // does not recognise and enforces nothing, so the only thing standing
+        // between a typo and a phone that quietly still dials is this
+        // assertion. Read out of AOSP UserManager.java on 2026-09-19.
+        assertEquals("no_outgoing_calls", TelephonyPolicy.MANAGED["BLOCK_OUTGOING"])
+    }
+}

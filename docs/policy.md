@@ -216,6 +216,72 @@ turned them off. It is useful only AFTER alerts have already been turned off
 by hand on the device; set first, it locks them on rather than silencing
 them.
 
+## The telephony file
+
+`telephony` is a managed file like `restrictions` and `visible-apps`, and it
+is how muster switches telephony off on an appliance:
+
+    /data/user_de/0/app.muster.agent/files/telephony
+
+One instruction per line, `#` starts a comment, blank lines ignored:
+
+    # kitchen display - it is an appliance, not a phone
+    block-outgoing
+
+Push it with:
+
+```sh
+uv run --group dev python -m muster cli telephony <serial> --file ./kitchen.telephony
+```
+
+Same route as the restrictions file, with the same expiry date on it: written
+as the agent with `run-as`, which needs a debuggable package, so it ends at the
+signing ceremony. An enrolled device fetches this file instead - see ["How
+policy reaches a device"](#how-policy-reaches-a-device).
+
+### What the two instructions mean
+
+| Instruction | What it does | How it is enforced |
+|---|---|---|
+| `block-outgoing` | the device does not originate non-emergency calls | `UserManager.DISALLOW_OUTGOING_CALLS` (`no_outgoing_calls`), applied and read back from the platform at every boot |
+| `block-incoming` | the device does not take incoming calls | not device-enforceable at all - an operator step: an MMI divert code (`##002#` clears all forwarding) or a data-only SIM from the carrier |
+
+**Emergency calls are always allowed.** The platform bypasses
+`DISALLOW_OUTGOING_CALLS` for emergency numbers, and nothing in this file
+touches that. The two instructions are independent: a file can name one, both
+or neither.
+
+**`block-incoming` has no platform key.** AOSP has no user restriction that
+refuses an INCOMING call, and voicemail is recorded by the carrier's network,
+not by anything on the handset. So the telephony steward applies `block-outgoing`
+and reports `block-incoming` as requested but not enforceable. The operator
+sets it at the carrier: drop voice from the line for a data-only SIM, or
+deactivate conditional call forwarding (`##004#`) so an unanswered call does
+not route to voicemail.
+
+### An absent file and an empty file mean different things
+
+    no file        nothing has been configured; the device is left as it is
+    empty file     no telephony restrictions; anything muster set is withdrawn
+
+The same distinction as the restrictions file, and the same reason: a first
+boot on an unconfigured device must not be indistinguishable from a deliberate
+instruction to withdraw.
+
+Reconciling goes **both ways**. A `block-outgoing` line deleted from the file
+has `no_outgoing_calls` cleared at the next boot. Policy that only ever adds
+is a ratchet, and the only way to undo a ratchet on a Device Owner is a
+factory reset.
+
+### What the status screen shows
+
+The status screen reports `Telephony in force` with the platform keys the
+device confirms are active - `no_outgoing_calls`, or `none`. `block-incoming`
+never appears there, because it is not a platform key and the device cannot
+read it back. The operator knows to set it because the step's concern names it:
+
+    telephony: BLOCK_INCOMING requested but not device-enforceable - set an MMI divert or a data-only plan at the carrier
+
 ## Installing applications
 
 muster hid the Play Store because an appliance has no business showing one, and
@@ -724,8 +790,10 @@ A flat directory, `MUSTER_POLICY_DIR`, mounted from the `muster-policy` Secret:
 
     kith.restrictions        every device in the kith
     kith.visible-apps
+    kith.telephony
     <key_id>.restrictions    this device only, and it REPLACES the kith file
     <key_id>.visible-apps
+    <key_id>.telephony
     <key_id>.app-config
 
 `<key_id>` is the device's key id, the 64-character value the console shows and
@@ -802,7 +870,7 @@ safe in the direction that matters, because the agent already treats an absent
 file as "leave this device as it is" rather than as "strip it".
 
 A name outside `ConfigurationPolicy.MANAGED` - `restrictions`, `visible-apps`,
-`app-config`, `wallpaper`, `install-apps`, `wipe` and `reboot` - is refused by
+`telephony`, `app-config`, `wallpaper`, `install-apps`, `wipe` and `reboot` - is refused by
 the device, not just omitted by the server. Anything else would make this a remote
 write into the agent's private storage, and the first file it would be pointed
 at is `server-url` - the one that decides which control plane the device answers

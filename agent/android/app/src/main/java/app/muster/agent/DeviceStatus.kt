@@ -67,6 +67,7 @@ object DeviceStatus {
         val renewAfter: Long?,
         val serverUrl: String?,
         val restrictions: List<String>,
+        val telephony: List<String>,
         val agentVersion: String,
         val lastCheckIn: Long?,
         val now: Long,
@@ -142,6 +143,15 @@ object DeviceStatus {
             if (facts.restrictions.isEmpty()) "none" else facts.restrictions.joinToString("\n"),
             // Platform restriction keys, not prose.
             machine = facts.restrictions.isNotEmpty(),
+        )
+        rows += Row(
+            "Telephony in force",
+            // Read back from the platform, same rule as restrictions: only the
+            // device says what is true. `block-incoming` has no platform key,
+            // so it never appears here - it is an operator step, documented
+            // in docs/policy.md.
+            if (facts.telephony.isEmpty()) "none" else facts.telephony.joinToString("\n"),
+            machine = facts.telephony.isNotEmpty(),
         )
         rows += Row("Agent version", shortSha(facts.agentVersion), machine = true)
         rows += Row(

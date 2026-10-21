@@ -252,6 +252,8 @@ def test_a_device_configured_by_hand_holds_the_files_a_fetch_would_write(
     policy.write_text("DISALLOW_SAFE_BOOT\n")
     allowlist = tmp_path / "kitchen.visible-apps"
     allowlist.write_text("app.muster.agent\n")
+    telephony = tmp_path / "kitchen.telephony"
+    telephony.write_text("block-outgoing\n")
     config = tmp_path / "kitchen.appconfig"
     config.write_text(APP_CONFIG)
 
@@ -259,6 +261,7 @@ def test_a_device_configured_by_hand_holds_the_files_a_fetch_would_write(
         ["wallpaper", "fake-serial", "--image", str(image)],
         ["restrictions", "fake-serial", "--file", str(policy)],
         ["visible-apps", "fake-serial", "--file", str(allowlist)],
+        ["telephony", "fake-serial", "--file", str(telephony)],
         ["app-config", "fake-serial", "--file", str(config)],
     ):
         assert cli.main(command) == 0
@@ -266,7 +269,7 @@ def test_a_device_configured_by_hand_holds_the_files_a_fetch_would_write(
     written = {path.removeprefix(f"{AGENT_FILES}/") for path in device.stored}
     assert all(path.startswith(f"{AGENT_FILES}/") for path in device.stored)
     assert written - {"wallpaper.png"} == {
-        "wallpaper", "restrictions", "visible-apps", "app-config"
+        "wallpaper", "restrictions", "visible-apps", "telephony", "app-config"
     }
     assert written - {"wallpaper.png"} <= set(MANAGED_FILES)
 

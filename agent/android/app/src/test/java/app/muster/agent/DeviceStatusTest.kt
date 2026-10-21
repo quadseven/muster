@@ -26,6 +26,7 @@ class DeviceStatusTest {
         revoked: Boolean = false,
         lastCheckIn: Long? = 1_000_000L,
         restrictions: List<String> = listOf("no_safe_boot"),
+        telephony: List<String> = listOf("no_outgoing_calls"),
         agentVersion: String = "0.1.0",
         hasIdentity: Boolean = stance !is Stance.Unenrolled,
     ) = DeviceStatus.Facts(
@@ -37,6 +38,7 @@ class DeviceStatusTest {
         renewAfter = 1_792_000_000L,
         serverUrl = "https://enroll.muster.example",
         restrictions = restrictions,
+        telephony = telephony,
         agentVersion = agentVersion,
         lastCheckIn = lastCheckIn,
         now = 1_000_060L,

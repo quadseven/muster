@@ -408,6 +408,55 @@ def cmd_app_config(args) -> int:
     return 0
 
 
+def cmd_telephony(args) -> int:
+    """Push the telephony file the agent reconciles against at boot.
+
+    Same shape as the restrictions file beside it, for the same reason: this
+    app is Device Owner, so anything baked into the APK can only be changed by
+    a release, and a release eventually costs a factory reset when the signing
+    key moves.
+
+    AN EMPTY FILE IS A VALID INSTRUCTION and means "no telephony restrictions"
+    - the agent withdraws everything it previously set. Not pushing a file at
+    all means something different: the device is left exactly as it is.
+
+    NOT VALIDATED HERE, DELIBERATELY. The vocabulary of telephony names lives
+    in the agent, in TelephonyPolicy, and a second copy in this file would be
+    free to drift from it - at which point the CLI would confidently accept an
+    instruction the device refuses. The agent names every line it will not act
+    on:
+
+        adb logcat -s muster
+
+    `block-outgoing` becomes `no_outgoing_calls` on the device, which the
+    platform enforces (emergency calls always bypass it). `block-incoming` has
+    no platform key at all - AOSP refuses nothing incoming - so it is an
+    operator step: an MMI divert code or a data-only SIM from the carrier. The
+    agent applies what it can and reports what it cannot.
+
+    Telephony is reconciled at boot, so this takes effect on the next one.
+    """
+    adb = Adb(args.adb)
+    source = pathlib.Path(args.file)
+    if not source.is_file():
+        print(f"no telephony file at {source}", file=sys.stderr)
+        return 2
+
+    files = DEVICE_FILES.format(package=args.package)
+    placed = place_file(
+        adb, args.serial, args.package, f"{files}/telephony", source.read_bytes()
+    )
+    if not placed.ok:
+        print(placed.detail, file=sys.stderr)
+        return 3
+    print(f"placed: {placed.detail}")
+    print("the agent reconciles at the next boot; anything refused is named in")
+    print("  adb logcat -s muster")
+    print("block-incoming is requested but not device-enforceable - set an MMI")
+    print("divert or a data-only plan at the carrier")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="muster")
     parser.add_argument("--adb", default="adb", help="path to the adb binary")
@@ -534,6 +583,21 @@ def main(argv=None) -> int:
         ),
     )
     ac.set_defaults(func=cmd_app_config)
+
+    t = sub.add_parser(
+        "telephony", help="push the telephony the agent should enforce"
+    )
+    t.add_argument("serial")
+    t.add_argument(
+        "--file",
+        required=True,
+        help=(
+            "telephony file: 'block-outgoing' and/or 'block-incoming', one per "
+            "line, # comments, empty means none"
+        ),
+    )
+    t.add_argument("--package", default="app.muster.agent")
+    t.set_defaults(func=cmd_telephony)
 
     args = parser.parse_args(argv)
     return args.func(args)

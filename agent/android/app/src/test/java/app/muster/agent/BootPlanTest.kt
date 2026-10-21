@@ -90,6 +90,14 @@ class BootPlanTest {
     }
 
     @Test
+    fun telephonyIsReconciledAtBoot() {
+        assertTrue(
+            "telephony must be run at boot, not merely implemented",
+            names.contains("telephony"),
+        )
+    }
+
+    @Test
     fun theWipeStewardRunsAfterConfigurationAndBeforeTheOtherStewards() {
         // THE ORDER IS THE WHOLE OF muster#15. The wipe instruction arrives
         // as a managed file in the configuration step, so WipeSteward must run
@@ -220,6 +228,7 @@ class BootPlanTest {
         // enforced. ConfigurationPolicyTest checks the constants are MANAGED.
         val readers = mapOf(
             "RestrictionSteward.kt" to "RestrictionPolicy.FILE_NAME",
+            "TelephonySteward.kt" to "TelephonyPolicy.FILE_NAME",
             "AppVisibilitySteward.kt" to "AppVisibilityPolicy.FILE_NAME",
             "AppConfigSteward.kt" to "AppConfigPolicy.FILE_NAME",
             "WallpaperSteward.kt" to "WallpaperPolicy.FILE_NAME",

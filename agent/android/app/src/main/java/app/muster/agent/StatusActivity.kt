@@ -185,6 +185,7 @@ class StatusActivity : Activity() {
             renewAfter = epochOf(renewAfter),
             serverUrl = serverUrl(),
             restrictions = restrictionsInForce(),
+            telephony = telephonyInForce(),
             agentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown",
             lastCheckIn = CheckIn.last(this),
             now = now,
@@ -240,6 +241,22 @@ class StatusActivity : Activity() {
         val effective = getSystemService(UserManager::class.java)?.userRestrictions
         return ours.keySet()
             .filter { ours.getBoolean(it, false) && effective?.getBoolean(it, false) != false }
+            .sorted()
+    }
+
+    /**
+     * Telephony restrictions this admin set and the platform enforces.
+     *
+     * Only `no_outgoing_calls` has a platform key; `block-incoming` has none
+     * and never appears here - it is an operator step.
+     */
+    private fun telephonyInForce(): List<String> {
+        if (!MusterDeviceAdminReceiver.isDeviceOwner(this)) return emptyList()
+        val dpm = getSystemService(DevicePolicyManager::class.java) ?: return emptyList()
+        val ours = dpm.getUserRestrictions(MusterDeviceAdminReceiver.component(this))
+        val effective = getSystemService(UserManager::class.java)?.userRestrictions
+        return ours.keySet()
+            .filter { it == "no_outgoing_calls" && ours.getBoolean(it, false) && effective?.getBoolean(it, false) != false }
             .sorted()
     }
 

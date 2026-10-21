@@ -200,6 +200,38 @@ def test_a_devices_own_file_replaces_the_shared_one_rather_than_merging(root):
     assert served.files["restrictions"] == "DISALLOW_ADD_USER\n"
 
 
+def test_telephony_is_served_from_the_shared_scope(root):
+    """The kith file reaches every device with no file of its own."""
+    _shared(root, "telephony").write_text("block-outgoing\n")
+    served = policy.Policies(root=root).for_device(A)
+    assert served.files["telephony"] == "block-outgoing\n"
+
+
+def test_telephony_is_served_from_a_role_scope(tmp_path):
+    """A role says what is different about a set of appliances."""
+    _shared(tmp_path, "telephony").write_text("block-outgoing\n")
+    _role(tmp_path, "zippie", "telephony").write_text("block-incoming\n")
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie")
+    assert served.files["telephony"] == "block-incoming\n"
+
+
+def test_a_device_scoped_telephony_file_replaces_the_role_and_kith(tmp_path):
+    """Most specific scope wins, per file, just like restrictions."""
+    _shared(tmp_path, "telephony").write_text("block-outgoing\n")
+    _role(tmp_path, "zippie", "telephony").write_text("block-incoming\n")
+    _own(tmp_path, A, "telephony").write_text("")
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie")
+    assert served.files["telephony"] == ""
+
+
+def test_telephony_falls_back_to_kith_when_the_role_names_nothing(tmp_path):
+    """A role names what is different; it does not restate the fleet policy."""
+    _shared(tmp_path, "telephony").write_text("block-outgoing\n")
+    _role(tmp_path, "zippie", "restrictions").write_text("DISALLOW_ADD_USER\n")
+    served = policy.Policies(root=tmp_path).for_device(A, role="zippie")
+    assert served.files["telephony"] == "block-outgoing\n"
+
+
 def test_an_empty_file_is_served_as_empty_and_not_as_absent(root):
     """THE DISTINCTION THE WHOLE AGENT IS BUILT ON. An empty restrictions file
     means "withdraw everything"; no file at all means "nobody has configured
