@@ -116,7 +116,7 @@ BACKLOG_MAX = 512
 
 # How often the background flusher retries a backlog when nothing else is
 # happening. Without it, a deferred write waits for the next enrollment, proof
-# or console load - which on a fleet that renews about weekly can be days, and
+# or console load - which on a fleet that renews every 90 days can be weeks, and
 # a mechanism that only runs when something else happens to run is decoration.
 FLUSH_INTERVAL_S = 60.0
 
@@ -173,7 +173,7 @@ class Device:
     # What this device is FOR, from the pairing code it enrolled with
     # (muster#70). Empty is the ordinary case: the kith's policy and nothing
     # else. It is on the DEVICE rather than the certificate because it survives
-    # renewal - a device does not stop being a zippie android when it renews.
+    # renewal - a device does not stop being a zippie android in ninety days.
     role: str = ""
     # When an administrator said this device is no longer ours. None means it
     # still is. On the DEVICE for the same reason `role` is: revocation is a
@@ -686,7 +686,7 @@ class PostgresRecords:
     """The kith in the estate's CloudNativePG cluster.
 
     ONE CONNECTION, REOPENED ON FAILURE, rather than a pool. muster is
-    replicas: 1 serving a handful of devices that renew about weekly; a pool
+    replicas: 1 serving a handful of devices that renew every 90 days; a pool
     would add a dependency and a set of failure modes to a workload whose peak
     is a person clicking vouch. An idle connection does eventually get closed by
     the server or the network, so every failure closes it and the next attempt
@@ -793,8 +793,8 @@ class PostgresRecords:
     def _run(self, work):
         """One unit of work, retried ONCE if the connection we had was stale.
 
-        muster is quiet by design - a handful of devices renewing about once a
-        week - so its one connection is almost always idle, and an idle
+        muster is quiet by design - a handful of devices renewing every ninety
+        days - so its one connection is almost always idle, and an idle
         connection is the one a server, a CNPG switchover or a conntrack table
         eventually drops without telling anybody. The first request after a lull
         would then fail, open the breaker, and make muster answer 503 for the
@@ -1775,8 +1775,8 @@ class Kith:
         """Retry the backlog on a timer, because nothing else may ever run.
 
         Deferred writes are otherwise replayed by the next enrollment, proof or
-        console load, and on a fleet that renews about weekly that can be
-        days. A pod restarted in the meantime loses them. Daemon thread, so it
+        console load, and on a fleet that renews every 90 days that can be
+        weeks. A pod restarted in the meantime loses them. Daemon thread, so it
         can never hold a shutdown open.
         """
         if self._flusher is not None:

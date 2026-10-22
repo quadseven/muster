@@ -31,22 +31,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509 import ocsp
 from cryptography.x509.oid import AuthorityInformationAccessOID, NameOID
 
-# 21 days: the shortest life that keeps the fortnight offline tolerance below
-# (muster#16). The runway after renew_after is the rest of the life, so
-#
-#     not_after - renew_after  >=  14 days
-#     (1 - 1/3) * L            >=  14 days
-#     L                        >=  21 days
-#
-# Shorter is better because a device nobody renews stays trusted for at most
-# this long. Going below 21 means retiring the fortnight tolerance, which is a
-# decision about the travel router, not a constant to tune.
-DEFAULT_VALIDITY_DAYS = 21
+# 90 days, as specified. Long enough that renewal is not constant chatter, short
+# enough that "stop renewing" is a revocation an operator can live with - a
+# stolen device stays trusted for at most this long.
+DEFAULT_VALIDITY_DAYS = 90
 
 # Renew at a third of life. Not half, and not at the last minute: these devices
 # travel, and the window has to be wide enough that a router which is off for a
-# fortnight still wakes up inside it. At 21 days this gives a 14-day runway
-# (14 days 8 hours, since the life also spans BACKDATE).
+# fortnight still wakes up inside it. At 90 days this gives a 60-day runway.
 RENEW_AFTER_FRACTION = 1 / 3
 
 # Clock skew allowance on not_valid_before. The GL-MT3000 has no RTC and often

@@ -197,10 +197,8 @@ equally usable to impersonate the server to another device.
 
 Three numbers, each with a reason:
 
-- **21 days.** The shortest life that keeps the fortnight tolerance below:
-  the runway after renew-after is two thirds of the life, so (2/3) x L >= 14
-  days gives L >= 21. A device nobody renews stays trusted for at most that
-  long.
+- **90 days.** Long enough that renewal is not constant chatter, short enough
+  that "stop renewing" is a revocation an operator can live with.
 - **Renew at a third of life.** Not half, and not at the last minute: a router
   that is off for a fortnight has to wake up still inside the window. Coming
   back with a dead identity means enrolling again from a fresh pairing code with
@@ -349,8 +347,8 @@ So:
   the pod out of service and stop issuance *through the health check*.
 
 A device is its **key**, not its certificate, so renewal writes a second
-certificate against the same device rather than inventing a second phone at
-every renewal.
+certificate against the same device rather than inventing a second phone every
+ninety days.
 
 ## 6. Policy: what a device is told to be
 

@@ -149,11 +149,11 @@ def test_a_renewal_updates_the_same_device(kith, clock):
     key it generated in its own hardware and asks for a fresh certificate over
     it. A store keyed on the certificate would answer "two devices" here, and
     the device list would silently become a certificate list - growing an extra
-    phone at every renewal for a fleet that had not changed.
+    phone every ninety days for a fleet that had not changed.
     """
     kith.issued(a_device(), a_certificate("AAAA", request_id="req-1"))
 
-    clock.advance(60 * 60 * 24 * 7)  # a week later, renewal time
+    clock.advance(60 * 60 * 24 * 60)  # sixty days later, renewal time
     kith.issued(
         a_device(at=clock()), a_certificate("BBBB", request_id="req-2", at=clock())
     )
@@ -172,10 +172,10 @@ def test_a_renewal_does_not_move_first_seen(kith, clock):
 
     Overwriting first_seen would make every device look like it enrolled at its
     most recent renewal, so the one column that answers "how long has this been
-    here" would only ever say "under a week" for the whole estate.
+    here" would only ever say "about ninety days" for the whole estate.
     """
     kith.issued(a_device(), a_certificate("AAAA"))
-    clock.advance(60 * 60 * 24 * 7)
+    clock.advance(60 * 60 * 24 * 60)
     kith.issued(a_device(at=clock()), a_certificate("BBBB", at=clock()))
 
     device = kith.roll()[0].device
@@ -493,7 +493,7 @@ def test_the_background_flusher_drains_with_no_other_traffic(records, clock):
     """Otherwise the backlog is decoration.
 
     Deferred writes are replayed by the next enrollment, proof or console load,
-    and muster is quiet by design - devices renew about once a week. A store that
+    and muster is quiet by design - devices renew every ninety days. A store that
     came back an hour after it left would hold the rows in memory until something
     happened to knock on it, and a pod restarted first would lose them.
     """
@@ -964,7 +964,7 @@ def test_values_are_passed_as_parameters_and_never_interpolated():
 def test_a_stale_connection_is_retried_once_on_a_fresh_one():
     """The common case, because muster's one connection is almost always idle.
 
-    A handful of devices renewing about once a week means the socket sits unused
+    A handful of devices renewing every ninety days means the socket sits unused
     for days, and an unused socket is the one a server, a CNPG switchover or a
     conntrack table drops without telling anybody. Reporting that as an outage
     would make muster answer 503 for thirty seconds every single time the
@@ -1255,7 +1255,7 @@ def _roled(role: str, at=START) -> Device:
 
 
 def test_a_role_survives_a_renewal(kith, clock):
-    """A device does not stop being a zippie android when it renews.
+    """A device does not stop being a zippie android in ninety days.
 
     The role is on the DEVICE and renewal issues a new CERTIFICATE, so this is
     really a test that the device row is updated rather than replaced.
