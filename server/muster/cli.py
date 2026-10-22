@@ -137,10 +137,6 @@ def cmd_asset(args) -> int:
     THE DIGEST IS COMPUTED FROM THE FILE ON DISK, which is the whole point.
     Typing a digest by hand into a policy file is how a wallpaper never applies
     and nothing says why.
-
-    The destination is the `muster-assets` PVC, not a Secret. The CLI verifies
-    the destination is mounted before printing any publish instructions, and
-    `--check` reports what backs the deployment's `assets` volume.
     """
     source = pathlib.Path(args.image)
     if not source.is_file():
@@ -167,27 +163,8 @@ def cmd_asset(args) -> int:
         return 2
 
     digest = hashlib.sha256(body).hexdigest()
-    store = assets.from_env()
-
-    # Verify the destination exists before printing any creation instructions.
-    if not _destination_mounted(store):
-        print(
-            "the asset destination is not mounted: "
-            f"MUSTER_ASSET_DIR={store.configured or 'unset'}. "
-            "The deployment mounts the muster-assets PVC there.",
-            file=sys.stderr,
-        )
-        return 2
-
-    if args.check:
-        print(_assets_backing(store))
-        return 0
-
     surfaces = " ".join(args.surfaces)
     print(f"{name}  {len(body)} bytes  sha256 {digest}")
-    print()
-    print("The destination is the `muster-assets` PVC.")
-    print(f"  mounted at {store.configured}")
     print()
     print("Upload the bytes with an administrator session:")
     print(f"  PUT /v1/assets/{name} (raw request body)")
@@ -200,23 +177,6 @@ def cmd_asset(args) -> int:
     print()
     print("The device fetches it at its next check-in.")
     return 0
-
-
-def _destination_mounted(store: assets.Assets) -> bool:
-    """True when the deployment's `assets` volume is mounted on this host."""
-    root = store.root
-    return root is not None and root.is_dir()
-
-
-def _assets_backing(store: assets.Assets) -> str:
-    """Report what backs the deployment's `assets` volume."""
-    root = store.root
-    if root is None:
-        return (
-            "no assets volume configured: MUSTER_ASSET_DIR is unset. "
-            "The deployment mounts the muster-assets PVC there."
-        )
-    return f"assets volume: {root}\nbacked by: PVC muster-assets"
 
 
 def cmd_wallpaper(args) -> int:
@@ -527,11 +487,6 @@ def main(argv=None) -> int:
         default=["system", "lock"],
         choices=["system", "lock"],
         help="which screens the wallpaper goes on (default: both)",
-    )
-    at.add_argument(
-        "--check",
-        action="store_true",
-        help="verify the assets destination exists and report what backs it",
     )
     at.set_defaults(func=cmd_asset)
 

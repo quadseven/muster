@@ -323,7 +323,7 @@ class Assets:
             # readings sends somebody to look at the right thing.
             raise NoSource(
                 f"the asset store {self.root} holds nothing. An empty store is "
-                "not the same as a missing asset - check the muster-assets PVC."
+                "not the same as a missing asset - check the muster-assets secret."
             )
         if not _NAME.match(name or ""):
             raise Unknown(f"'{name}' is not a name an asset can have")
