@@ -2081,7 +2081,7 @@ def test_a_renewal_is_one_device_with_two_certificates():
     The same key enrolling again is what renewal is: the device keeps the
     private key it generated in its own hardware and asks for a fresh
     certificate over it. A store keyed on the certificate would show two phones
-    here, and a fleet that had not changed would grow one at every renewal.
+    here, and a fleet that had not changed would grow one every ninety days.
     """
     state, _records = _kith_state()
     client = TestClient(create_app(state))
@@ -3737,8 +3737,8 @@ def test_an_unreachable_store_refuses_a_device_rather_than_admitting_it(
 
     The cost of failing closed is stated rather than hidden: while the store is
     down NO device can refresh or renew. That is survivable precisely because
-    muster issues at a third of certificate life, so a device has fourteen days
-    of slack before an outage could cost it anything - and `musterwrt.py` on the
+    muster issues at a third of certificate life, so a device has sixty days of
+    slack before an outage could cost it anything - and `musterwrt.py` on the
     router treats this channel as a refresher and never as a precondition.
     """
     from muster import kith as kith_store
@@ -4845,7 +4845,7 @@ def test_a_revoked_device_cannot_renew_itself_back_to_life(state, tmp_path, monk
     """THE ORDERING THAT MADE muster#11 A PREREQUISITE.
 
     If renewal ran before the revocation check, a revoked device would extend
-    its own certificate for another three weeks and keep doing so forever, and
+    its own certificate for another ninety days and keep doing so forever, and
     lapse - muster's original revocation mechanism - cannot catch a device that
     never lapses. The parametrized audience test above covers this route too;
     this one exists because the CLAIM is about ordering and deserves to fail by
