@@ -217,8 +217,16 @@ ALTER TABLE kith_device
 -- arriving every fifteen minutes - never shares a row lock with an operator's
 -- revoke.
 CREATE TABLE IF NOT EXISTS kith_report (
-    key_id      text PRIMARY KEY REFERENCES kith_device (key_id) ON DELETE CASCADE,
-    received_at timestamptz NOT NULL,
-    steps       jsonb NOT NULL,
-    packages    jsonb NOT NULL
+    key_id          text PRIMARY KEY REFERENCES kith_device (key_id) ON DELETE CASCADE,
+    received_at     timestamptz NOT NULL,
+    steps           jsonb NOT NULL,
+    packages        jsonb NOT NULL,
+    security_patch  text,
+    build_id        text,
+    pending_update  jsonb
 );
+
+ALTER TABLE kith_report
+    ADD COLUMN IF NOT EXISTS security_patch text,
+    ADD COLUMN IF NOT EXISTS build_id text,
+    ADD COLUMN IF NOT EXISTS pending_update jsonb;

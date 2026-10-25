@@ -374,6 +374,34 @@ def test_restrictions_are_reconciled_at_boot():
     plan = (agent / "BootPlan.kt").read_text()
     assert "RestrictionSteward" in plan, "restrictions are no longer reconciled at boot"
     assert "WallpaperSteward" in plan, "the wallpaper is no longer reconciled at boot"
+    assert "SystemUpdateSteward" in plan, "the system update policy is no longer reconciled at boot"
+
+
+def test_the_agent_system_update_policy_and_report_wiring():
+    """System update policy and device report are wired into the agent (muster#191)."""
+    from pathlib import Path
+
+    agent_src = Path(__file__).resolve().parents[2] / "agent/android/app/src/main/java/app/muster/agent"
+    agent_test = Path(__file__).resolve().parents[2] / "agent/android/app/src/test/java/app/muster/agent"
+
+    # SystemUpdatePolicy is pure Kotlin with no android.* imports
+    policy = (agent_src / "SystemUpdatePolicy.kt").read_text()
+    assert "import android." not in policy, "SystemUpdatePolicy must be pure Kotlin"
+    assert "createAutomaticInstallPolicy" in (agent_src / "SystemUpdateSteward.kt").read_text()
+
+    # SystemUpdatePolicyTest covers both acceptance criteria
+    policy_test = (agent_test / "SystemUpdatePolicyTest.kt").read_text()
+    assert "setsAutomaticInstallPolicyWhenDeviceOwner" in policy_test
+    assert "setsNothingAndLogsWhyWhenNotDeviceOwner" in policy_test
+
+    # ReportClient and ReportClientTest carry security_patch, build_id, pending_update
+    report_client = (agent_src / "ReportClient.kt").read_text()
+    assert "security_patch" in report_client
+    assert "build_id" in report_client
+    assert "pending_update" in report_client
+
+    report_test = (agent_test / "ReportClientTest.kt").read_text()
+    assert "sendsSecurityPatchBuildIdAndPendingUpdateState" in report_test
 
 
 def test_the_agent_can_answer_the_provisioning_flow():

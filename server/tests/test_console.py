@@ -770,3 +770,11 @@ def test_device_staleness_uses_configured_period_multiplier():
     html = _console_html()
     assert "device.check_in_stale_after_periods" in html
     assert "device.last_seen" in html and "stale" in html
+
+
+def test_the_console_shows_out_of_date_when_patch_level_trails_fleet_newest():
+    """A device whose patch level is behind the newest in the fleet is marked out of date (muster#191)."""
+    html = _console_html()
+    assert "fleetNewestPatch" in html
+    assert "out of date" in html.lower()
+    assert "patch < newest" in html or "patch < newestPatch" in html

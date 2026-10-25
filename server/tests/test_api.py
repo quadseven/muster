@@ -626,20 +626,30 @@ def test_diagnostic_upload_is_not_suppressed_when_monotonic_clock_starts_at_zero
 # ---- what a device says it did (muster#146) -------------------------------
 
 
-def _send_report(client, key, identity, steps, packages):
+def _send_report(
+    client, key, identity, steps, packages,
+    security_patch=None, build_id=None, pending_update=None,
+):
     import base64
 
     nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
     signature = key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+    body = {
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(signature).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+        "steps": steps,
+        "packages": packages,
+    }
+    if security_patch is not None:
+        body["security_patch"] = security_patch
+    if build_id is not None:
+        body["build_id"] = build_id
+    if pending_update is not None:
+        body["pending_update"] = pending_update
     return client.post(
         "/v1/device/report",
-        json={
-            "nonce": nonce,
-            "signature_b64": base64.b64encode(signature).decode(),
-            "certificate_pem": identity.certificate_pem.decode(),
-            "steps": steps,
-            "packages": packages,
-        },
+        json=body,
     )
 
 
@@ -679,6 +689,46 @@ def test_a_device_report_is_stored_and_an_administrator_can_read_it(state):
     assert report["received_at"]
     assert "custom.muster.device.report.received:1|c" in state.telemetry.sent
     assert "custom.muster.device.report.concerns:1|c" in state.telemetry.sent
+
+
+def test_device_report_carries_security_patch_build_id_and_pending_update(state):
+    """The report carries patch level, build id, and pending update state (muster#191)."""
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+
+    response = _send_report(
+        client, key, identity,
+        steps=[],
+        packages=[],
+        security_patch="2026-10-05",
+        build_id="TQ3A.230901.001",
+        pending_update=True,
+    )
+    assert response.status_code == 202, response.text
+    report = client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["report"]
+    assert report["security_patch"] == "2026-10-05"
+    assert report["build_id"] == "TQ3A.230901.001"
+    assert report["pending_update"] is True
+
+
+def test_roll_carries_security_patch_build_id_and_pending_update(state):
+    """The roll endpoint supplies each device's patch level for the console (muster#191)."""
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+
+    _send_report(
+        client, key, identity,
+        steps=[],
+        packages=[],
+        security_patch="2026-10-05",
+        build_id="TQ3A.230901.001",
+        pending_update=False,
+    )
+    devices = client.get("/v1/kith", cookies=ADMIN).json()["devices"]
+    dev = next(d for d in devices if d["key_id"] == device_id)
+    assert dev["security_patch"] == "2026-10-05"
+    assert dev["build_id"] == "TQ3A.230901.001"
+    assert dev["pending_update"] is False
 
 
 def test_a_device_that_never_reported_shows_no_report_rather_than_an_empty_one(state):

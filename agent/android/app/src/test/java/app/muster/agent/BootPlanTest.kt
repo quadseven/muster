@@ -90,6 +90,14 @@ class BootPlanTest {
     }
 
     @Test
+    fun systemUpdatePolicyIsReconciledAtBoot() {
+        assertTrue(
+            "system update policy must be run at boot, not merely implemented",
+            names.contains("system-update"),
+        )
+    }
+
+    @Test
     fun telephonyIsReconciledAtBoot() {
         assertTrue(
             "telephony must be run at boot, not merely implemented",

@@ -1484,6 +1484,25 @@ def test_a_device_report_is_kept_and_read_back(kith):
     assert report.packages == packages
 
 
+def test_a_report_carries_security_patch_build_id_and_pending_update(kith):
+    """The report includes system update and patch level attributes (muster#191)."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    steps, packages = a_report()
+    kith.reported(
+        a_device().key_id,
+        steps,
+        packages,
+        security_patch="2026-10-05",
+        build_id="TQ3A.230901.001",
+        pending_update=True,
+    )
+
+    report = kith.report(a_device().key_id)
+    assert report.security_patch == "2026-10-05"
+    assert report.build_id == "TQ3A.230901.001"
+    assert report.pending_update is True
+
+
 def test_the_newest_report_replaces_the_one_before(kith, clock):
     """One row per device: the latest truth, not a history somebody has to sort."""
     kith.issued(a_device(), a_certificate("AAAA"))
