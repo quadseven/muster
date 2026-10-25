@@ -48,6 +48,17 @@ RENEW_AFTER_FRACTION = 1 / 3
 # the certificate is for.
 BACKDATE = dt.timedelta(hours=12)
 
+# The fortnight tolerance above, as a rule `issue` enforces rather than a
+# sentence it hopes stays true: a router off for two weeks must still wake up
+# inside its renewal window, so `not_after - renew_after` may not be shorter
+# than this. At 90 days the runway is about 60 days, far clear of it.
+#
+# WAIVED IN EXACTLY ONE PLACE, and by name: the operator's one-shot short
+# renewal (muster#22, `short_renewal.py`), which exists to watch a real handset
+# cross renew_after within a day. Every other issuance meets this floor or
+# raises, so no code path can quietly shorten a certificate.
+MIN_RENEWAL_RUNWAY = dt.timedelta(days=14)
+
 # Plain http on purpose: see the scheme check in api._register_revocation_routes.
 # A CRL fetched over TLS would need the CRL host's certificate verified first,
 # so verifiers only follow http distribution points, and the artifact is safe
@@ -241,12 +252,24 @@ class Authority:
     # ---- issuance --------------------------------------------------------
 
     def issue(self, csr_der: bytes, device_name: str,
-              valid_days: int = DEFAULT_VALIDITY_DAYS) -> Identity:
+              valid_days: int = DEFAULT_VALIDITY_DAYS, *,
+              lifetime: dt.timedelta | None = None,
+              waive_runway_floor: bool = False) -> Identity:
         """Sign a vouched CSR, using ONLY its public key.
 
         `device_name` comes from the vouch, not from the request. See the module
         docstring: everything else in a CSR is written by the enrolling party.
+
+        `lifetime`, when given, replaces `valid_days` and is measured from now,
+        exactly as `valid_days` is. A lifetime whose renewal runway is shorter
+        than MIN_RENEWAL_RUNWAY raises ValueError unless `waive_runway_floor`
+        says, at the call site, that this one issuance is the exception.
         """
+        life_from_now = (
+            lifetime if lifetime is not None else dt.timedelta(days=valid_days)
+        )
+        if life_from_now <= dt.timedelta(0):
+            raise ValueError(f"a certificate lifetime must be positive, not {life_from_now}")
         try:
             csr = x509.load_der_x509_csr(csr_der)
         except Exception as exc:  # noqa: BLE001 - any parse failure is the same answer
@@ -282,7 +305,15 @@ class Authority:
 
         now = self._clock()
         not_before = now - BACKDATE
-        not_after = now + dt.timedelta(days=valid_days)
+        not_after = now + life_from_now
+        # CHECKED BEFORE SIGNING, through the same arithmetic devices are
+        # handed, so the floor and `renew_after` can never disagree.
+        runway = not_after - Identity(b"", not_before, not_after, 0).renew_after()
+        if runway < MIN_RENEWAL_RUNWAY and not waive_runway_floor:
+            raise ValueError(
+                f"a {life_from_now} lifetime leaves a renewal runway of {runway}, "
+                f"under the {MIN_RENEWAL_RUNWAY} floor"
+            )
         serial = x509.random_serial_number()
 
         cert = (

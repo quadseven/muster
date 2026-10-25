@@ -84,6 +84,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import datetime as dt
 import hashlib
 import io
 import os
@@ -118,7 +119,7 @@ from muster.enroll import (
     fingerprint,
     key_id,
 )
-from muster import telemetry
+from muster import short_renewal, telemetry
 
 CHECK_IN_STALE_AFTER_PERIODS = int(
     os.environ.get("MUSTER_CHECK_IN_STALE_AFTER_PERIODS", "3")
@@ -268,6 +269,11 @@ class State:
     # at the end of the same check-in, so one shared slot would refuse the
     # second every time.
     report_last_sent: dict[str, float] = field(default_factory=dict)
+    # Which device gets its NEXT renewal short-lived (muster#22). In memory on
+    # purpose: see short_renewal.py for why a restart forgetting it is safe.
+    short_renewals: short_renewal.ShortRenewals = field(
+        default_factory=short_renewal.ShortRenewals
+    )
 
 
 
@@ -1365,6 +1371,7 @@ def create_app(state: State) -> FastAPI:
     _register_device_routes(app, state)
     _register_agent_routes(app, state, admin)
     _register_unrecorded_route(app, state, admin)
+    _register_short_renewal_route(app, state, admin)
     _register_kith_routes(app, state, admin)
     console.register_console_routes(app, state)
 
@@ -1715,6 +1722,14 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
             "key_id": configuration.key_id,
             "revision": configuration.revision,
             "files": configuration.files,
+            # WHEN THIS DEVICE MAY RENEW, on every check-in (muster#22). Until
+            # now a device learned this only from the answer to its last
+            # renewal, so nothing muster decided later could reach it before
+            # that date. An agent that reads this overwrites its stored value;
+            # one that does not ignores an unknown key, as it always has.
+            "renew_after": _advertised_renew_after(
+                state, proven, certificate_pem
+            ).isoformat(),
         }
 
     @app.post("/v1/device/diagnostics", status_code=202)
@@ -1874,6 +1889,13 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         # request without ever being asked to prove anything, and a revoked
         # device is told its CSR is missing rather than that it is revoked.
         csr_pem: str = Body("", embed=True),
+        # WHAT STARTED THIS RENEWAL, as the agent names it (muster#22): the
+        # scheduled check-in, its catch-up run, a boot, or the sync button.
+        # Logged, never trusted for a decision - it is the device's own word.
+        trigger: str = Body("", embed=True),
+        # Whether the device had not been unlocked since boot when it asked,
+        # from UserManager.isUserUnlocked. Logged only, for the same reason.
+        direct_boot: bool | None = Body(None, embed=True),
     ):
         """A fresh certificate, for the device that signed this nonce.
 
@@ -2005,28 +2027,35 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         # certificate a second and fill `kith_certificate`, and it keeps the
         # answer to "when may a device renew" in ONE place, which is
         # `ca.Identity.renew_after` and not a second copy of that arithmetic.
-        earliest = Identity(
-            certificate_pem=certificate_pem.encode(),
-            not_before=current.not_valid_before_utc,
-            not_after=current.not_valid_after_utc,
-            serial=current.serial_number,
-        ).renew_after()
-        if state.kith.now() < earliest:
+        #
+        # AN ARMED SHORT RENEWAL (muster#22) is the one exception, and it is an
+        # administrator's decision about this key_id, never the device's.
+        #
+        # TAKEN ONCE, HERE, BEFORE THE CHECK, so the decision is atomic. A peek
+        # here and a take at issuance would let two concurrent renewals both
+        # pass the gate while only one found the entry - and the other would
+        # be issued a standard certificate before renew_after.
+        said = _renewal_trigger(trigger)
+        earliest = _natural_renew_after(current)
+        armed = state.short_renewals.take(proven)
+        if armed is None and state.kith.now() < earliest:
             state.telemetry.count("device.renew.refused", tags=["reason:too-early"])
+            telemetry.event(
+                "renewal refused as too early",
+                key_id=proven, old_serial=f"{current.serial_number:X}",
+                renew_after=earliest.isoformat(), trigger=said,
+                direct_boot=direct_boot,
+            )
             raise HTTPException(
                 status_code=409,
                 detail=f"too early; this certificate may be renewed from "
                        f"{earliest.isoformat()}",
             )
 
-        try:
-            with state.telemetry.timed("ca.issue.duration"):
-                identity = state.authority.issue(
-                    csr.public_bytes(serialization.Encoding.DER), device_name
-                )
-        except Untrusted as bad:
-            state.telemetry.count("ca.issue.refused", tags=["reason:untrusted-csr"])
-            raise HTTPException(status_code=422, detail=str(bad)) from bad
+        identity = _issue_renewal(
+            state, proven, csr.public_bytes(serialization.Encoding.DER),
+            device_name, armed,
+        )
 
         # HANDED BACK HERE, NOT LEFT TO BE COLLECTED. Enrollment issues into
         # `state.issued` and makes the device poll, because there a human has to
@@ -2062,13 +2091,187 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                 collected_at=now,
             ),
         )
-        telemetry.event("device renewed", key_id=proven, device_name=device_name)
-        state.telemetry.count("device.renew.issued")
+        # EVERYTHING muster#22's box 2 needs, on one line: which device, which
+        # certificate it gave up and which it got, what started the request,
+        # whether the handset was still locked since boot, and whether this was
+        # the operator's one short issuance.
+        telemetry.event(
+            "device renewed",
+            key_id=proven,
+            device_name=device_name,
+            old_serial=f"{current.serial_number:X}",
+            new_serial=f"{identity.serial:X}",
+            not_after=identity.not_after.isoformat(),
+            renew_after=identity.renew_after().isoformat(),
+            trigger=said,
+            direct_boot=direct_boot,
+            short_lived_hours=(
+                armed.lifetime.total_seconds() / 3600 if armed is not None else None
+            ),
+        )
+        state.telemetry.count(
+            "device.renew.issued",
+            tags=[f"short:{str(armed is not None).lower()}"],
+        )
         return {
             "certificate_pem": identity.certificate_pem.decode(),
             "ca_pem": state.authority.certificate_pem.decode(),
             "not_after": identity.not_after.isoformat(),
             "renew_after": identity.renew_after().isoformat(),
+        }
+
+
+# What a device may say started its renewal. Anything else is logged as
+# `other`, so a hostile client cannot write arbitrary text into the log line
+# muster#22 is read from; an agent that says nothing is `unstated`.
+RENEWAL_TRIGGERS = frozenset({"check-in", "catch-up", "boot", "sync"})
+
+
+def _renewal_trigger(raw: str) -> str:
+    if not raw:
+        return "unstated"
+    return raw if raw in RENEWAL_TRIGGERS else "other"
+
+
+def _natural_renew_after(certificate) -> dt.datetime:
+    """When this certificate may be renewed, through `ca.Identity` and nowhere else."""
+    return Identity(
+        certificate_pem=b"",
+        not_before=certificate.not_valid_before_utc,
+        not_after=certificate.not_valid_after_utc,
+        serial=certificate.serial_number,
+    ).renew_after()
+
+
+def _advertised_renew_after(
+    state: State, proven: str, certificate_pem: str
+) -> dt.datetime:
+    """What a check-in tells a device about renewing (muster#22).
+
+    The presented certificate's own renew_after, unless an administrator armed a
+    short renewal for this key - then now, so the device's next pass renews.
+    Disarming goes back to the natural value at the next check-in, so a device
+    told "now" by mistake is corrected within one pass.
+    """
+    from cryptography import x509
+
+    if state.short_renewals.peek(proven) is not None:
+        return state.kith.now()
+    return _natural_renew_after(
+        x509.load_pem_x509_certificate(certificate_pem.encode())
+    )
+
+
+def _issue_renewal(
+    state: State,
+    proven: str,
+    csr_der: bytes,
+    device_name: str,
+    armed: short_renewal.Armed | None,
+) -> Identity:
+    """Sign the renewal: short if an administrator armed it, standard otherwise.
+
+    `armed` WAS ALREADY TAKEN by the route, under the store's lock, so two
+    renewals racing cannot both come back short. PUT BACK ON FAILURE,
+    deliberately: nothing was issued and the device still holds the
+    certificate it presented, so a transient refusal must not spend the
+    operator's one-shot request. The restoration is logged.
+    """
+
+    def restore() -> None:
+        if armed is not None:
+            state.short_renewals.put_back(proven, armed)
+            telemetry.event(
+                "short renewal restored after a failed issuance", key_id=proven
+            )
+
+    try:
+        with state.telemetry.timed("ca.issue.duration"):
+            if armed is None:
+                identity = state.authority.issue(csr_der, device_name)
+            else:
+                identity = state.authority.issue(
+                    csr_der, device_name,
+                    lifetime=armed.lifetime, waive_runway_floor=True,
+                )
+    except Untrusted as bad:
+        restore()
+        state.telemetry.count("ca.issue.refused", tags=["reason:untrusted-csr"])
+        raise HTTPException(status_code=422, detail=str(bad)) from bad
+    except BaseException:
+        restore()
+        raise
+    return identity
+
+
+def _register_short_renewal_route(app: FastAPI, state: State, admin) -> None:
+    """The administrator's lever for muster#22. Its own registrar, because
+    `_register_kith_routes` is already over the complexity cap."""
+
+    @app.post("/v1/kith/{key_id}/short-renewal", dependencies=[admin])
+    def set_short_renewal(
+        key_id: str,
+        armed: bool = Body(default=True, embed=True),
+        lifetime_hours: int = Body(
+            default=short_renewal.DEFAULT_HOURS,
+            embed=True,
+            ge=short_renewal.MIN_HOURS,
+            le=short_renewal.MAX_HOURS,
+        ),
+    ):
+        """Make this device's NEXT renewal short-lived, once (muster#22).
+
+        The device's next check-in is told it may renew now; the renewal after
+        that is issued for `lifetime_hours` with the 14-day runway floor waived
+        for that issuance only, and this clears itself. The renewal after THAT
+        finds nothing armed and returns a standard certificate.
+
+        `armed: false` cancels a request not yet used. Neither direction can
+        touch any other device, and neither revokes or replaces the certificate
+        the device holds now.
+
+        REFUSES A REVOKED DEVICE, which could not renew anyway: arming it would
+        be an instruction that sits unused while reading as if it would act.
+        """
+        if not armed:
+            dropped = state.short_renewals.disarm(key_id)
+            telemetry.event(
+                "short renewal cancelled", key_id=key_id, was_armed=dropped is not None
+            )
+            return {"key_id": key_id, "short_renewal": None}
+        try:
+            member = state.kith.member(key_id)
+        except kith_store.Unreachable as exc:
+            state.telemetry.count("kith.read.refused")
+            raise HTTPException(
+                status_code=503,
+                detail=f"{exc}. Nothing was armed; retry.",
+            ) from exc
+        if member is None:
+            raise HTTPException(status_code=404, detail="no such device")
+        if member.device.revoked_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="this device is revoked and cannot renew; readmit it first",
+            )
+        request = short_renewal.Armed(
+            lifetime=dt.timedelta(hours=lifetime_hours),
+            armed_at=state.kith.now(),
+        )
+        state.short_renewals.arm(key_id, request)
+        telemetry.event(
+            "short renewal armed",
+            key_id=key_id,
+            lifetime_hours=lifetime_hours,
+            armed_at=request.armed_at.isoformat(),
+        )
+        state.telemetry.count("kith.short_renewal.armed")
+        return {
+            "key_id": key_id,
+            "short_renewal": {
+                "lifetime_hours": lifetime_hours,
+                "armed_at": request.armed_at.isoformat(),
+            },
         }
 
 
