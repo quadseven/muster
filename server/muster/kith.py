@@ -1596,11 +1596,6 @@ class Kith:
         )
         self._write_now(lambda records: records.record_report(key_id, report))
 
-    def reports(self) -> dict[str, Report]:
-        if hasattr(self._records, "reports"):
-            return self._records.reports()
-        return {}
-
     def _defer(self, entry, kind: str) -> None:
         with self._lock:
             if len(self._backlog) >= self._backlog_max:
@@ -1733,6 +1728,10 @@ class Kith:
     def report(self, key_id: str) -> Report | None:
         """The device's latest report, or None if it has never sent one."""
         return self._read(lambda records: records.report(key_id))
+
+    def reports(self) -> dict[str, Report]:
+        """Latest reports keyed by device key_id, for the roll."""
+        return self._read(lambda records: records.reports())
 
     def _write_now(self, do):
         """A write that must NOT be deferred, with a caller waiting on it.

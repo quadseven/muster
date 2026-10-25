@@ -86,6 +86,10 @@ class Breakable(MemoryRecords):
         self._check()
         return super().report(key_id_)
 
+    def reports(self):
+        self._check()
+        return super().reports()
+
     def roll(self):
         self._check()
         return super().roll()
@@ -337,6 +341,8 @@ def test_a_read_during_an_outage_refuses_rather_than_saying_the_kith_is_empty(
         kith.member(key_id(b"device-one"))
     with pytest.raises(Unreachable):
         kith.awaiting_collection("req-1")
+    with pytest.raises(Unreachable):
+        kith.reports()
 
 
 def test_a_failed_store_is_left_alone_for_the_cooldown(kith, records, clock):
