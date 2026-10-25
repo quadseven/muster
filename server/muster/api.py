@@ -92,7 +92,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Annotated, Callable
+from typing import Annotated, Any, Callable
 from email.utils import format_datetime
 
 from cryptography.hazmat.primitives import serialization

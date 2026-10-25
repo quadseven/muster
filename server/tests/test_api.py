@@ -629,6 +629,7 @@ def test_diagnostic_upload_is_not_suppressed_when_monotonic_clock_starts_at_zero
 def _send_report(
     client, key, identity, steps, packages,
     security_patch=None, build_id=None, pending_update=None,
+    pending_system_update=None,
 ):
     import base64
 
@@ -647,6 +648,8 @@ def _send_report(
         body["build_id"] = build_id
     if pending_update is not None:
         body["pending_update"] = pending_update
+    if pending_system_update is not None:
+        body["pending_system_update"] = pending_system_update
     return client.post(
         "/v1/device/report",
         json=body,
@@ -703,6 +706,26 @@ def test_device_report_carries_security_patch_build_id_and_pending_update(state)
         security_patch="2026-10-05",
         build_id="TQ3A.230901.001",
         pending_update=True,
+    )
+    assert response.status_code == 202, response.text
+    report = client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["report"]
+    assert report["security_patch"] == "2026-10-05"
+    assert report["build_id"] == "TQ3A.230901.001"
+    assert report["pending_update"] is True
+
+
+def test_device_report_accepts_pending_system_update_fallback(state):
+    """The report accepts pending_system_update when pending_update is omitted (muster#191)."""
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+
+    response = _send_report(
+        client, key, identity,
+        steps=[],
+        packages=[],
+        security_patch="2026-10-05",
+        build_id="TQ3A.230901.001",
+        pending_system_update=True,
     )
     assert response.status_code == 202, response.text
     report = client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["report"]
