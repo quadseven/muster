@@ -1,6 +1,7 @@
 package app.muster.agent
 
 import android.content.Context
+import android.os.UserManager
 import android.util.Log
 import java.io.File
 import java.security.cert.CertificateFactory
@@ -32,6 +33,12 @@ class RenewalSteward(private val context: Context) {
             client = RenewalClient(
                 HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000),
                 KeystoreIdentity(context),
+                trigger = RenewalTrigger.current(),
+                // Before first unlock, credential-encrypted storage is closed:
+                // the condition muster#22 needs this renewal to have run under.
+                directBoot = context.getSystemService(UserManager::class.java)
+                    ?.isUserUnlocked
+                    ?.not(),
             ),
             store = store,
         ).advance(stance)

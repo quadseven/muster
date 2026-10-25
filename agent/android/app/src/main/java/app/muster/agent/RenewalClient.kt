@@ -18,6 +18,14 @@ import org.json.JSONObject
 class RenewalClient(
     private val transport: EnrollmentClient.Transport,
     private val identity: ConfigurationClient.Identity,
+    /**
+     * What started this pass ([RenewalTrigger]), and whether the user had not
+     * unlocked since boot. Both are logged by muster to tell a scheduled,
+     * still-locked renewal from a tap (muster#22), and neither decides
+     * anything there. Null leaves the field out.
+     */
+    private val trigger: String? = null,
+    private val directBoot: Boolean? = null,
 ) {
 
     sealed interface Renewed {
@@ -51,6 +59,10 @@ class RenewalClient(
             .put("signature_b64", signature)
             .put("certificate_pem", certificate)
             .put("csr_pem", csrPem)
+            .apply {
+                trigger?.let { put("trigger", it) }
+                directBoot?.let { put("direct_boot", it) }
+            }
             .toString()
         val reply = try {
             transport.post(RENEW_PATH, body)

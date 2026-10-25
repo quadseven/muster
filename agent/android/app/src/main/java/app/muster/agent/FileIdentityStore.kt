@@ -39,4 +39,20 @@ class FileIdentityStore(context: Context) : EnrollmentFlow.IdentityStore {
     fun notAfter(): String? = File(dir, "not-after").takeIf { it.isFile }?.readText()?.trim()
 
     fun renewAfter(): String? = File(dir, "renew-after").takeIf { it.isFile }?.readText()?.trim()
+
+    /**
+     * Replace renew-after with what a check-in said (muster#22), only for a
+     * device that holds an identity, and only when it changed. Staged and
+     * renamed so the renewal step never reads half a timestamp.
+     */
+    fun adoptRenewAfter(renewAfter: String): Boolean {
+        if (!hasIdentity() || renewAfter == renewAfter()) return false
+        return try {
+            val staged = File(dir, "renew-after.incoming")
+            staged.writeText(renewAfter)
+            staged.renameTo(File(dir, "renew-after"))
+        } catch (e: Exception) {
+            false
+        }
+    }
 }

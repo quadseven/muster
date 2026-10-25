@@ -110,6 +110,11 @@ class ConfigurationSteward(private val context: Context) {
         // break it. This line only obeys it.
         val configuration = ConfigurationPolicy.instruction(fetched)
             ?: return Outcome(kept = why(fetched))
+        // WHEN TO RENEW, as muster says it today (muster#22). The renewal step
+        // reads this file on the next pass, so an administrator's decision
+        // reaches the device within a check-in instead of waiting for the date
+        // the last renewal handed out.
+        configuration.renewAfter?.let { FileIdentityStore(context).adoptRenewAfter(it) }
         return apply(configuration)
     }
 
