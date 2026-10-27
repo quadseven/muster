@@ -12,7 +12,6 @@ writes into the app's directory because a real one does.
 from __future__ import annotations
 
 import argparse
-import hashlib
 
 import pytest
 
