@@ -130,14 +130,23 @@ jobs:
                         -H "Accept: application/vnd.github+json" \
                         "$artifacts?per_page=100" \
                       | python3 -c 'import json,sys; a=json.load(sys.stdin)["artifacts"]; ok=[x for x in a if x["name"].startswith("muster-agent-") and x["name"].endswith("apk") and not x["expired"] and x["size_in_bytes"] > 0]; print("present" if ok else "missing")')"
-          if [ "$artifact_state" != "present" ]; then
-            echo "::error::agent APK artifact is missing or expired for run $run_id; run the agent workflow to produce a fresh artifact"
-            exit 1
-          fi
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "::notice::baking the APK from agent build run $run_id"
+          if [ "$artifact_state" = "present" ]; then
+            echo "source=artifact" >> "$GITHUB_OUTPUT"
+            echo "::notice::baking the APK from agent build run $run_id"
+            exit 0
+          fi
+          # THE ARTIFACT IS GONE, WHICH IS ROUTINE, NOT A FAULT (muster#123).
+          # Artifacts are kept 14 days, so a server change after a quiet
+          # fortnight lands here. check.agent-android.yml stores every
+          # push-to-main APK on the `agent-apk` release, which never expires;
+          # the next step bakes that. Its absence is the real failure, and it
+          # is reported there, with this run named, before anything downloads.
+          echo "source=release" >> "$GITHUB_OUTPUT"
+          echo "::warning::agent APK artifact is missing or expired for run $run_id; falling back to the stored release APK"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: steps.apk.outputs.source == 'artifact'
         with:
           # A PATTERN, NOT A NAME, AND THE REASON IS THE CHANGEOVER ITSELF.
           #
@@ -156,6 +165,34 @@ jobs:
           run-id: ${{ steps.apk.outputs.run_id }}
           github-token: ${{ github.token }}
           path: server/agent
+
+      - name: Fall back to the stored release APK
+        if: steps.apk.outputs.source == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.apk.outputs.run_id }}
+        # The tarball check.agent-android.yml's `store` job publishes from each
+        # push-to-main build: the APK, its agent-version.txt, and an
+        # agent-source.txt naming the run it came from. It unpacks into the
+        # same directory the artifact would have, so the step below treats both
+        # sources alike.
+        run: |
+          set -euo pipefail
+          release="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/tags/agent-apk"
+          asset_url="$(curl -sSL --max-time 30 --connect-timeout 10 -H "Authorization: Bearer $GH_TOKEN" \
+                         -H "Accept: application/vnd.github+json" "$release" \
+                       | python3 -c 'import json,sys; d=json.load(sys.stdin); a=[x for x in d.get("assets", []) if x["name"] == "muster-agent.tar"]; print(a[0]["url"] if a else "")')"
+          if [ -z "$asset_url" ]; then
+            echo "::error::agent APK artifact is missing or expired for run $RUN_ID, and there is no stored muster-agent.tar on the agent-apk release to fall back to. Run the agent workflow on main (a push to agent/android/** signs; a manual run builds DEBUG-signed) to produce a fresh one."
+            exit 1
+          fi
+          mkdir -p server/agent
+          curl -fsSL --max-time 120 --connect-timeout 10 -H "Authorization: Bearer $GH_TOKEN" \
+               -H "Accept: application/octet-stream" "$asset_url" -o "$RUNNER_TEMP/muster-agent.tar"
+          tar -xf "$RUNNER_TEMP/muster-agent.tar" -C server/agent
+          [ -f server/agent/agent-source.txt ] || { echo "::error::the stored APK tarball names no source run"; exit 1; }
+          echo "::notice::baking the stored release APK from agent build $(cat server/agent/agent-source.txt)"
+          rm -f server/agent/agent-source.txt
 
       - name: Name it what the image expects
         working-directory: server/agent

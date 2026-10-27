@@ -352,8 +352,12 @@ swapping credentials. Renaming the `user` and `users` keys in
 Baked into the server image, not mounted beside it.
 
     check.agent-android.yml   builds the APK on the mac mini, uploads artifact
+                              (kept 14 days); on a push to main it also stores
+                              it on the `agent-apk` release, which never expires
     build.server-image.yml    downloads the newest successful one from main,
-                              COPYs it in at /app/agent/muster-agent.apk
+                              or the stored release copy once that artifact
+                              has expired, and COPYs it in at
+                              /app/agent/muster-agent.apk
     deployment                MUSTER_AGENT_APK points at that path
 
 The reason it is baked rather than mounted: `/agent.apk` serves bytes and
