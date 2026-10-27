@@ -425,13 +425,14 @@ After the ceremony: seed the four repo secrets, switch `check.agent-android.yml`
 to build and publish the release variant, redeploy, and record the new checksum
 in `docs/what-is-deployed.md`.
 
-**The ceremony also takes `muster wallpaper`, `muster restrictions`,
-`muster visible-apps`, `muster app-config` and `muster provision --server-url`
-away.** All five write into a directory only the app can write to, using
+**The ceremony also takes `muster visible-apps`, `muster app-config` and
+`muster provision --server-url` away.** (`muster wallpaper` and
+`muster restrictions` were retired outright in muster#90.) All three write into a directory only the app can write to, using
 `run-as`, and `run-as` refuses a package that is not debuggable. They fail
 loudly rather than silently.
 
-**The replacement now exists for four of the five** (#46, #142): an enrolled
+**The replacement now exists for the two cable commands, and for the two
+retired ones** (#46, #142): an enrolled
 device fetches `restrictions`, `visible-apps` and `app-config` from the control
 plane over the identity it holds, at every boot and every check-in -
 `POST /v1/device/config`, described in `policy.md` - under the same names, into
@@ -462,11 +463,11 @@ Getting that file onto a device was the broken half. `muster restrictions` and
 `muster wallpaper` copied through `/data/local/tmp`, and the agent's files
 directory is `0700` rather than world-traversable as the code assumed, so
 nothing landed - that is #20, and the `run-as` command recorded there is how the
-two restrictions above reached that phone by hand. Both commands now write that
-way, and so does `muster provision --server-url`, which had the same defect.
-**Fixed in code, unproven on hardware:** nothing has been run against a handset
-since the change. It is also still the argument for serving configuration from
-the control plane instead: a device that enrolled over the air should not need a
+two restrictions above reached that phone by hand. Both commands were later
+retired (muster#90) in favour of the control-plane fetch; `muster provision
+--server-url`, which had the same defect, writes that way.
+That defect is also the argument for serving configuration from the control
+plane instead: a device that enrolled over the air should not need a
 laptop on its LAN to be configured, and `run-as` only works while the agent is
 debug-signed.
 
