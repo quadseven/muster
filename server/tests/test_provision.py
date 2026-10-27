@@ -319,7 +319,11 @@ def test_the_agent_actually_reads_device_protected_storage():
 
 
 def test_the_wallpaper_and_server_url_land_in_the_same_place_the_agent_looks():
-    """Both files are read by the agent from its device-protected files dir."""
+    """Both files are read by the agent from its device-protected files dir.
+
+    The CLI writes only the server URL now; the wallpaper arrives by fetch since
+    `muster wallpaper` was retired (muster#90), and the name the fetch writes is
+    checked against MANAGED_FILES in test_policy.py."""
     from muster.provision import DEVICE_FILES
     from pathlib import Path
 
@@ -330,7 +334,7 @@ def test_the_wallpaper_and_server_url_land_in_the_same_place_the_agent_looks():
     assert '"wallpaper.png"' in (agent / "WallpaperSteward.kt").read_text()
     assert '"server-url"' in (agent / "EnrollActivity.kt").read_text()
     cli = (Path(__file__).resolve().parents[1] / "muster/cli.py").read_text()
-    assert "wallpaper.png" in cli and "server-url" in cli
+    assert "server-url" in cli
     assert files in cli or "DEVICE_FILES" in cli
 
 
@@ -349,14 +353,16 @@ def test_the_restrictions_file_is_named_the_same_on_both_sides():
     agent = Path(__file__).resolve().parents[2] / "agent/android/app/src/main/java/app/muster/agent"
     steward = (agent / "RestrictionSteward.kt").read_text()
     policy = (agent / "RestrictionPolicy.kt").read_text()
-    cli = (Path(__file__).resolve().parents[1] / "muster/cli.py").read_text()
+    from muster.policy import MANAGED_FILES
 
     # The steward reads the name through its policy's constant (muster#142), so
     # the spelling is checked where it lives and the steward is checked for
-    # reading it.
+    # reading it. The writer is the control-plane fetch since `muster
+    # restrictions` was retired (muster#90), so the other side is the name the
+    # fetch serves.
     assert "RestrictionPolicy.FILE_NAME" in steward, "the agent no longer reads its policy's name"
     assert 'FILE_NAME = "restrictions"' in policy, "the agent no longer reads a file called 'restrictions'"
-    assert '/restrictions"' in cli, "the CLI no longer pushes a file called 'restrictions'"
+    assert "restrictions" in MANAGED_FILES, "the fetch no longer serves a file called 'restrictions'"
 
 
 def test_restrictions_are_reconciled_at_boot():
@@ -667,10 +673,9 @@ def test_the_cli_no_longer_stages_config_in_a_directory_it_cannot_copy_out_of():
     assert "printf %s" not in cli, (
         "the server URL is being written through a shell command line again"
     )
-    assert cli.count("place_file(") == 7, (
-        "all seven writes - wallpaper image and policy, restrictions, "
-        "visible-apps, telephony, app config, server URL - go to the device "
-        "the same way, or the ones that do not are broken"
+    assert cli.count("place_file(") == 4, (
+        "all four writes - visible-apps, telephony, app config, server URL - "
+        "go to the device the same way, or the ones that do not are broken"
     )
 
 

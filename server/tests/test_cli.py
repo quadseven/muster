@@ -1,8 +1,8 @@
 """What the exit codes say, on every command that writes to a device.
 
 EXIT CODES ARE THE INTERFACE (`cli.py`), and until now nothing checked them.
-That mattered here: `muster restrictions` spent two releases writing to a
-directory the shell cannot enter, and the only thing standing between that and a
+That mattered here: `muster restrictions` (retired since, muster#90) spent two
+releases writing to a directory the shell cannot enter, and the only thing standing between that and a
 tool which silently does nothing was one read-back at the end of the command.
 These tests are that guard, held from the outside.
 
@@ -12,7 +12,6 @@ writes into the app's directory because a real one does.
 from __future__ import annotations
 
 import argparse
-import hashlib
 
 import pytest
 
@@ -32,88 +31,13 @@ def device(monkeypatch):
     return adb
 
 
-def test_a_wallpaper_the_device_took_exits_zero(device, tmp_path):
-    image = tmp_path / "kitchen.png"
-    image.write_bytes(b"\x89PNG\r\n\x1a\n")
-
-    assert cli.main(["wallpaper", "fake-serial", "--image", str(image)]) == 0
-    assert device.stored[f"{AGENT_FILES}/wallpaper.png"] == image.read_bytes()
-    digest = hashlib.sha256(image.read_bytes()).hexdigest()
-    assert device.stored[f"{AGENT_FILES}/wallpaper"] == (
-        f"image wallpaper.png sha256 {digest}\n".encode()
-    )
-
-
-def test_a_wallpaper_the_device_refused_exits_three(monkeypatch, tmp_path, capsys):
-    """A release-signed agent is not debuggable, so this is the failure every
-    one of these commands gets after the signing ceremony. It has to be an exit
-    code a script notices and a sentence a human can act on."""
-    refuser = RunAsAdb(debuggable=False)
-    monkeypatch.setattr(cli, "Adb", lambda binary="adb": refuser)
-    image = tmp_path / "kitchen.png"
-    image.write_bytes(b"\x89PNG")
-
-    assert cli.main(["wallpaper", "fake-serial", "--image", str(image)]) == 3
-    assert "not debuggable" in capsys.readouterr().err
-
-
-def test_wallpaper_policy_that_did_not_land_exits_three(monkeypatch, tmp_path, capsys):
-    class NoPolicy(RunAsAdb):
-        def write_as(self, serial, package, remote, data, timeout=300.0):
-            if remote.endswith("/wallpaper"):
-                return 0, ""
-            return super().write_as(serial, package, remote, data, timeout)
-
-    monkeypatch.setattr(cli, "Adb", lambda binary="adb": NoPolicy())
-    image = tmp_path / "kitchen.png"
-    image.write_bytes(b"\x89PNG\r\n\x1a\n")
-
-    assert cli.main(["wallpaper", "fake-serial", "--image", str(image)]) == 3
-    assert "cannot prove" in capsys.readouterr().err
-
-
-def test_restrictions_the_device_did_not_take_exit_three(monkeypatch, tmp_path, capsys):
-    """The measured bug, from the outside. A device that holds no file must not
-    leave the operator believing a policy is in force on it."""
-
-    class Deaf(RunAsAdb):
-        def write_as(self, serial, package, remote, data, timeout=300.0):
-            return 0, ""
-
-    monkeypatch.setattr(cli, "Adb", lambda binary="adb": Deaf())
-    policy = tmp_path / "kitchen.restrictions"
-    policy.write_text("DISALLOW_SAFE_BOOT\n")
-
-    assert cli.main(["restrictions", "fake-serial", "--file", str(policy)]) == 3
-    assert "cannot prove" in capsys.readouterr().err
-
-
-def test_an_empty_restrictions_file_reaches_the_device(device, tmp_path):
-    """Empty means "withdraw everything", and it is the only way to unlock a
-    device muster locked down. Refusing to send it, or sending it and calling
-    the zero-byte read-back a failure, both strand the operator."""
-    policy = tmp_path / "unlocked.restrictions"
-    policy.write_text("")
-
-    assert cli.main(["restrictions", "fake-serial", "--file", str(policy)]) == 0
-    assert device.stored[f"{AGENT_FILES}/restrictions"] == b""
-
-
-def test_restrictions_reach_the_device(device, tmp_path):
-    policy = tmp_path / "kitchen.restrictions"
-    policy.write_text("DISALLOW_SAFE_BOOT\n")
-
-    assert cli.main(["restrictions", "fake-serial", "--file", str(policy)]) == 0
-    assert device.stored[f"{AGENT_FILES}/restrictions"] == policy.read_bytes()
-
-
 def test_a_file_that_is_not_there_is_refused_before_the_device_is_touched(
     device, tmp_path
 ):
     """Exit 2 is "refused", not "tried and failed" - and nothing should have
     been said to the phone at all."""
     missing = str(tmp_path / "nope")
-    assert cli.main(["restrictions", "fake-serial", "--file", missing]) == 2
+    assert cli.main(["visible-apps", "fake-serial", "--file", missing]) == 2
     assert device.written == []
     assert device.as_calls == []
 
@@ -245,11 +169,10 @@ def test_a_device_configured_by_hand_holds_the_files_a_fetch_would_write(
     air would differ from one set up by hand. `wallpaper.png` is the one
     exception: it is the image the agent itself fetches as an asset, named by
     the managed `wallpaper` file, not a file muster serves.
+
+    `restrictions` and `wallpaper` have no cable command any more (muster#90);
+    they reach a device only by fetch.
     """
-    image = tmp_path / "kitchen.png"
-    image.write_bytes(b"\x89PNG\r\n\x1a\n")
-    policy = tmp_path / "kitchen.restrictions"
-    policy.write_text("DISALLOW_SAFE_BOOT\n")
     allowlist = tmp_path / "kitchen.visible-apps"
     allowlist.write_text("app.muster.agent\n")
     telephony = tmp_path / "kitchen.telephony"
@@ -258,8 +181,6 @@ def test_a_device_configured_by_hand_holds_the_files_a_fetch_would_write(
     config.write_text(APP_CONFIG)
 
     for command in (
-        ["wallpaper", "fake-serial", "--image", str(image)],
-        ["restrictions", "fake-serial", "--file", str(policy)],
         ["visible-apps", "fake-serial", "--file", str(allowlist)],
         ["telephony", "fake-serial", "--file", str(telephony)],
         ["app-config", "fake-serial", "--file", str(config)],
@@ -268,10 +189,8 @@ def test_a_device_configured_by_hand_holds_the_files_a_fetch_would_write(
 
     written = {path.removeprefix(f"{AGENT_FILES}/") for path in device.stored}
     assert all(path.startswith(f"{AGENT_FILES}/") for path in device.stored)
-    assert written - {"wallpaper.png"} == {
-        "wallpaper", "restrictions", "visible-apps", "telephony", "app-config"
-    }
-    assert written - {"wallpaper.png"} <= set(MANAGED_FILES)
+    assert written == {"visible-apps", "telephony", "app-config"}
+    assert written <= set(MANAGED_FILES)
 
 
 def test_an_app_configuration_the_device_did_not_take_exits_three(monkeypatch, tmp_path):
@@ -374,3 +293,98 @@ def test_asset_refuses_a_file_that_is_not_there(tmp_path):
         image=str(tmp_path / "nope.png"), name="", scope="kith", surfaces=["system"]
     )
     assert cli.cmd_asset(args) == 2
+
+
+# ---- the two retired commands (muster#90) ---------------------------------
+#
+# `muster restrictions` and `muster wallpaper` wrote a second copy of policy the
+# control plane already serves, through a `run-as` route the release-signed
+# agent refuses. They are retired, not moved. A retired name must still answer:
+# a script that runs one has to stop and be told where the policy lives now,
+# not get argparse's "invalid choice" or, worse, a silent success.
+
+
+@pytest.mark.parametrize(
+    "argv, route",
+    [
+        (
+            ["restrictions", "fake-serial", "--file", "kitchen.restrictions"],
+            "POST /v1/device/config",
+        ),
+        (["restrictions"], "kith.restrictions"),
+        (
+            ["wallpaper", "fake-serial", "--image", "kitchen.png"],
+            "PUT /v1/assets/",
+        ),
+        (["wallpaper", "--help"], "muster asset"),
+    ],
+)
+def test_a_retired_command_refuses_and_names_the_control_plane_route(
+    device, capsys, argv, route
+):
+    assert cli.main(argv) == 2
+    captured = capsys.readouterr()
+    lines = captured.err.strip().splitlines()
+    assert len(lines) == 1, f"one line, not a usage dump: {captured.err!r}"
+    assert "retired" in lines[0]
+    assert route in lines[0]
+    assert "POST /v1/device/config" in lines[0]
+    assert device.written == []
+    assert device.as_calls == []
+
+
+def test_a_live_command_still_rejects_arguments_it_does_not_take(device):
+    """Retired names swallow whatever they are given so they can refuse in one
+    line. That must not leak: every other command still errors on a stray
+    argument rather than ignoring it."""
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["verify", "fake-serial", "--image", "kitchen.png"])
+    assert raised.value.code == 2
+    assert device.as_calls == []
+
+
+def test_the_commands_that_stay_still_parse_and_run(device, tmp_path, capsys):
+    """No collateral removal: `asset` and every remaining place_file command
+    still work against the fake adb after the two retired ones went."""
+    image = tmp_path / "kitchen.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert cli.main(["asset", str(image)]) == 0
+    assert "PUT /v1/assets/kitchen.png" in capsys.readouterr().out
+
+    allowlist = tmp_path / "kitchen.visible-apps"
+    allowlist.write_text("app.muster.agent\n")
+    telephony = tmp_path / "kitchen.telephony"
+    telephony.write_text("block-outgoing\n")
+    config = tmp_path / "kitchen.appconfig"
+    config.write_text(APP_CONFIG)
+    for command in (
+        ["visible-apps", "fake-serial", "--file", str(allowlist)],
+        ["telephony", "fake-serial", "--file", str(telephony)],
+        ["app-config", "fake-serial", "--file", str(config)],
+    ):
+        assert cli.main(command) == 0, command
+    assert set(device.stored) == {
+        f"{AGENT_FILES}/visible-apps",
+        f"{AGENT_FILES}/telephony",
+        f"{AGENT_FILES}/app-config",
+    }
+
+
+def test_no_doc_tells_an_operator_to_run_a_retired_command():
+    """A doc that still shows `muster.cli restrictions <serial> ...` sends the
+    operator to a command that now only refuses. History may name the commands;
+    an instruction to run one may not."""
+    import pathlib
+    import re
+
+    docs = pathlib.Path(__file__).resolve().parents[2] / "docs"
+    invocation = re.compile(
+        r"muster(?:\.cli)?\s+(?:restrictions|wallpaper)\s+(?:<|--|[\w.-]*serial)"
+    )
+    offenders = [
+        f"{path.name}:{number}: {line.strip()}"
+        for path in sorted(docs.rglob("*.md"))
+        for number, line in enumerate(path.read_text().splitlines(), 1)
+        if invocation.search(line)
+    ]
+    assert offenders == [], "\n".join(offenders)
