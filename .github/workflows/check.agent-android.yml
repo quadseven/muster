@@ -30,8 +30,8 @@ on:
   # swapped the release agent for a debug one: an APK no release-signed handset
   # can upgrade to, and a key every newly provisioned device would bind to.
   # Whether a scheduled run may sign is a signing-policy decision for the
-  # operator; until it is made, an expired artifact fails the image build with
-  # a clear "missing or expired" error instead.
+  # operator. Meanwhile the `store` job below keeps the push-to-main APK on a
+  # release that never expires, and the image falls back to it.
 
 permissions:
   contents: read
@@ -600,3 +600,58 @@ jobs:
           path: ${{ runner.temp }}/agent-artifact/*
           if-no-files-found: error
           retention-days: 14
+
+  # KEEP A COPY THAT NEVER EXPIRES (muster#123). build.server-image.yml bakes
+  # the APK from the newest successful agent build on main, and the artifact
+  # above is kept 14 days. An agent that went quiet for two weeks therefore
+  # blocked every server release. A weekly rebuild was tried and removed: a
+  # scheduled run is not handed the signing secrets, so it built DEBUG-signed
+  # and would have been published in place of the release agent.
+  #
+  # So signing stays push-only and the push-to-main APK is stored instead, as
+  # one asset on the `agent-apk` release. build.server-image.yml falls back to
+  # it only when the artifact is gone. It is the same bytes the artifact held,
+  # after every check in the job above passed, the certificate pin among them.
+  #
+  # ONE TARBALL, NOT THREE ASSETS. The APK and its version stamp must always
+  # describe the same build; replacing them one asset at a time leaves a window
+  # where a reader gets a new APK beside an old versionCode. Replacing one file
+  # either works or leaves no asset, and a missing asset is a loud failure.
+  #
+  # A GITHUB-HOSTED RUNNER, AND THE ONLY JOB HERE THAT CAN WRITE. `contents:
+  # write` can rewrite the repository, and the mac mini is a persistent runner
+  # that executes candidate code (see the condition on `assemble`). That token
+  # never goes near it. server/tests/test_agent_apk_store.py pins all of this.
+  store:
+    name: store the main APK past artifact retention
+    needs: assemble
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: muster-agent-apk
+          path: ${{ runner.temp }}/agent-store
+
+      - name: Replace the stored APK on the agent-apk release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STORE: ${{ runner.temp }}/agent-store
+        run: |
+          set -euo pipefail
+          cd "$STORE"
+          APK="$(find . -maxdepth 1 -name '*.apk' | head -1)"
+          [ -n "$APK" ] || { echo "::error::the agent artifact carried no APK"; exit 1; }
+          [ -f agent-version.txt ] || { echo "::error::the agent artifact carried no agent-version.txt"; exit 1; }
+          printf 'run %s commit %s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" > agent-source.txt
+          tar -cf "$RUNNER_TEMP/muster-agent.tar" "$APK" agent-version.txt agent-source.txt
+          if ! gh release view agent-apk -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create agent-apk -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --prerelease --latest=false --title "Stored agent APK" \
+              --notes "The newest push-to-main agent APK, kept for build.server-image.yml once the run artifact expires (muster#123). Replaced on every agent build on main; agent-source.txt in the tarball names the run."
+          fi
+          gh release upload agent-apk "$RUNNER_TEMP/muster-agent.tar" -R "$GITHUB_REPOSITORY" --clobber
+          echo "::notice::stored the APK from run $GITHUB_RUN_ID on release agent-apk"
