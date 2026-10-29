@@ -35,14 +35,13 @@ application that is not in a `visible-apps` allowlist, so the stock launcher
 stops being a consumer launcher. Settings, the launcher, the setup wizard and
 muster itself are refused. Step B4c, and `policy.md` for the whole thing.
 
-**Changed on 2026-08-19 and not yet re-measured:** configuration pushed from the
-laptop. `muster restrictions` and `muster wallpaper` used to stage a file in
-`/data/local/tmp` and copy it into the agent's files directory, which cannot
-work - that directory is `0700` and owned by the app's uid, not
-world-traversable as the code assumed. Measured on the same phone; #20 has the
-evidence. They now write through the app with `run-as`, which is the command #20
-records placing a file by hand - but nobody has run the fixed commands against a
-handset, so the steps below that push a file are still unproven end to end.
+**Retired, muster#90:** `muster restrictions` and `muster wallpaper`. They used to
+stage a file in `/data/local/tmp` and copy it into the agent's files directory,
+which cannot work - that directory is `0700` and owned by the app's uid, not
+world-traversable as the code assumed (measured on the same phone; #20 has the
+evidence). The `run-as` rewrite that followed cannot work on the release-signed
+agent either, and the control plane already delivers both. Restrictions and
+wallpaper now reach a device only by fetch; steps B4a and B4b say how.
 
 ## Before you start, either route
 
@@ -310,37 +309,44 @@ enroll.
 
 ### B4a. Wallpaper, if you want one
 
+Published through the control plane, not pushed over the cable:
+
 ```sh
-uv run --group dev python -m muster.cli wallpaper <serial> --image ~/some.png
+uv run --group dev python -m muster.cli asset ~/some.png
 ```
 
-The command writes both `wallpaper.png` and a `wallpaper` policy file naming its
-SHA-256 digest. The agent needs both to apply the image at the next boot, once,
-keyed on that digest. On an enrolled device, a successful configuration fetch
-can replace the local policy, so publish the same wallpaper policy to the
-control plane for a lasting change.
+That prints the image's SHA-256 digest and the policy stanza that names it.
+Upload the bytes with `PUT /v1/assets/{name}` from an administrator session,
+write the stanza into the `muster-policy` Secret as `kith.wallpaper` (or
+`<key_id>.wallpaper` for one device), and the agent fetches the policy and the
+image over `POST /v1/device/config` once it has enrolled. It applies the image
+once, keyed on that digest.
 
-Both this and the server URL go into the agent's DEVICE-PROTECTED files
-directory - `/data/user_de/0/...`, not the `/data/user/0/...` one - because the
-agent reads them before first unlock. Pushing to the wrong one succeeds, leaves
-the file genuinely on disk, and the agent never sees it.
+The server URL goes into the agent's DEVICE-PROTECTED files directory -
+`/data/user_de/0/...`, not the `/data/user/0/...` one - because the agent reads
+it before first unlock. Pushing to the wrong one succeeds, leaves the file
+genuinely on disk, and the agent never sees it.
 
-**The wallpaper, the server URL, the restrictions file and the app
-configuration below are all written through the app, with `run-as`, and that has
-an expiry date on it.** The agent's directory is `drwx------` owned by the app's
-uid, so `adb push` and a `cp` from `/data/local/tmp` cannot reach it - measured
-on <device-serial>, 2026-08-19, and that is what these commands used to do.
+**The server URL and the cable commands below are written through the app, with
+`run-as`, and that has an expiry date on it.** The agent's directory is
+`drwx------` owned by the app's uid, so `adb push` and a `cp` from
+`/data/local/tmp` cannot reach it - measured on <device-serial>, 2026-08-19.
 `run-as` can reach it, but only while the agent is debug-signed: after the
 signing ceremony it refuses with `package not debuggable` and the file-push
-commands stop working. They fail loudly rather than silently. Enrolled release builds
-fetch policy and wallpaper assets over their own authenticated device channel;
-the cable commands remain a debug-build bootstrap route.
+commands stop working. They fail loudly rather than silently. Enrolled release
+builds fetch policy and wallpaper assets over their own authenticated device
+channel; the cable commands remain a debug-build bootstrap route.
+
+`muster wallpaper` was retired in muster#90; running it exits 2 and names the
+route above.
 
 ### B4b. Restrictions, if this is an appliance
 
-```sh
-uv run --group dev python -m muster.cli restrictions <serial> --file ./kitchen.restrictions
-```
+Also published through the control plane: write the restrictions file into the
+`muster-policy` Secret as `kith.restrictions` (or `<key_id>.restrictions`), and
+the agent fetches it over `POST /v1/device/config` once it has enrolled.
+`muster restrictions` was retired in muster#90; running it exits 2 and names
+that route.
 
 One `DISALLOW_*` name per line. The agent reconciles at the next boot and names
 anything it refuses in `adb logcat -s muster` - an unrecognized name is refused
@@ -351,9 +357,6 @@ Two names can strand a device and each needs `accept-stranding` spelled out on
 the line. One of them, `DISALLOW_DEBUGGING_FEATURES`, would remove the adb
 access that step B5 below depends on. `policy.md` has the full list and the
 reasoning.
-
-**Same as B4a**: the reconcile is proven on hardware, the push through `run-as`
-is not yet.
 
 ### B4c. Which applications stay on the launcher
 

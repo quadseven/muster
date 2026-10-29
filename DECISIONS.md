@@ -22,7 +22,7 @@ describe are the code and comments in this tree.
 ## Contents
 
 - [Why this exists at all](#why-this-exists-at-all) - D1
-- [The trust decision](#the-trust-decision) - D2 to D7
+- [The trust decision](#the-trust-decision) - D2 to D7 and D31
 - [Staying up](#staying-up) - D8 to D10
 - [Getting onto a handset](#getting-onto-a-handset) - D11 to D14
 - [Telling a device what to be](#telling-a-device-what-to-be) - D15 to D19
@@ -1642,3 +1642,45 @@ same reason `wipeData()` does not (D29). `IllegalStateException` on an
 ongoing call is the one documented failure mode; `RebootSteward` catches it
 the same way `WipeSteward` catches any failure from `wipeData` - the device
 stays running and reachable rather than half-acted-on.
+
+### D31. One household trust root, with muster as an intermediate
+
+**2026-10-27.** Evidence: muster#91, `server/muster/ca.py`,
+`server/muster/proof.py`, and `docs/what-is-deployed.md`.
+
+**Context.** Two independently administered roots meant each device had to
+install both trust anchors. The device identity CA was also a self-signed root
+whose private key was available to the online service. A single offline root
+for household trust reduces the number of device trust installations and
+limits the online issuer to one intermediate.
+
+**Chosen: Option B.** The offline household root is the trust anchor. The
+service's device CA is an intermediate beneath it and signs client identity
+certificates only. Server certificates remain a separate profile and issuer.
+The intermediate certificate and root are supplied to the service as an
+ordered PEM bundle, with the signing intermediate first and the root last. The
+private key must match the first certificate. The root private key is never
+loaded by the service. A single self-signed CA bundle remains accepted for
+existing deployments until the operator performs a separate cutover.
+
+`Authority.load` validates the CA constraints, key usage, path length and
+signatures from the intermediate to the self-signed root before issuing. The
+proof verifier checks a presented device leaf against the configured
+intermediate, whose path was checked at startup. Matching a subject name alone
+is not a trust decision. The API returns the public chain so a client can
+build its path to the root. The tests refuse a leaf signed by a different CA
+with the same subject name and refuse an intermediate with the wrong parent.
+
+**Re-enrollment cost.** The repository's last recorded inventory listed three
+enrolled devices on 2026-08-19. That is not a live active-device count on the
+2026-10-27 decision date. No contemporaneous database count is recorded here,
+so the live count remains unverified. Before cutover, the operator must read
+the active count from the live device store, record it, and re-enroll every
+active device: existing leaves chain to the previous issuer. This change
+records the decision and implementation; it does not perform the signing
+ceremony, change a deployment, or re-enroll a device.
+
+**Residual risk.** Existing CRL and OCSP behavior covers leaf certificates.
+Revoking the intermediate requires an offline-root procedure and is a separate
+operational decision. Do not assume the leaf revocation process revokes the
+intermediate.

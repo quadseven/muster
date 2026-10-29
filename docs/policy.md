@@ -35,26 +35,17 @@ One name per line, `#` starts a comment, blank lines ignored:
     DISALLOW_UNINSTALL_APPS
     DISALLOW_SAFE_BOOT
 
-Push it with:
+It reaches the device from the control plane and nowhere else: put it in the
+`muster-policy` Secret as `kith.restrictions` (every device) or
+`<key_id>.restrictions` (one device), and the agent fetches it over
+`POST /v1/device/config` with its own identity - see ["How policy reaches a
+device"](#how-policy-reaches-a-device).
 
-```sh
-uv run --group dev python -m muster.cli restrictions <serial> --file ./kitchen.restrictions
-```
-
-That writes the file **as the agent**, with `run-as`. The directory is
-`drwx------` owned by the app's uid, so nothing the adb shell user does can put
-a file in it; `run-as` in turn needs a debuggable package, so this route ends at
-the signing ceremony rather than degrading. It fails loudly when it does, and
-the device is asked for the file's sha256 afterwards rather than trusted.
-
-**A device that has enrolled does not need this at all any more.** It fetches
-the same file from the control plane - see ["How policy reaches a
-device"](#how-policy-reaches-a-device). This route is for a device that has not
-enrolled yet, and for a cable in hand.
-
-**Fixed in code on 2026-08-19 and not yet re-measured on a handset.** The
-`run-as` command itself did place a file on <device-serial> by hand; the command
-above has not been run against a phone since it changed.
+**There is no cable command for it any more.** `muster restrictions` wrote the
+same file through `run-as`, which the release-signed agent refuses, and on an
+enrolled device it was a second writer for the reconciler to fight. It was
+retired in muster#90; running it now exits 2 with one line naming the route
+above.
 
 **It is a file and not a build for the same reason the wallpaper is.** This app
 is Device Owner, so anything baked into the APK can only be changed by a
@@ -914,14 +905,17 @@ today.
 
 ### `place_file` stays
 
-`muster restrictions`, `muster visible-apps` and `muster app-config` are still
+`muster visible-apps` and `muster app-config` are still
 how a device that has **not enrolled yet** is configured, and how anything is
 done with a cable in hand. They are the bootstrap, not the mechanism, and they
 still stop working the day the release-signed agent ships - `run-as` needs a
 debuggable package. That is now a route ending rather than the route ending.
 
-**A file placed by hand does not survive a successful fetch.** Those three
-commands write three of the names the control plane manages, into the directory
+`muster restrictions` and `muster wallpaper` are not: they were retired in
+muster#90, and restrictions and wallpaper reach a device only by fetch.
+
+**A file placed by hand does not survive a successful fetch.** Those two
+commands write two of the names the control plane manages, into the directory
 a fetch writes to, so on an enrolled device the policy directory decides their
 contents and a name muster does not serve is removed at the next fetch. That is
 what a reconciler is for; it also means a cable-placed file is temporary unless

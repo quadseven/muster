@@ -179,88 +179,30 @@ def cmd_asset(args) -> int:
     return 0
 
 
-def cmd_wallpaper(args) -> int:
-    """Push an image and the policy that tells the agent to apply it.
-
-    Not baked into the APK on purpose: this app is Device Owner, so changing a
-    bundled asset would mean a rebuild, a reinstall, and eventually a factory
-    reset when the signing key moves. A file is the difference between changing
-    the wallpaper and shipping a release.
-
-    The agent applies it at the next boot, once, keyed on the image's hash - so
-    running this twice with the same picture does nothing the second time.
-    """
-    adb = Adb(args.adb)
-    source = pathlib.Path(args.image)
-    if not source.is_file():
-        print(f"no image at {source}", file=sys.stderr)
-        return 2
-
-    # `place_file` and not `adb push`: the agent's directory belongs to the app
-    # and the shell cannot write into it, so a push here lands nowhere and reads
-    # like a broken cable. What it does instead has an expiry date on it, and
-    # says so where it is written.
-    files = DEVICE_FILES.format(package=args.package)
-    image = source.read_bytes()
-    placed = place_file(
-        adb, args.serial, args.package, f"{files}/wallpaper.png", image
-    )
-    if not placed.ok:
-        print(placed.detail, file=sys.stderr)
-        return 3
-    policy = f"image wallpaper.png sha256 {hashlib.sha256(image).hexdigest()}\n"
-    configured = place_file(
-        adb, args.serial, args.package, f"{files}/wallpaper", policy.encode("ascii")
-    )
-    if not configured.ok:
-        print(configured.detail, file=sys.stderr)
-        return 3
-    print(f"placed: {placed.detail}; {configured.detail}")
-    print("the agent applies it at the next boot if fetched policy does not replace it")
-    return 0
+# Retired commands, muster#90. Each name still answers so that a script or a
+# habit that runs one stops here and is told where that policy lives now,
+# instead of getting argparse's "invalid choice" or a silent no-op. They wrote a
+# second copy of policy the control plane already serves - a second writer for
+# the reconciler to fight - through a `run-as` route the release-signed agent
+# refuses outright.
+RETIRED = {
+    "restrictions": (
+        "muster restrictions is retired: put the restrictions in the "
+        "muster-policy Secret as kith.restrictions or <key_id>.restrictions, "
+        "and the device fetches them over POST /v1/device/config"
+    ),
+    "wallpaper": (
+        "muster wallpaper is retired: run `muster asset <image>`, upload it "
+        "with PUT /v1/assets/{name}, and name it in the kith.wallpaper or "
+        "<key_id>.wallpaper policy; the device fetches it over "
+        "POST /v1/device/config"
+    ),
+}
 
 
-def cmd_restrictions(args) -> int:
-    """Push the restrictions file the agent reconciles against at boot.
-
-    Same shape as the wallpaper beside it, for the same reason: this app is
-    Device Owner, so anything baked into the APK can only be changed by a
-    release, and a release eventually costs a factory reset when the signing key
-    moves.
-
-    AN EMPTY FILE IS A VALID INSTRUCTION and means "no restrictions" - the agent
-    withdraws everything it previously set. Not pushing a file at all means
-    something different: the device is left exactly as it is. That distinction is
-    the difference between a device nobody has configured yet and one somebody
-    deliberately unlocked.
-
-    NOT VALIDATED HERE, DELIBERATELY. The vocabulary of restriction names lives
-    in the agent, in RestrictionPolicy, and a second copy in this file would be
-    free to drift from it - at which point the CLI would confidently accept a
-    name the device refuses, or refuse one it accepts. The agent names every
-    line it will not act on:
-
-        adb logcat -s muster
-
-    Restrictions are reconciled at boot, so this takes effect on the next one.
-    """
-    adb = Adb(args.adb)
-    source = pathlib.Path(args.file)
-    if not source.is_file():
-        print(f"no restrictions file at {source}", file=sys.stderr)
-        return 2
-
-    files = DEVICE_FILES.format(package=args.package)
-    placed = place_file(
-        adb, args.serial, args.package, f"{files}/restrictions", source.read_bytes()
-    )
-    if not placed.ok:
-        print(placed.detail, file=sys.stderr)
-        return 3
-    print(f"placed: {placed.detail}")
-    print("the agent reconciles at the next boot; anything refused is named in")
-    print("  adb logcat -s muster")
-    return 0
+def cmd_retired(args) -> int:
+    print(RETIRED[args.command], file=sys.stderr)
+    return 2
 
 
 def cmd_visible_apps(args) -> int:
@@ -460,12 +402,6 @@ def main(argv=None) -> int:
     )
     vf.set_defaults(func=cmd_verify)
 
-    wp = sub.add_parser("wallpaper", help="push a wallpaper for the agent to apply")
-    wp.add_argument("serial")
-    wp.add_argument("--image", required=True, help="path to a PNG")
-    wp.add_argument("--package", default="app.muster.agent")
-    wp.set_defaults(func=cmd_wallpaper)
-
     at = sub.add_parser(
         "asset",
         help="prepare an image for the asset store and print how to publish it",
@@ -489,18 +425,6 @@ def main(argv=None) -> int:
         help="which screens the wallpaper goes on (default: both)",
     )
     at.set_defaults(func=cmd_asset)
-
-    rs = sub.add_parser(
-        "restrictions", help="push the restrictions the agent should enforce"
-    )
-    rs.add_argument("serial")
-    rs.add_argument(
-        "--file",
-        required=True,
-        help="restrictions file: one name per line, # comments, empty means none",
-    )
-    rs.add_argument("--package", default="app.muster.agent")
-    rs.set_defaults(func=cmd_restrictions)
 
     va = sub.add_parser(
         "visible-apps",
@@ -555,7 +479,16 @@ def main(argv=None) -> int:
     t.add_argument("--package", default="app.muster.agent")
     t.set_defaults(func=cmd_telephony)
 
-    args = parser.parse_args(argv)
+    # No arguments and no help of their own: whatever follows a retired name is
+    # swallowed so the refusal is one line, not a usage error about an option
+    # that no longer exists.
+    for name in RETIRED:
+        retired = sub.add_parser(name, add_help=False)
+        retired.set_defaults(func=cmd_retired, retired=True)
+
+    args, extra = parser.parse_known_args(argv)
+    if extra and not getattr(args, "retired", False):
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
     return args.func(args)
 
 

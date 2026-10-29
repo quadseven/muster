@@ -24,8 +24,8 @@ WHERE IT COMES FROM: a directory, because the alternative is a table nothing
 writes to. A console for editing policy is muster#36; until that exists, a
 database schema here would be a mechanism with no operator, which is the
 "configured but absent" failure this estate keeps rediscovering. A directory is
-a Secret in the pod, and the same text an operator already writes for
-`muster restrictions --file`.
+a Secret in the pod, and the same text an operator once wrote for the retired
+`muster restrictions --file` (muster#90).
 
     <root>/kith.restrictions              every device in the kith
     <root>/kith.visible-apps
