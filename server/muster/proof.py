@@ -35,6 +35,8 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography import x509
 
+from .ca import validate_ca_chain
+
 # Long enough for a phone on a slow link to sign and come back, short enough
 # that an observed signature is worthless by the time anyone could use it.
 NONCE_TTL_S = 120.0
@@ -76,6 +78,14 @@ class Proofs:
     clock: object
     ca_certificate: x509.Certificate
     challenges: dict = field(default_factory=dict)
+    ca_chain: tuple[x509.Certificate, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.ca_chain:
+            self.ca_chain = (self.ca_certificate,)
+        if self.ca_chain[0] != self.ca_certificate:
+            raise ValueError("proof CA chain must start with the device issuer")
+        validate_ca_chain(self.ca_chain)
 
     def _now(self) -> float:
         return self.clock()  # type: ignore[operator]

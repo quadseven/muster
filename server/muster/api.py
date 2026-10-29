@@ -3063,8 +3063,6 @@ def app_from_env() -> FastAPI:
         )
     import datetime as dt
 
-    from cryptography import x509
-
     key_path = os.environ.get("MUSTER_CA_KEY")
     cert_path = os.environ.get("MUSTER_CA_CERT")
     if not key_path or not cert_path:
@@ -3171,7 +3169,6 @@ def app_from_env() -> FastAPI:
         **{f"asset_{k}": v for k, v in assets_held.status().items()},
     )
 
-    ca_cert = x509.load_pem_x509_certificate(authority.certificate_pem)
     return create_app(
         State(
             enrollment=Enrollment(clock=clock),
@@ -3179,7 +3176,11 @@ def app_from_env() -> FastAPI:
             sign_in=sign_in,
             cookie_secure=os.environ.get("MUSTER_COOKIE_SECURE", "true").lower()
             != "false",
-            proofs=Proofs(clock=clock, ca_certificate=ca_cert),
+            proofs=Proofs(
+                clock=clock,
+                ca_certificate=authority.certificate_chain[0],
+                ca_chain=authority.certificate_chain,
+            ),
             base_url=base_url,
             agent_apk=agent_apk,
             telemetry=emitter,
