@@ -79,19 +79,19 @@ class RenewalClientTest {
     }
 
     @Test
-    fun renewalNamesWhatStartedItAndWhetherTheDeviceWasStillLocked() {
-        // muster#22: the server can only tell the scheduled check-in from the
-        // sync button if the request says which one sent it.
+    fun renewalNamesWhatStartedItWithoutClaimingLockState() {
+        // muster#22: the server can tell a scheduled check-in from the sync
+        // button when the request says which one sent it.
         val transport = FakeTransport(renewal = issued())
 
         RenewalClient(
             transport, FakeIdentity(),
-            trigger = RenewalTrigger.CHECK_IN, directBoot = true,
+            trigger = RenewalTrigger.CHECK_IN,
         ).renew("a csr")
 
         val sent = JSONObject(transport.bodies.last())
         assertEquals("check-in", sent.getString("trigger"))
-        assertEquals(true, sent.getBoolean("direct_boot"))
+        assertFalse(sent.has("direct_boot"))
     }
 
     @Test

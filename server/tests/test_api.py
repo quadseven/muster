@@ -5312,8 +5312,8 @@ def test_a_failed_short_issuance_leaves_the_request_armed(state, monkeypatch):
     assert state.kith.history(key_id_)[-1].serial == f"{identity.serial:X}"
 
 
-def test_a_renewal_logs_what_box_two_needs(state, monkeypatch, caplog):
-    """Device, old and new serial, the trigger the agent named, and lock state."""
+def test_a_renewal_logs_scheduled_check_in_evidence(state, monkeypatch, caplog):
+    """Record device, certificate serials, trigger, and short issuance status."""
     import logging
 
     caplog.set_level(logging.INFO, logger="muster")
@@ -5334,7 +5334,7 @@ def test_a_renewal_logs_what_box_two_needs(state, monkeypatch, caplog):
     assert fields["old_serial"] == f"{identity.serial:X}"
     assert fields["new_serial"] == f"{_as_identity(response.json()).serial:X}"
     assert fields["trigger"] == "check-in"
-    assert fields["direct_boot"] is True
+    assert "direct_boot" not in fields
     assert fields["short_lived_hours"] == 36
     assert untrusted_word.status_code == 409
     assert refused[-1].fields["trigger"] == "other"

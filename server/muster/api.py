@@ -1893,9 +1893,6 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         # scheduled check-in, its catch-up run, a boot, or the sync button.
         # Logged, never trusted for a decision - it is the device's own word.
         trigger: str = Body("", embed=True),
-        # Whether the device had not been unlocked since boot when it asked,
-        # from UserManager.isUserUnlocked. Logged only, for the same reason.
-        direct_boot: bool | None = Body(None, embed=True),
     ):
         """A fresh certificate, for the device that signed this nonce.
 
@@ -2044,7 +2041,6 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                 "renewal refused as too early",
                 key_id=proven, old_serial=f"{current.serial_number:X}",
                 renew_after=earliest.isoformat(), trigger=said,
-                direct_boot=direct_boot,
             )
             raise HTTPException(
                 status_code=409,
@@ -2091,10 +2087,9 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                 collected_at=now,
             ),
         )
-        # EVERYTHING muster#22's box 2 needs, on one line: which device, which
-        # certificate it gave up and which it got, what started the request,
-        # whether the handset was still locked since boot, and whether this was
-        # the operator's one short issuance.
+        # EVERYTHING muster#22's scheduled-renewal check needs, on one line:
+        # which device, which certificate it gave up and which it got, what
+        # started the request, and whether this was the one short issuance.
         telemetry.event(
             "device renewed",
             key_id=proven,
@@ -2104,7 +2099,6 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
             not_after=identity.not_after.isoformat(),
             renew_after=identity.renew_after().isoformat(),
             trigger=said,
-            direct_boot=direct_boot,
             short_lived_hours=(
                 armed.lifetime.total_seconds() / 3600 if armed is not None else None
             ),
