@@ -185,3 +185,20 @@ def test_proofs_reject_an_intermediate_with_an_untrusted_parent():
             ca_certificate=intermediate,
             ca_chain=(intermediate, wrong_root),
         )
+
+
+def test_proofs_refuse_a_leaf_when_its_intermediate_parent_is_untrusted():
+    authority, intermediate, root = _hierarchy("trusted root")
+    _wrong_key, wrong_root = _make_ca("wrong root", path_length=1)
+    proofs = Proofs(
+        clock=Clock(),
+        ca_certificate=intermediate,
+        ca_chain=(intermediate, root),
+    )
+    proofs.ca_chain = (intermediate, wrong_root)
+    key, leaf_pem = _issue(authority)
+    challenge = proofs.challenge()
+
+    assert proofs.verify(
+        challenge.nonce, _sign(key, challenge.nonce), leaf_pem
+    ) is Verdict.CERT_NOT_OURS

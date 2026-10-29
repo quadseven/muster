@@ -125,7 +125,14 @@ class Proofs:
         # getting the hash algorithm out of the certificate, which is Optional
         # and would be a TypeError on the one input designed to be hostile.
         try:
-            cert.verify_directly_issued_by(self.ca_certificate)
+            # Proofs is mutable for compatibility with its in-memory test and
+            # service setup. Revalidate its configured path at the trust
+            # boundary so replacing a parent after construction cannot make an
+            # issuer certificate trusted by name alone.
+            if not self.ca_chain or self.ca_chain[0] != self.ca_certificate:
+                return Verdict.CERT_NOT_OURS
+            validate_ca_chain(self.ca_chain)
+            cert.verify_directly_issued_by(self.ca_chain[0])
         except (InvalidSignature, ValueError, TypeError):
             return Verdict.CERT_NOT_OURS
 
