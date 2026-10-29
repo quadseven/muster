@@ -225,7 +225,10 @@ provisioning QR carries, and `passphrase` is required unless it is `NONE`.
 **Device scope only.** It holds a passphrase, so `kith.wifi` and `role-*.wifi`
 are refused: never served, and a log line names the file (never its content).
 A device file that does not parse is likewise not served, with a log line saying
-why; the rest of that device's configuration is unaffected. Neither the log nor
+why; the rest of that device's configuration is unaffected. This includes a file
+that cannot be read or is not valid UTF-8: wifi is the one managed file where an
+unreadable file is treated as unparsable rather than failing the whole config
+with a 503 (every other managed file keeps that rule). Neither the log nor
 a metric ever carries the passphrase.
 
 **Status: server side only.** muster serves the file, but the agent has no wifi

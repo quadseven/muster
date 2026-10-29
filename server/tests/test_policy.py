@@ -899,6 +899,38 @@ def test_a_wifi_file_that_does_not_parse_is_not_served_but_the_rest_is(root):
     assert "restrictions" in served.files
 
 
+def test_a_wifi_file_that_is_not_utf8_is_not_served_but_the_rest_is(root):
+    """Unreadable wifi is unparsable, not Unreadable: no 503 for the whole config."""
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _own(root, A, "wifi").write_bytes(b"ssid relay-net\npassphrase \xff\xfe\n")
+    served = policy.Policies(root=root).for_device(A)
+
+    assert "wifi" not in served.files
+    assert "restrictions" in served.files
+
+
+def test_a_malformed_wifi_log_event_never_carries_the_passphrase(root, monkeypatch):
+    secret = "pw-SECRET-c0ffee-9d1"
+    events = []
+    monkeypatch.setattr(
+        policy.telemetry, "event", lambda msg, **f: events.append((msg, f))
+    )
+    # The passphrase sits on a line with a wrong key, so the parser rejects it.
+    _own(root, A, "wifi").write_text(f"ssid relay-net\nsecurity WPA\npasspharse {secret}\n")
+    policy.Policies(root=root).for_device(A)
+
+    assert events
+    for msg, fields in events:
+        blob = repr((msg, fields))
+        assert secret not in blob
+
+
+def test_an_omitted_wifi_security_defaults_to_wpa():
+    network = policy.WifiNetwork.parse("ssid relay-net\npassphrase pw-x\n")
+    assert network.security == "WPA"
+    assert network.qr_fields()["wifi_security"] == "WPA"
+
+
 @pytest.mark.parametrize(
     "text",
     ["", "security WPA\npassphrase x\n", "ssid a\nsecurity WPA3\npassphrase x\n",
