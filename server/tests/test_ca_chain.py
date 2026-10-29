@@ -173,3 +173,15 @@ def test_proofs_refuse_a_leaf_from_a_different_parent_with_the_same_name():
     assert proofs.verify(
         challenge.nonce, _sign(key, challenge.nonce), leaf_pem
     ) is Verdict.CERT_NOT_OURS
+
+
+def test_proofs_reject_an_intermediate_with_an_untrusted_parent():
+    _authority, intermediate, _trusted_root = _hierarchy("trusted root")
+    _wrong_key, wrong_root = _make_ca("wrong root", path_length=1)
+
+    with pytest.raises(ValueError, match="certificate chain"):
+        Proofs(
+            clock=Clock(),
+            ca_certificate=intermediate,
+            ca_chain=(intermediate, wrong_root),
+        )
