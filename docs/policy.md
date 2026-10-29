@@ -209,6 +209,31 @@ turned them off. It is useful only AFTER alerts have already been turned off
 by hand on the device; set first, it locks them on rather than silencing
 them.
 
+## The wifi file (muster#195)
+
+`<key_id>.wifi` names the network one device must be able to join, so a handset
+that forgot it can rejoin at its next check-in without a person holding the
+enrollment QR:
+
+    ssid relay-net
+    security WPA
+    passphrase <the network passphrase>
+
+`security` is `WPA` (the default), `WEP` or `NONE`, the same words the
+provisioning QR carries, and `passphrase` is required unless it is `NONE`.
+
+**Device scope only.** It holds a passphrase, so `kith.wifi` and `role-*.wifi`
+are refused: never served, and a log line names the file (never its content).
+A device file that does not parse is likewise not served, with a log line saying
+why; the rest of that device's configuration is unaffected. Neither the log nor
+a metric ever carries the passphrase.
+
+**Status: server side only.** muster serves the file, but the agent has no wifi
+steward yet, so `ConfigurationPolicy.MANAGED` does not list `wifi` and a device
+refuses the name. The agent half (a steward that adds or updates the network as
+Device Owner) needs a handset to define its behaviour and is tracked on the
+issue.
+
 ## The telephony file
 
 `telephony` is a managed file like `restrictions` and `visible-apps`, and it

@@ -858,3 +858,58 @@ def test_a_line_muster_cannot_read_a_version_from_still_names_its_package(line):
 
 def test_lines_that_are_not_install_lines_set_no_expectation():
     assert policy.expected_versions("# nothing\n\nwallpaper w.png\n") == {}
+
+
+# ---- the per-device wifi file (muster#195) --------------------------------
+
+_WIFI = "ssid relay-net\nsecurity WPA\npassphrase pw-7f3a91c4e08b46d2a5\n"
+
+
+def test_a_wifi_file_is_device_scope_only(root):
+    """`kith.wifi` and `role-*.wifi` hold a passphrase for every device in a
+    scope, so neither is ever served; only `<key_id>.wifi` is, and only to it."""
+    _shared(root, "wifi").write_text(_WIFI.replace("relay-net", "everyone"))
+    _role(root, "relay", "wifi").write_text(_WIFI.replace("relay-net", "the-role"))
+    _own(root, A, "wifi").write_text(_WIFI)
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    policies = policy.Policies(root=root)
+
+    assert policies.for_device(A, role="relay").files["wifi"] == _WIFI
+    assert "wifi" not in policies.for_device(B, role="relay").files
+    assert "wifi" not in policies.for_device(B).files
+    assert "wifi" not in policy.ROLE_FILES
+    assert "wifi" not in policy.SHARED_FILES
+
+
+def test_a_directory_holding_only_a_shared_wifi_file_is_not_a_live_source(root):
+    _shared(root, "wifi").write_text(_WIFI)
+    policies = policy.Policies(root=root)
+
+    assert policies.files_held() == 0
+    with pytest.raises(policy.NoSource):
+        policies.for_device(A)
+
+
+def test_a_wifi_file_that_does_not_parse_is_not_served_but_the_rest_is(root):
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _own(root, A, "wifi").write_text("ssid relay-net\nsecurity WPA\n")  # no passphrase
+    served = policy.Policies(root=root).for_device(A)
+
+    assert "wifi" not in served.files
+    assert "restrictions" in served.files
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "security WPA\npassphrase x\n", "ssid a\nsecurity WPA3\npassphrase x\n",
+     "ssid a\nssid b\npassphrase x\n", "ssid a\nmystery 1\npassphrase x\n",
+     "ssid " + "a" * 33 + "\npassphrase x\n"],
+)
+def test_a_malformed_wifi_file_is_refused_by_the_parser(text):
+    with pytest.raises(policy.BadWifi):
+        policy.WifiNetwork.parse(text)
+
+
+def test_an_open_network_needs_no_passphrase():
+    network = policy.WifiNetwork.parse("ssid guest\nsecurity NONE\n")
+    assert (network.ssid, network.security, network.passphrase) == ("guest", "NONE", "")

@@ -34,6 +34,7 @@ a Secret in the pod, and the same text an operator once wrote for the retired
     <root>/<key_id>.visible-apps
     <root>/<key_id>.wallpaper
     <root>/<key_id>.app-config
+    <root>/<key_id>.wifi
     <root>/<key_id>.wipe             this device only, and NEVER the kith or a role
 
 FLAT, WITH A DOT, AND NOT NESTED DIRECTORIES. A Kubernetes Secret key may not
@@ -51,6 +52,14 @@ telemetry one - and a credential under the shared scope is a credential handed
 to every device in the estate. Refusing to serve it is loud; serving it widely
 is silent, and silent is how a token ends up on a phone in a drawer that
 somebody later sells.
+
+`kith.wifi` AND `role-*.wifi` ARE NEVER READ EITHER (muster#195). The wifi file
+holds a network passphrase, so it is device scope only, like `wipe` and
+`reboot` but for the opposite reason: not because it is dangerous to share by
+typo, but because it is a credential. Where one of those files exists it is
+REFUSED OUT LOUD (a log line naming the file, never its content) rather than
+ignored, because an operator who wrote it believes devices will join a network
+and nothing else would tell them otherwise.
 
 WHAT IS NOT HERE, AND HOW THE WALLPAPER GETS AROUND IT. Anything that is not
 text. A PNG inside this JSON body - a megabyte of base64 in a response that
@@ -73,7 +82,9 @@ import json
 import os
 import pathlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from . import telemetry
 
 # The closed vocabulary of file names that may travel to a device.
 #
@@ -101,6 +112,13 @@ WIPE_COMMAND = "wipe\n"
 REBOOT_FILE = "reboot"
 REBOOT_COMMAND = "reboot\n"
 
+# The per-device wifi network (muster#195): which network a handset must be
+# able to join, so a phone that forgot it rejoins at its next check-in without a
+# person holding the enrollment QR. Device scope ONLY and read from the policy
+# directory (unlike wipe/reboot): it holds a passphrase, so `kith.wifi` and
+# `role-*.wifi` are refused and logged, never served. See `WifiNetwork`.
+WIFI_FILE = "wifi"
+
 MANAGED_FILES: tuple[str, ...] = (
     "restrictions",
     "visible-apps",
@@ -127,6 +145,9 @@ MANAGED_FILES: tuple[str, ...] = (
     # reasoning as WIPE_FILE; RebootSteward reads it. `for_device` returns it
     # only when the kith says this device is reboot-requested.
     REBOOT_FILE,
+    # The network this device must be able to join. Text like everything else
+    # here; the credential travels only to the device it names (muster#195).
+    WIFI_FILE,
 )
 
 # The half of that vocabulary a device may inherit from the kith.
@@ -231,8 +252,14 @@ ROLE_SCOPE_PREFIX = "role-"
 # reboot typo'd into a role file restarts a fleet, not the one device that
 # needed it. Both are device scope only, by construction, not by operator
 # discipline.
+#
+# `wifi` is excluded for the opposite reason: it is a credential, and a role is
+# precisely the scope the kith's own rule refuses for the shared one. A
+# passphrase per device is the whole decision (muster#195).
 ROLE_FILES: tuple[str, ...] = tuple(
-    name for name in MANAGED_FILES if name not in (WIPE_FILE, REBOOT_FILE)
+    name
+    for name in MANAGED_FILES
+    if name not in (WIPE_FILE, REBOOT_FILE, WIFI_FILE)
 )
 
 # Same shape as enroll._ROLE, and checked again here on purpose. By the time a
@@ -445,6 +472,76 @@ def _version_of(words: list[str]) -> int | None:
     return int(words[6]) if shaped and _VERSION_CODE.fullmatch(words[6]) else None
 
 
+# Security types a wifi file may name. The same words the provisioning QR
+# carries in PROVISIONING_WIFI_SECURITY_TYPE, so the file and the QR share one
+# vocabulary and cannot disagree about it (muster#195).
+WIFI_SECURITY_TYPES: tuple[str, ...] = ("WPA", "WEP", "NONE")
+
+_WIFI_KEYS = ("ssid", "security", "passphrase")
+
+
+class BadWifi(Exception):
+    """A wifi file muster will not serve. The message names no value."""
+
+
+@dataclass(frozen=True)
+class WifiNetwork:
+    """One device's wifi network, parsed from `<key_id>.wifi`.
+
+    The file is lines of `<key> <value to end of line>`:
+
+        ssid house
+        security WPA
+        passphrase correct horse battery staple
+
+    `security` defaults to WPA when omitted, exactly as the QR endpoint does.
+    `passphrase` is required unless security is NONE.
+
+    THE PASSPHRASE NEVER PRINTS: it is excluded from the generated repr, and
+    `__str__` is explicit, because those are what a log line, an assertion
+    message or an f-string reach for.
+    """
+
+    ssid: str
+    security: str = "WPA"
+    passphrase: str = field(default="", repr=False)
+
+    def __str__(self) -> str:
+        return f"WifiNetwork(ssid={self.ssid!r}, security={self.security})"
+
+    def qr_fields(self) -> dict:
+        """The keyword arguments `provisioning.payload` takes for this network,
+        so the QR and the policy file are built from one description."""
+        return {
+            "wifi_ssid": self.ssid,
+            "wifi_security": self.security,
+            "wifi_password": self.passphrase,
+        }
+
+    @classmethod
+    def parse(cls, text: str) -> "WifiNetwork":
+        values: dict[str, str] = {}
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            key, _, value = line.strip().partition(" ")
+            if key not in _WIFI_KEYS:
+                raise BadWifi("a line names a key wifi does not have")
+            if key in values:
+                raise BadWifi(f"{key} is named twice")
+            values[key] = value.strip()
+        ssid = values.get("ssid", "")
+        if not ssid or len(ssid.encode()) > 32:
+            raise BadWifi("ssid must be 1 to 32 bytes")
+        security = values.get("security", "WPA") or "WPA"
+        if security not in WIFI_SECURITY_TYPES:
+            raise BadWifi(f"security must be one of {list(WIFI_SECURITY_TYPES)}")
+        passphrase = values.get("passphrase", "")
+        if security != "NONE" and not passphrase:
+            raise BadWifi(f"security {security} needs a passphrase")
+        return cls(ssid=ssid, security=security, passphrase=passphrase)
+
+
 @dataclass
 class Policies:
     """The directory, read on demand.
@@ -497,6 +594,13 @@ class Policies:
                     # dangerous typo look like a live source and serve an
                     # empty configuration to devices.
                     and entry.name.split(".", 1)[-1] not in (WIPE_FILE, REBOOT_FILE)
+                    # A wifi file counts only as a device's own. A stray
+                    # `kith.wifi` is refused, so a directory holding only that
+                    # must not read as a live source either.
+                    and (
+                        entry.name.split(".", 1)[-1] != WIFI_FILE
+                        or _KEY_ID.match(entry.name.split(".", 1)[0])
+                    )
                 )
             )
         except OSError:
@@ -599,6 +703,42 @@ class Policies:
                 )
         return shadowed
 
+    def _wifi_text(self, key_id: str, role: str) -> str | None:
+        """This device's own wifi file, or None. Never any other scope.
+
+        A `kith.wifi` or `role-<name>.wifi` is REFUSED AND LOGGED (muster#195):
+        it holds a passphrase, and the operator who wrote it expects devices to
+        join a network, so ignoring it silently would be the "configured but
+        absent" failure. The log names the file and never its content.
+        A file that does not parse is not served either, and the log says why
+        without quoting a value; the rest of the answer is unaffected.
+        """
+        refused = [f"{KITH_SCOPE}.{WIFI_FILE}"]
+        if role:
+            refused.append(f"{ROLE_SCOPE_PREFIX}{role}.{WIFI_FILE}")
+        for name in refused:
+            if (self.root / name).is_file():
+                telemetry.event(
+                    "muster refuses a shared wifi file: it holds a passphrase "
+                    "and is served to one device only",
+                    key_id=key_id,
+                    refused_file=name,
+                )
+        mine = self.root / f"{key_id}.{WIFI_FILE}"
+        if not mine.is_file():
+            return None
+        text = _read(mine)
+        try:
+            WifiNetwork.parse(text)
+        except BadWifi as bad:
+            telemetry.event(
+                "muster will not serve a wifi file it cannot parse",
+                key_id=key_id,
+                reason=str(bad),
+            )
+            return None
+        return text
+
     def _text_for(self, name: str, key_id: str, role: str) -> str | None:
         """One managed file's served text for this device, or None when no scope
         holds it. Extracted from `for_device`'s loop so the per-file fallback and
@@ -612,6 +752,8 @@ class Policies:
             # things to the agent.
             scoped = self._install_apps_scopes(key_id, role)
             return _merge_install_apps(scoped) if scoped else None
+        if name == WIFI_FILE:
+            return self._wifi_text(key_id, role)
         mine = self.root / f"{key_id}.{name}"
         if mine.is_file():
             return _read(mine)
