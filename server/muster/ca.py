@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 from cryptography import x509
@@ -97,7 +98,7 @@ def validate_ca_chain(certificates: tuple[x509.Certificate, ...]) -> None:
             raise ValueError("certificate chain exceeds a CA path length constraint")
 
     try:
-        for child, parent in zip(certificates, certificates[1:]):
+        for child, parent in pairwise(certificates):
             child.verify_directly_issued_by(parent)
         certificates[-1].verify_directly_issued_by(certificates[-1])
     except (InvalidSignature, ValueError, TypeError) as exc:
