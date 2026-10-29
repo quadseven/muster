@@ -66,6 +66,7 @@ ALLOWED = frozenset(
         "developer.android.com",
         "developers.google.com",
         "files.pythonhosted.org",
+        "fsf.org",
         "fonts.googleapis.com",
         "fonts.gstatic.com",
         "ghcr.io",
@@ -88,6 +89,8 @@ ALLOWED = frozenset(
         "support.google.com",
         "tags.datadoghq.com",
         "www.apache.org",
+        # GNU AGPL license text requires these canonical destinations.
+        "www.gnu.org",
         # Google Analytics loader on the splash page (muster#64). A vendor
         # script host, not one of ours.
         "www.googletagmanager.com",
@@ -184,7 +187,9 @@ def test_a_live_looking_host_is_refused(host: str) -> None:
         "10.0.0.5",
         "muster.muster.svc.cluster.local",
         "files.pythonhosted.org",
+        "fsf.org",
         "github.com",
+        "www.gnu.org",
         # dotted code tokens that must never be findings
         "java.io.File",
         "com.google.android.thing",
@@ -223,7 +228,7 @@ def test_no_tracked_file_names_a_live_host() -> None:
     # fail on the very strings that prove it works. Found the honest way: the
     # first push went red in CI, because a local run had scanned the file while
     # it was still untracked and `git ls-files` could not see it.
-    me = str(Path(__file__).resolve().relative_to(root))
+    me = Path(__file__).resolve().relative_to(root).as_posix()
 
     offenders: list[str] = []
     read = 0
