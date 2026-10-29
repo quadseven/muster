@@ -5080,3 +5080,95 @@ def test_an_implausible_interval_is_ignored_not_refused(state, tmp_path, nonsens
 
     assert _fetch_config_reporting(client, key, identity, nonsense).status_code == 200
     assert state.kith.member(key_id_).device.check_in_interval_s is None
+
+
+# ---- a per-device wifi policy (muster#195) --------------------------------
+
+_WIFI_PASSPHRASE = "pw-7f3a91c4e08b46d2a5"  # noqa: S105 - a fixture, not a credential
+
+
+def _wifi_file(ssid="relay-net", security="WPA", passphrase=_WIFI_PASSPHRASE):
+    return f"ssid {ssid}\nsecurity {security}\npassphrase {passphrase}\n"
+
+
+def test_a_wifi_file_is_served_to_that_device_only_and_kith_wifi_is_refused(
+    state, tmp_path
+):
+    """The wifi file holds a passphrase, so it reaches the device it names and
+    nobody else, and a shared `kith.wifi` is refused and logged, never served."""
+    import io
+    import json as _json
+
+    from muster import telemetry as _telemetry
+
+    state.policies = _policy_root(tmp_path)
+    client = _proof_client(state)
+    key_a, identity_a, key_id_a = _enrolled(state, name="relay-a")
+    key_b, identity_b, _key_id_b = _enrolled(state, name="relay-b")
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    (tmp_path / f"{key_id_a}.wifi").write_text(_wifi_file())
+    (tmp_path / "kith.wifi").write_text(_wifi_file(ssid="everyone"))
+
+    stream = io.StringIO()
+    _telemetry.configure_logging(stream)
+    mine = _fetch_config(client, key_a, identity_a).json()["files"]
+    theirs = _fetch_config(client, key_b, identity_b).json()["files"]
+
+    assert mine["wifi"] == _wifi_file(), "the named device gets its own file"
+    assert "wifi" not in theirs, "another device never gets it"
+    assert "everyone" not in repr(mine) + repr(theirs), "kith.wifi is never served"
+
+    refusals = [
+        _json.loads(line) for line in stream.getvalue().splitlines()
+        if "refuses a shared wifi file" in _json.loads(line)["message"]
+    ]
+    assert refusals, "a refused kith.wifi must be logged"
+    assert {r["refused_file"] for r in refusals} == {"kith.wifi"}
+
+
+def test_the_wifi_file_agrees_with_what_the_qr_encodes(state, tmp_path):
+    """The QR and the policy describe one network. They are built from the same
+    fields, so a phone provisioned by QR and then reconciled by policy cannot
+    flap between two descriptions of it."""
+    from muster import policy, provisioning
+
+    network = policy.WifiNetwork.parse(_wifi_file(ssid="relay-net", security="WEP"))
+    client, _apk = _published(state, tmp_path)
+
+    described = client.post(
+        "/v1/provision/qr", json=network.qr_fields(), cookies=ADMIN
+    ).json()
+
+    assert described["wifi"]["ssid"] == network.ssid == "relay-net"
+    assert described["wifi"]["security"] == network.security == "WEP"
+    extras = provisioning.payload(
+        component="c", download_url="https://x", checksum="k", **network.qr_fields()
+    )
+    assert extras[provisioning.WIFI_SSID] == network.ssid
+    assert extras[provisioning.WIFI_SECURITY] == network.security
+
+
+def test_the_wifi_passphrase_never_reaches_a_log_or_a_metric(state, tmp_path):
+    """The device is served the file, and nothing else ever sees the passphrase:
+    not the log, not a metric, not the printed form of the parsed network."""
+    import io
+
+    from muster import policy, telemetry as _telemetry
+
+    state.policies = _policy_root(tmp_path)
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state)
+    (tmp_path / f"{key_id_}.wifi").write_text(_wifi_file())
+    (tmp_path / "kith.wifi").write_text(_wifi_file())  # refused: also logged
+    (tmp_path / f"{'b' * 64}.wifi").write_text("ssid x\nbogus " + _WIFI_PASSPHRASE)
+
+    stream = io.StringIO()
+    _telemetry.configure_logging(stream)
+    response = _fetch_config(client, key, identity)
+    assert _WIFI_PASSPHRASE in response.text, "the DEVICE still gets it"
+
+    assert _WIFI_PASSPHRASE not in stream.getvalue(), "the passphrase reached a log"
+    assert _WIFI_PASSPHRASE not in "\n".join(state.telemetry.sent), "and a metric"
+    network = policy.WifiNetwork.parse(_wifi_file())
+    for rendered in (str(network), repr(network), f"{network}"):
+        assert _WIFI_PASSPHRASE not in rendered

@@ -858,3 +858,90 @@ def test_a_line_muster_cannot_read_a_version_from_still_names_its_package(line):
 
 def test_lines_that_are_not_install_lines_set_no_expectation():
     assert policy.expected_versions("# nothing\n\nwallpaper w.png\n") == {}
+
+
+# ---- the per-device wifi file (muster#195) --------------------------------
+
+_WIFI = "ssid relay-net\nsecurity WPA\npassphrase pw-7f3a91c4e08b46d2a5\n"
+
+
+def test_a_wifi_file_is_device_scope_only(root):
+    """`kith.wifi` and `role-*.wifi` hold a passphrase for every device in a
+    scope, so neither is ever served; only `<key_id>.wifi` is, and only to it."""
+    _shared(root, "wifi").write_text(_WIFI.replace("relay-net", "everyone"))
+    _role(root, "relay", "wifi").write_text(_WIFI.replace("relay-net", "the-role"))
+    _own(root, A, "wifi").write_text(_WIFI)
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    policies = policy.Policies(root=root)
+
+    assert policies.for_device(A, role="relay").files["wifi"] == _WIFI
+    assert "wifi" not in policies.for_device(B, role="relay").files
+    assert "wifi" not in policies.for_device(B).files
+    assert "wifi" not in policy.ROLE_FILES
+    assert "wifi" not in policy.SHARED_FILES
+
+
+def test_a_directory_holding_only_a_shared_wifi_file_is_not_a_live_source(root):
+    _shared(root, "wifi").write_text(_WIFI)
+    policies = policy.Policies(root=root)
+
+    assert policies.files_held() == 0
+    with pytest.raises(policy.NoSource):
+        policies.for_device(A)
+
+
+def test_a_wifi_file_that_does_not_parse_is_not_served_but_the_rest_is(root):
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _own(root, A, "wifi").write_text("ssid relay-net\nsecurity WPA\n")  # no passphrase
+    served = policy.Policies(root=root).for_device(A)
+
+    assert "wifi" not in served.files
+    assert "restrictions" in served.files
+
+
+def test_a_wifi_file_that_is_not_utf8_is_not_served_but_the_rest_is(root):
+    """Unreadable wifi is unparsable, not Unreadable: no 503 for the whole config."""
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _own(root, A, "wifi").write_bytes(b"ssid relay-net\npassphrase \xff\xfe\n")
+    served = policy.Policies(root=root).for_device(A)
+
+    assert "wifi" not in served.files
+    assert "restrictions" in served.files
+
+
+def test_a_malformed_wifi_log_event_never_carries_the_passphrase(root, monkeypatch):
+    secret = "pw-SECRET-c0ffee-9d1"
+    events = []
+    monkeypatch.setattr(
+        policy.telemetry, "event", lambda msg, **f: events.append((msg, f))
+    )
+    # The passphrase sits on a line with a wrong key, so the parser rejects it.
+    _own(root, A, "wifi").write_text(f"ssid relay-net\nsecurity WPA\npasspharse {secret}\n")
+    policy.Policies(root=root).for_device(A)
+
+    assert events
+    for msg, fields in events:
+        blob = repr((msg, fields))
+        assert secret not in blob
+
+
+def test_an_omitted_wifi_security_defaults_to_wpa():
+    network = policy.WifiNetwork.parse("ssid relay-net\npassphrase pw-x\n")
+    assert network.security == "WPA"
+    assert network.qr_fields()["wifi_security"] == "WPA"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "security WPA\npassphrase x\n", "ssid a\nsecurity WPA3\npassphrase x\n",
+     "ssid a\nssid b\npassphrase x\n", "ssid a\nmystery 1\npassphrase x\n",
+     "ssid " + "a" * 33 + "\npassphrase x\n"],
+)
+def test_a_malformed_wifi_file_is_refused_by_the_parser(text):
+    with pytest.raises(policy.BadWifi):
+        policy.WifiNetwork.parse(text)
+
+
+def test_an_open_network_needs_no_passphrase():
+    network = policy.WifiNetwork.parse("ssid guest\nsecurity NONE\n")
+    assert (network.ssid, network.security, network.passphrase) == ("guest", "NONE", "")
