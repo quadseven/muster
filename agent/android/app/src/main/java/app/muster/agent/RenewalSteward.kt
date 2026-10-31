@@ -32,6 +32,7 @@ class RenewalSteward(private val context: Context) {
             client = RenewalClient(
                 HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000),
                 KeystoreIdentity(context),
+                trigger = RenewalTrigger.current(),
             ),
             store = store,
         ).advance(stance)

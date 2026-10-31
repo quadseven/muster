@@ -2482,6 +2482,9 @@ ADMINISTRATOR_ONLY = {
     # muster#58: a device that could reboot itself on request could be told
     # to by whatever compromised it, at a moment of the attacker's choosing.
     ("POST", "/v1/kith/{key_id}/reboot"),
+    # muster#22: a device that could arm its own short renewal could pick
+    # its own certificate lifetime, which is the CA's decision.
+    ("POST", "/v1/kith/{key_id}/short-renewal"),
 }
 
 # THE FOURTH AUDIENCE: public, unauthenticated, and cacheable - standard
@@ -4693,7 +4696,7 @@ def test_revocation_answers_are_cacheable_until_their_signed_next_update():
 
 
 
-def _renew(client, key, identity, csr_key=None, path="/v1/enroll/renew"):
+def _renew(client, key, identity, csr_key=None, path="/v1/enroll/renew", **extra):
     """The exchange a device makes to renew: challenge, sign, present a CSR.
 
     `csr_key` defaults to the device's own key, which is renewal. Passing a
@@ -4715,6 +4718,7 @@ def _renew(client, key, identity, csr_key=None, path="/v1/enroll/renew"):
         ).decode(),
         "certificate_pem": identity.certificate_pem.decode(),
         "csr_pem": csr.public_bytes(serialization.Encoding.PEM).decode(),
+        **extra,
     })
 
 
@@ -5172,3 +5176,257 @@ def test_the_wifi_passphrase_never_reaches_a_log_or_a_metric(state, tmp_path):
     network = policy.WifiNetwork.parse(_wifi_file())
     for rendered in (str(network), repr(network), f"{network}"):
         assert _WIFI_PASSPHRASE not in rendered
+
+
+# ---- the operator's one short renewal (muster#22) -------------------------
+#
+# Proving renewal on a handset means watching its scheduled check-in cross
+# renew_after, and at 90 days that is a month away. An administrator arms ONE
+# device; its next check-in is told it may renew now, that renewal comes back
+# short with the 14-day floor waived, and the renewal after it is standard.
+
+# The test CA signs as of this instant (the `state` fixture's authority clock).
+_CA_NOW = dt.datetime(2026, 8, 18, tzinfo=dt.UTC)
+
+
+def _at(state, monkeypatch, when):
+    monkeypatch.setattr(state.kith, "now", lambda: when)
+
+
+def _arm(client, key_id, **body):
+    return client.post(
+        f"/v1/kith/{key_id}/short-renewal", json=body, cookies=ADMIN
+    )
+
+
+def _as_identity(renewed):
+    """A renewal response as the device stores it."""
+    from muster.ca import Identity
+
+    certificate = x509.load_pem_x509_certificate(renewed["certificate_pem"].encode())
+    return Identity(
+        certificate_pem=renewed["certificate_pem"].encode(),
+        not_before=certificate.not_valid_before_utc,
+        not_after=certificate.not_valid_after_utc,
+        serial=certificate.serial_number,
+    )
+
+
+def test_an_armed_check_in_tells_the_device_it_may_renew_now(state, monkeypatch, tmp_path):
+    """The field the agent stores is renew_after, so that is the one that moves.
+
+    Unarmed, a check-in reports the presented certificate's own renew_after;
+    armed, it reports now; cancelled, it goes back."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    now = _CA_NOW + dt.timedelta(minutes=5)
+    _at(state, monkeypatch, now)
+    natural = _as_identity(
+        {"certificate_pem": identity.certificate_pem.decode()}
+    ).renew_after()
+
+    before = _fetch_config(client, key, identity).json()["renew_after"]
+    assert _arm(client, key_id_).status_code == 200
+    armed = _fetch_config(client, key, identity).json()["renew_after"]
+    assert _arm(client, key_id_, armed=False).status_code == 200
+    after = _fetch_config(client, key, identity).json()["renew_after"]
+
+    assert before == natural.isoformat()
+    assert armed == now.isoformat()
+    assert after == natural.isoformat()
+
+
+def test_an_armed_renewal_is_short_lived_with_the_floor_waived(state, monkeypatch):
+    from muster.ca import MIN_RENEWAL_RUNWAY
+
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    # Five minutes after issuance: a month before this certificate's own
+    # renew_after, so only the armed request can let this renewal through.
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    assert _renew(client, key, identity).status_code == 409
+
+    armed = _arm(client, key_id_, lifetime_hours=36)
+    response = _renew(client, key, identity, trigger="check-in")
+
+    assert armed.status_code == 200, armed.text
+    assert armed.json()["short_renewal"]["lifetime_hours"] == 36
+    assert response.status_code == 201, response.text
+    short = _as_identity(response.json())
+    assert short.not_after == _CA_NOW + dt.timedelta(hours=36)
+    # renew_after = t + (L - 24h) / 3 with the 12h backdate: 4h after issuance.
+    assert short.renew_after() == _CA_NOW + dt.timedelta(hours=4)
+    assert response.json()["renew_after"] == short.renew_after().isoformat()
+    assert short.not_after - short.renew_after() < MIN_RENEWAL_RUNWAY
+
+
+def test_the_short_renewal_is_used_once(state, monkeypatch, tmp_path):
+    """One-shot: the flag clears on use, so the same early request is refused
+    again and the next check-in reports the short certificate's own date."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_)
+
+    first = _renew(client, key, identity)
+    second = _renew(client, key, identity)
+    short = _as_identity(first.json())
+
+    assert first.status_code == 201
+    assert state.short_renewals.peek(key_id_) is None
+    assert second.status_code == 409, second.text
+    assert _fetch_config(client, key, short).json()["renew_after"] == (
+        short.renew_after().isoformat()
+    )
+
+
+def test_two_renewals_racing_on_one_armed_request_get_one_short_and_one_409(
+    state, monkeypatch
+):
+    """The gate and the one-shot are ONE decision. With a peek at the gate and
+    a take at issuance, the request that lost the take was issued a standard
+    certificate before renew_after. Here the loser is refused.
+
+    The race is forced, not hoped for: when the first request reaches the
+    one-shot store, a second request for the same device runs to completion
+    before the first is allowed to take."""
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_, lifetime_hours=36)
+    real_take = state.short_renewals.take
+    raced, started = [], []
+
+    def take_after_another_renewal(key_id):
+        if not started:
+            started.append(True)
+            raced.append(_renew(client, key, identity))
+        return real_take(key_id)
+
+    monkeypatch.setattr(state.short_renewals, "take", take_after_another_renewal)
+    responses = [_renew(client, key, identity), *raced]
+
+    statuses = sorted(r.status_code for r in responses)
+    assert statuses == [201, 409], [r.text for r in responses]
+    short = next(r for r in responses if r.status_code == 201)
+    refused = next(r for r in responses if r.status_code == 409)
+    assert _as_identity(short.json()).not_after == _CA_NOW + dt.timedelta(hours=36)
+    assert "too early" in refused.json()["detail"]
+
+
+def test_the_renewal_after_the_short_one_is_standard(state, monkeypatch):
+    """The device ends back on the standard lifetime with nobody acting."""
+    from muster.ca import DEFAULT_VALIDITY_DAYS
+
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_, lifetime_hours=36)
+    short = _as_identity(_renew(client, key, identity).json())
+
+    _at(state, monkeypatch, short.renew_after() - dt.timedelta(minutes=1))
+    too_early = _renew(client, key, short)
+    _at(state, monkeypatch, short.renew_after() + dt.timedelta(minutes=1))
+    response = _renew(client, key, short, trigger="check-in")
+
+    assert too_early.status_code == 409
+    assert response.status_code == 201, response.text
+    standard = _as_identity(response.json())
+    assert standard.not_after == _CA_NOW + dt.timedelta(days=DEFAULT_VALIDITY_DAYS)
+
+
+def test_arming_one_device_does_not_shorten_another(state, monkeypatch, tmp_path):
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    _key_a, _identity_a, key_id_a = _enrolled(state, name="a", record=True)
+    key_b, identity_b, _key_id_b = _enrolled(state, name="b", record=True)
+    _arm(client, key_id_a, lifetime_hours=6)
+    _past_renew_after(state, monkeypatch, identity_b)
+
+    other = _renew(client, key_b, identity_b)
+
+    assert other.status_code == 201, other.text
+    assert _as_identity(other.json()).not_after == _CA_NOW + dt.timedelta(days=90)
+    assert state.short_renewals.peek(key_id_a) is not None
+    natural_b = _as_identity(
+        {"certificate_pem": identity_b.certificate_pem.decode()}
+    ).renew_after()
+    assert _fetch_config(client, key_b, identity_b).json()["renew_after"] == (
+        natural_b.isoformat()
+    )
+
+
+def test_only_an_administrator_can_arm_a_short_renewal(state):
+    client = _proof_client(state)
+    _key, _identity, key_id_ = _enrolled(state, record=True)
+
+    response = client.post(
+        f"/v1/kith/{key_id_}/short-renewal", json={"lifetime_hours": 6}
+    )
+
+    assert response.status_code in (401, 403), response.text
+    assert state.short_renewals.peek(key_id_) is None
+
+
+def test_a_short_renewal_names_a_real_device_and_a_bounded_lifetime(state):
+    client = _proof_client(state)
+    _key, _identity, key_id_ = _enrolled(state, record=True)
+
+    assert _arm(client, "0" * 64).status_code == 404
+    assert _arm(client, key_id_, lifetime_hours=1).status_code == 422
+    assert _arm(client, key_id_, lifetime_hours=24 * 14).status_code == 422
+    assert state.short_renewals.peek(key_id_) is None
+
+
+def test_a_failed_short_issuance_leaves_the_request_armed(state, monkeypatch):
+    """Nothing was issued, so the device still holds the certificate it had and
+    the one-shot request is not spent on a failure."""
+    from muster.ca import Untrusted
+
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_)
+
+    def refuse(*_args, **_kwargs):
+        raise Untrusted("refused for the test")
+
+    monkeypatch.setattr(state.authority, "issue", refuse)
+    response = _renew(client, key, identity)
+
+    assert response.status_code == 422
+    assert state.short_renewals.peek(key_id_) is not None
+    assert state.kith.history(key_id_)[-1].serial == f"{identity.serial:X}"
+
+
+def test_a_renewal_logs_scheduled_check_in_evidence(state, monkeypatch, caplog):
+    """Record device, certificate serials, trigger, and short issuance status."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="muster")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_, lifetime_hours=36)
+
+    response = _renew(client, key, identity, trigger="check-in", direct_boot=True)
+    untrusted_word = _renew(
+        client, key, identity, trigger="anything a client likes"
+    )
+
+    renewed = [r for r in caplog.records if r.message == "device renewed"]
+    refused = [r for r in caplog.records if r.message == "renewal refused as too early"]
+    fields = renewed[-1].fields
+    assert fields["key_id"] == key_id_
+    assert fields["old_serial"] == f"{identity.serial:X}"
+    assert fields["new_serial"] == f"{_as_identity(response.json()).serial:X}"
+    assert fields["trigger"] == "check-in"
+    assert "direct_boot" not in fields
+    assert fields["short_lived_hours"] == 36
+    assert untrusted_word.status_code == 409
+    assert refused[-1].fields["trigger"] == "other"

@@ -232,6 +232,42 @@ class ConfigurationClientTest {
         assertEquals(mapOf("restrictions" to "DISALLOW_SAFE_BOOT\n"), fetched.files)
     }
 
+    // ---- renew_after on a check-in (muster#22) ----------------------------
+
+    private fun fetchedWith(renewAfter: Any?): ConfigurationClient.Fetched.Configuration {
+        val body = JSONObject(served(mapOf("restrictions" to "DISALLOW_SAFE_BOOT\n")))
+        if (renewAfter != null) body.put("renew_after", renewAfter)
+        val fetched = ConfigurationClient(
+            FakeTransport(config = Reply(200, body.toString())),
+            FakeIdentity(),
+        ).fetch()
+        assertTrue(fetched is ConfigurationClient.Fetched.Configuration)
+        return fetched as ConfigurationClient.Fetched.Configuration
+    }
+
+    @Test
+    fun aCheckInCarriesWhenMusterSaysThisDeviceMayRenew() {
+        val fetched = fetchedWith("2026-10-25T14:00:00+00:00")
+
+        assertEquals("2026-10-25T14:00:00+00:00", fetched.renewAfter)
+    }
+
+    @Test
+    fun aServerThatDoesNotSayWhenToRenewStillConfiguresTheDevice() {
+        val fetched = fetchedWith(null)
+
+        assertEquals(null, fetched.renewAfter)
+        assertEquals(mapOf("restrictions" to "DISALLOW_SAFE_BOOT\n"), fetched.files)
+    }
+
+    @Test
+    fun anUnreadableRenewAfterIsDroppedAndNeverCostsTheConfiguration() {
+        val fetched = fetchedWith("next tuesday")
+
+        assertEquals(null, fetched.renewAfter)
+        assertEquals(mapOf("restrictions" to "DISALLOW_SAFE_BOOT\n"), fetched.files)
+    }
+
     @Test
     fun anEmptyFilesObjectIsAConfigurationAndNotAFailure() {
         // A muster with no policy directory answers this, and it means
