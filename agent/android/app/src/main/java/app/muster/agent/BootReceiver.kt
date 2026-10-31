@@ -72,7 +72,7 @@ class BootReceiver : BroadcastReceiver() {
         // down here too, and one forgotten path leaks a thread per boot.
         Thread({
             try {
-                run(context, action)
+                RenewalTrigger.during(RenewalTrigger.BOOT) { run(context, action) }
             } finally {
                 // ALWAYS, and in this order. An unfinished broadcast holds a
                 // wake lock and counts against the system's budget for this

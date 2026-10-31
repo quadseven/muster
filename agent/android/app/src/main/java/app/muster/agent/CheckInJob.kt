@@ -31,17 +31,26 @@ class CheckInJob : JobService() {
     private val work = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     override fun onStartJob(params: JobParameters?): Boolean {
+        // THE CATCH-UP RUN IS THIS SERVICE TOO, under its own job id. Both are
+        // scheduled and neither is a tap; muster logs which (muster#22).
+        val trigger = if (params?.jobId == CheckInSchedulePolicy.CATCH_UP_JOB_ID) {
+            RenewalTrigger.CATCH_UP
+        } else {
+            RenewalTrigger.CHECK_IN
+        }
         work.execute {
-            val steps = BootPlan.STEPS.map { (name, run) ->
-                SyncReport.Step(
-                    name,
-                    try {
-                        run(this)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "check-in: $name failed", e)
-                        SyncReport.Threw(name, e.message)
-                    },
-                )
+            val steps = RenewalTrigger.during(trigger) {
+                BootPlan.STEPS.map { (name, run) ->
+                    SyncReport.Step(
+                        name,
+                        try {
+                            run(this)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "check-in: $name failed", e)
+                            SyncReport.Threw(name, e.message)
+                        },
+                    )
+                }
             }
             val report = SyncReport.of(steps)
             Log.i(TAG, "check-in diagnostics upload: ${DiagnosticsSteward(this).send(report)}")

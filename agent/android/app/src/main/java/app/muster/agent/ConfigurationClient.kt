@@ -1,6 +1,8 @@
 package app.muster.agent
 
 import org.json.JSONObject
+import java.time.OffsetDateTime
+import java.time.format.DateTimeParseException
 
 /**
  * Fetching this device's configuration from muster, over the identity it holds.
@@ -64,7 +66,16 @@ class ConfigurationClient(
          * name ABSENT from it is a file this device is no longer configured
          * with, which is not the same as an empty one.
          */
-        data class Configuration(val revision: String, val files: Map<String, String>) : Fetched {
+        data class Configuration(
+            val revision: String,
+            val files: Map<String, String>,
+            /**
+             * When muster says this device may renew (muster#22), or null when
+             * it did not say or said something unreadable. Optional: a server
+             * that predates the field still configures this device.
+             */
+            val renewAfter: String? = null,
+        ) : Fetched {
             // `files` holds `app-config`, which holds write tokens.
             override fun toString(): String = "revision=$revision files=${files.keys.toList()}"
         }
@@ -180,9 +191,29 @@ class ConfigurationClient(
         val served = json.getJSONObject("files")
         val files = LinkedHashMap<String, String>()
         for (name in served.keys()) files[name] = served.getString(name)
-        Fetched.Configuration(revision = json.getString("revision"), files = files)
+        Fetched.Configuration(
+            revision = json.getString("revision"),
+            files = files,
+            renewAfter = renewAfter(json),
+        )
     } catch (e: Exception) {
         Fetched.Refused(200, "muster's answer could not be read: ${detail(e)}")
+    }
+
+    /**
+     * The optional renew_after, or null. NEVER A REASON TO REFUSE THE ANSWER:
+     * the files are the instruction that matters, and a bad timestamp beside
+     * them must not cost this device its configuration.
+     */
+    private fun renewAfter(json: JSONObject): String? {
+        if (!json.has("renew_after") || json.isNull("renew_after")) return null
+        val raw = json.optString("renew_after")
+        return try {
+            OffsetDateTime.parse(raw)
+            raw
+        } catch (e: DateTimeParseException) {
+            null
+        }
     }
 
     /**
