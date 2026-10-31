@@ -302,6 +302,9 @@ class Report:
     received_at: dt.datetime
     steps: tuple[StepReport, ...]
     packages: tuple[PackageReport, ...]
+    security_patch: str | None = None
+    build_id: str | None = None
+    pending_update: Any | None = None
 
 
 class Records(Protocol):
@@ -337,6 +340,8 @@ class Records(Protocol):
     def record_report(self, key_id: str, report: Report) -> None: ...
 
     def report(self, key_id: str) -> Report | None: ...
+
+    def reports(self) -> dict[str, Report]: ...
 
     def roll(self) -> list[Member]: ...
 
@@ -570,6 +575,9 @@ class MemoryRecords:
 
     def report(self, key_id: str) -> Report | None:
         return self._reports.get(key_id)
+
+    def reports(self) -> dict[str, Report]:
+        return dict(self._reports)
 
     def roll(self) -> list[Member]:
         members = [self._member(device) for device in self._devices.values()]
@@ -1049,19 +1057,25 @@ class PostgresRecords:
             # nothing to attach to. The conflict clause keeps the NEWER report,
             # so a replay that drains late cannot put an old one back.
             cursor.execute(
-                "INSERT INTO kith_report (key_id, received_at, steps, packages)"
-                " SELECT %s, %s, %s::jsonb, %s::jsonb"
+                "INSERT INTO kith_report (key_id, received_at, steps, packages, security_patch, build_id, pending_update)"
+                " SELECT %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb"
                 "  WHERE EXISTS (SELECT 1 FROM kith_device WHERE key_id = %s)"
                 " ON CONFLICT (key_id) DO UPDATE SET"
                 "   received_at = EXCLUDED.received_at,"
                 "   steps = EXCLUDED.steps,"
-                "   packages = EXCLUDED.packages"
+                "   packages = EXCLUDED.packages,"
+                "   security_patch = EXCLUDED.security_patch,"
+                "   build_id = EXCLUDED.build_id,"
+                "   pending_update = EXCLUDED.pending_update"
                 " WHERE kith_report.received_at < EXCLUDED.received_at",
                 (
                     key_id,
                     report.received_at,
                     json.dumps([asdict(step) for step in report.steps]),
                     json.dumps([asdict(package) for package in report.packages]),
+                    report.security_patch,
+                    report.build_id,
+                    json.dumps(report.pending_update) if report.pending_update is not None else None,
                     key_id,
                 ),
             )
@@ -1071,13 +1085,23 @@ class PostgresRecords:
     def report(self, key_id: str) -> Report | None:
         def work(cursor):
             cursor.execute(
-                "SELECT received_at, steps, packages FROM kith_report WHERE key_id = %s",
+                "SELECT received_at, steps, packages, security_patch, build_id, pending_update FROM kith_report WHERE key_id = %s",
                 (key_id,),
             )
             return cursor.fetchone()
 
         row = self._run(work)
         return _report_from_row(row) if row is not None else None
+
+    def reports(self) -> dict[str, Report]:
+        def work(cursor):
+            cursor.execute(
+                "SELECT key_id, received_at, steps, packages, security_patch, build_id, pending_update FROM kith_report"
+            )
+            return cursor.fetchall()
+
+        rows = self._run(work)
+        return {row[0]: _report_from_row(row[1:]) for row in rows}
 
     # ---- reads -----------------------------------------------------------
 
@@ -1256,6 +1280,9 @@ def _report_from_row(row) -> Report:
             PackageReport(package=package["package"], version_code=package["version_code"])
             for package in row[2]
         ),
+        security_patch=row[3] if len(row) > 3 else None,
+        build_id=row[4] if len(row) > 4 else None,
+        pending_update=row[5] if len(row) > 5 else None,
     )
 
 
@@ -1546,6 +1573,9 @@ class Kith:
         key_id: str,
         steps: tuple[StepReport, ...],
         packages: tuple[PackageReport, ...],
+        security_patch: str | None = None,
+        build_id: str | None = None,
+        pending_update: Any | None = None,
     ) -> None:
         """Keep what a device says it did at its last check-in (muster#146).
 
@@ -1556,7 +1586,14 @@ class Kith:
         report costs nothing - the device sends a fresher one next check-in -
         so this raises `Unreachable` and the route answers 503.
         """
-        report = Report(received_at=self._clock(), steps=steps, packages=packages)
+        report = Report(
+            received_at=self._clock(),
+            steps=steps,
+            packages=packages,
+            security_patch=security_patch,
+            build_id=build_id,
+            pending_update=pending_update,
+        )
         self._write_now(lambda records: records.record_report(key_id, report))
 
     def _defer(self, entry, kind: str) -> None:
@@ -1691,6 +1728,10 @@ class Kith:
     def report(self, key_id: str) -> Report | None:
         """The device's latest report, or None if it has never sent one."""
         return self._read(lambda records: records.report(key_id))
+
+    def reports(self) -> dict[str, Report]:
+        """Latest reports keyed by device key_id, for the roll."""
+        return self._read(lambda records: records.reports())
 
     def _write_now(self, do):
         """A write that must NOT be deferred, with a caller waiting on it.

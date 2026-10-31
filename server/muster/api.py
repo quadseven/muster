@@ -92,7 +92,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Annotated, Callable
+from typing import Annotated, Any, Callable
 from email.utils import format_datetime
 
 from cryptography.hazmat.primitives import serialization
@@ -398,6 +398,9 @@ def _report_view(report: kith_store.Report | None) -> dict | None:
             {"package": p.package, "version_code": p.version_code}
             for p in report.packages
         ],
+        "security_patch": report.security_patch,
+        "build_id": report.build_id,
+        "pending_update": report.pending_update,
     }
 
 
@@ -1759,6 +1762,10 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         packages: list[PackageIn] = Body(
             ..., embed=True, max_length=REPORT_MAX_PACKAGES
         ),
+        security_patch: str | None = Body(None, embed=True),
+        build_id: str | None = Body(None, embed=True),
+        pending_update: Any | None = Body(None, embed=True),
+        pending_system_update: Any | None = Body(None, embed=True),
     ):
         """What a device did at its last check-in, kept so the console can say (muster#146).
 
@@ -1784,6 +1791,9 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         kept = tuple(_kept_step(step) for step in steps)
         if _report_bytes(kept) > REPORT_MAX_BYTES:
             raise HTTPException(status_code=413, detail="report is too large")
+        update = pending_update if pending_update is not None else pending_system_update
+        clean_patch = security_patch.strip()[:64] if isinstance(security_patch, str) else None
+        clean_build = build_id.strip()[:64] if isinstance(build_id, str) else None
         try:
             state.kith.reported(
                 proven,
@@ -1792,6 +1802,9 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                     kith_store.PackageReport(package=p.package, version_code=p.version_code)
                     for p in packages
                 ),
+                security_patch=clean_patch,
+                build_id=clean_build,
+                pending_update=update,
             )
         except kith_store.Unreachable as unreachable:
             # 503 and the device keeps going: it sends a fresher report at its
@@ -2297,11 +2310,12 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
     def roll():
         try:
             members = state.kith.roll()
+            reports = state.kith.reports()
         except kith_store.Unreachable as exc:
             raise _unreachable(exc) from exc
         return {
             "store": state.kith.status(),
-            "devices": [_member(m) for m in members],
+            "devices": [_member(m, reports.get(m.device.key_id)) for m in members],
             # BESIDE THE ROLL, the devices muster signed for and the store does
             # not hold (muster#166). After an outage that dropped writes, the
             # roll answers again and these are the phones missing from it.
@@ -2522,7 +2536,7 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         except kith_store.Unreachable as exc:
             raise _unreachable(exc) from exc
         return {
-            "device": _member(member),
+            "device": _member(member, report),
             # WHAT IT LAST SAID IT DID (muster#146), or null if it never said.
             # Null and not an empty report: an empty one would read as every
             # step fine and nothing installed.
@@ -2591,7 +2605,7 @@ def _unrecorded(state: State) -> list[dict]:
     ]
 
 
-def _member(member: kith_store.Member) -> dict:
+def _member(member: kith_store.Member, report: kith_store.Report | None = None) -> dict:
     """One device on the roll, as JSON.
 
     `certificates` is a COUNT and not a list on this shape deliberately: the
@@ -2642,6 +2656,9 @@ def _member(member: kith_store.Member) -> dict:
         "certificates": member.certificates,
         "serial": member.current_serial,
         "not_after": member.not_after.isoformat() if member.not_after else None,
+        "security_patch": report.security_patch if report is not None else None,
+        "build_id": report.build_id if report is not None else None,
+        "pending_update": report.pending_update if report is not None else None,
     }
 
 

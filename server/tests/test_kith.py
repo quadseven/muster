@@ -86,6 +86,10 @@ class Breakable(MemoryRecords):
         self._check()
         return super().report(key_id_)
 
+    def reports(self):
+        self._check()
+        return super().reports()
+
     def roll(self):
         self._check()
         return super().roll()
@@ -337,6 +341,8 @@ def test_a_read_during_an_outage_refuses_rather_than_saying_the_kith_is_empty(
         kith.member(key_id(b"device-one"))
     with pytest.raises(Unreachable):
         kith.awaiting_collection("req-1")
+    with pytest.raises(Unreachable):
+        kith.reports()
 
 
 def test_a_failed_store_is_left_alone_for_the_cooldown(kith, records, clock):
@@ -1482,6 +1488,25 @@ def test_a_device_report_is_kept_and_read_back(kith):
     assert report.received_at == START
     assert report.steps == steps
     assert report.packages == packages
+
+
+def test_a_report_carries_security_patch_build_id_and_pending_update(kith):
+    """The report includes system update and patch level attributes (muster#191)."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    steps, packages = a_report()
+    kith.reported(
+        a_device().key_id,
+        steps,
+        packages,
+        security_patch="2026-10-05",
+        build_id="TQ3A.230901.001",
+        pending_update=True,
+    )
+
+    report = kith.report(a_device().key_id)
+    assert report.security_patch == "2026-10-05"
+    assert report.build_id == "TQ3A.230901.001"
+    assert report.pending_update is True
 
 
 def test_the_newest_report_replaces_the_one_before(kith, clock):

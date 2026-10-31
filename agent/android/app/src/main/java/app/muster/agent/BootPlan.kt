@@ -82,6 +82,9 @@ object BootPlan {
         // separate precedence guard is needed.
         "reboot" to { context: Context -> RebootSteward(context).reconcile() },
         "restrictions" to { context: Context -> RestrictionSteward(context).reconcile() },
+        // Set automatic OS update policy so the device does not wait for manual
+        // taps in Settings (muster#191).
+        "system-update" to { context: Context -> SystemUpdateSteward(context).reconcile() },
         // RIGHT AFTER RESTRICTIONS, because it uses the same platform mechanism
         // - DevicePolicyManager and UserManager restrictions - and a device
         // that cannot originate calls should not be installing and configuring
