@@ -134,140 +134,132 @@ a scanner doesn't have.
 
 # AGENTS.md
 
-For anyone changing this code, human or model. It is deliberately short: the
-reasoning lives elsewhere and this file's job is to stop you walking into the
-things that have already bitten someone.
+For anyone changing this code, human or model. muster enrolls one household's phones, routers, laptops and IoT devices, and gives each a short-lived client certificate as its identity. The server is Python and FastAPI; the device agent is Android first.
 
-Read in this order. `CONTEXT.md` first, always - five nouns mean exactly one
-thing each here, and a change that uses them loosely reads as correct and is
-not. Then `ARCHITECTURE.md` for the tour, and `DECISIONS.md` when you want to
-know why something has the shape it has. Every entry there names the failure
-that caused it.
+This file is short on purpose: the reasoning lives elsewhere, and its job is to stop a change walking into what has already bitten someone.
 
-**Never write a bare `@grug` anywhere on GitHub** - issues, PRs, comments,
-commit messages. That handle belongs to a real GitHub user unrelated to this
-project; each mention notifies them and subscribes them to the thread, and
-neither can be undone. It happened twice here (#62, #69). The review bot is
-`grug-tribe[bot]` and takes slash commands: `/grug improve` re-runs the code
-review, `/grug recheck` re-runs only the plan check. In prose write `grug` in
-backticks. Check any text for `@grug` before posting it.
+Read in this order. `CONTEXT.md` first, always: five nouns mean exactly one thing each here, and a change that uses them loosely reads as correct and is not. Then `ARCHITECTURE.md` for the tour, and `DECISIONS.md` for why something has its shape. Every entry there names the failure that caused it. `docs/state-of-play.md` holds dated live state.
 
-## Six things that will bite you
+## Layout
+
+    server/muster/    the control plane; enroll.py holds the trust decision
+    server/tests/     pytest suite
+    server/tools/     operator scripts, such as bootstrap_ca.py
+    agent/android/    the Android agent (Kotlin, Gradle)
+    agent/tools/      jvm-tests.sh, Kotlin unit tests with no Android SDK
+    site/             static splash page, no build step
+    docs/             constraints and runbooks
+
+## Commands
+
+```bash
+# The one lane check in .loom/validation.conf, and the required `server tests` job.
+# 800+ tests, under a minute, no network.
+cd server && uv run --group dev --python 3.12 python -m pytest -q
+
+# Serve locally. It refuses to start until the settings in the README are set.
+cd server && uv run --python 3.12 uvicorn --factory muster.api:app_from_env --port 8000
+
+# Agent unit tests in CI. Needs an Android SDK, which CI has on its self-hosted Mac.
+cd agent/android && ./gradlew --no-daemon testDebugUnitTest
+
+# Agent tests with no SDK: sources with no `android.*` import, using the Gradle cache.
+# Needs a JDK for this CPU. `--selftest` proves the harness can fail.
+agent/tools/jvm-tests.sh
+```
+
+CI has no lint, format or type gate. Lint is the author's job all the same, and the repo holds no ruff config. Write code so a rule does not fire rather than add a `# noqa`.
+
+## Checks and shipping
+
+Required on `main`: a PR, `server tests` and `Grug - Chief`. Other checks run without being required: the leak scan, `server image (build + publish)` on `server/**`, `agent - android` on `agent/android/**`, workflow hygiene on `.github/**`, `Grug - Elder` and CodeQL. This repo calls no size ratchet, CI config freshness or close completeness guard.
+
+`server/tests/test_readme_standard.py` pins the README's structure, and `server/tests/test_no_live_hostnames.py` fails on a real hostname.
+
+**A merge does not deploy.** `build - server image` publishes `ghcr.io/quadseven/muster-server:sha-<12>` from `main`, and a finished `agent - android` run on `main` rebuilds it, because the image carries the agent APK. The deployment manifest is pinned by digest and lives outside this repo. Take the digest from the run summary of `build - server image`, and repin before applying: `docs/what-is-deployed.md` has the order. `site/` is Cloudflare Pages with no workflow here. Change icons only through `site/icons/src/render.py`.
+
+## Six things that will bite
 
 **1. muster does not use mTLS. Do not "fix" that.**
 
-The name says "short-lived certificates" and the device holds one, so mTLS
-looks like the obvious mechanism and is the wrong one. Cloudflare only accepts
-a custom CA for client certificates on Enterprise, and a Tunnel opens a fresh
-origin connection - so a certificate presented at the edge never reaches the
-pod. `server/muster/proof.py` documents this at the top.
+The name says "short-lived certificates" and the device holds one, so mTLS looks like the obvious mechanism and is the wrong one. Cloudflare only accepts a custom CA for client certificates on Enterprise, and a Tunnel opens a fresh origin connection, so a certificate presented at the edge never reaches the pod. `server/muster/proof.py` documents this at the top.
 
-Instead the device signs a server-issued nonce and presents the signature with
-its certificate, and the application verifies it end to end. Nothing in the
-path between the client and the app can forge that, which is the property mTLS
-was supposed to provide and could not here.
+Instead the device signs a server-issued nonce and presents the signature with its certificate, and the application verifies it end to end. Nothing between the client and the app can forge that, which is the property mTLS was supposed to provide and could not here.
 
 **2. There is one place a device is authenticated, and it stays one place.**
 
-`_proven_device` in `server/muster/api.py`. Its docstring says why: a second
-scheme invented for the second route would be a second chance to get it wrong,
-and the one that got it wrong would be the one nobody tested against a handset.
-If you are adding a route a device will reach, call it. Do not write a variant.
+`_proven_device` in `server/muster/api.py`. Its docstring says why: a second scheme invented for the second route would be a second chance to get it wrong, and the one that got it wrong would be the one nobody tested against a handset. A new route a device will reach calls it. Do not write a variant.
 
-It returns `key_id`, not a certificate serial. A serial changes every ninety
-days; the key does not, so identity survives renewal.
+It returns `key_id`, not a certificate serial. A serial changes every ninety days; the key does not, so identity survives renewal.
 
 **3. Reads raise. They never lie.**
 
-`server/muster/kith.py` files its reads under exactly that heading, and `_read`
-raises `Unreachable` when the store cannot be read. It does not return `None`,
-and it does not return an empty answer.
+`server/muster/kith.py` files its reads under exactly that heading, and `_read` raises `Unreachable` when the store cannot be read. It does not return `None` or an empty answer.
 
-This matters because an empty answer is indistinguishable from a real one. The
-device agent removes a file that a *successful* fetch did not mention, so
-"here is nothing" is an authoritative instruction to withdraw. A route that
-degrades a store outage into a smaller answer therefore strips managed files
-from every device in the estate. `/v1/device/config` returns 503 for exactly
-this reason - it once carried a comment claiming `member` answered `None` on
-an outage, which was false, and the fallback it justified would have been
-wrong even if the mechanism had existed.
+An empty answer is indistinguishable from a real one. The device agent removes a file that a *successful* fetch did not mention, so "here is nothing" is an authoritative instruction to withdraw. A route that degrades a store outage into a smaller answer strips managed files from every device in the estate. `/v1/device/config` returns 503 for exactly this reason.
 
-If you catch `Unreachable`, refuse. Do not substitute.
+Code that catches `Unreachable` refuses. It does not substitute.
 
 **4. `app-config` is never served under the shared scope.**
 
-`server/muster/policy.py` excludes it deliberately: that scope carries write
-tokens, and a credential under a shared scope is a credential handed to
-everyone. Per-device and per-role scopes exist for this. A role means "these
-devices are interchangeable" - so anything pairwise (a key that identifies one
-endpoint to one peer) belongs at device scope, not role scope.
+`server/muster/policy.py` excludes it deliberately: that scope carries write tokens, and a credential under a shared scope is a credential handed to everyone. Per-device and per-role scopes exist for this. A role means "these devices are interchangeable", so anything pairwise (a key that identifies one endpoint to one peer) belongs at device scope, not role scope.
 
-**5. "Lapse is the revocation mechanism" is no longer true, and half the repo
-still says it is.**
+**5. "Lapse is the revocation mechanism" is no longer true, and older text still says it is.**
 
-It WAS true, and for a good reason: renewal needed a human, so declining to
-renew was declining to trust, and the two were one act. `CONTEXT.md` defined the
-verb that way, `DECISIONS.md` argued it, and `console.html` designed a page
-around it.
+It was true while renewal needed a human: declining to renew was declining to trust. Automatic renewal (#10) broke that. A device that renews itself never lapses, so a design with only lapse in it is a fleet nothing can cut off. That is why `revoked_at` and `POST /v1/kith/{key_id}/revoke` exist (#11), and why the check lives in `_proven_device`: `POST /v1/enroll/renew` inherits it, so a revoked device cannot renew its way back. Do not move the check into the routes.
 
-Automatic renewal (muster#10) breaks that. A device that renews itself never
-lapses, so a design with only lapse in it is a fleet nothing can cut off. That
-is why `revoked_at` and `POST /v1/kith/{key_id}/revoke` exist (muster#11), and
-why the check lives in `_proven_device` rather than on whichever route somebody
-remembered - so `POST /v1/enroll/renew` inherits it and a revoked device cannot
-renew its way back. That ordering is the point; do not move the check into the
-routes.
+Revocation is a thing an administrator does; lapse is what happens to a device nobody renews.
 
-If you are reading an older comment that says lapse is how revocation works,
-it is describing the design before this. Revocation is now a thing an
-administrator does; lapse is still what happens to a device nobody renews.
-
-Two properties worth keeping when you touch it: it FAILS CLOSED (an unreadable
-kith is a 503, never an allow - a revocation you can defeat by taking the
-database down is not one), and `record_issuance` deliberately leaves
-`revoked_at` out of its `DO UPDATE SET`, so a renewal cannot readmit a revoked
-device. Both have tests that die if you change them.
+Two properties to keep. It FAILS CLOSED: an unreadable kith is a 503, never an allow, because a revocation defeated by taking the database down is not one. And `record_issuance` leaves `revoked_at` out of its `DO UPDATE SET`, so a renewal cannot readmit a revoked device. Both have tests that die on a change.
 
 **6. The device channel is not Android-only.**
 
-The agent implementation is Android. The wire protocol is not: enrollment,
-proof and configuration are ordinary HTTPS with a signature, reachable by
-anything that can sign a nonce. `openssl` on an OpenWrt router is enough. If
-you find yourself adding a second channel for a non-Android device, you are
-solving a problem that does not exist.
+The agent implementation is Android. The wire protocol is not: enrollment, proof and configuration are ordinary HTTPS with a signature, reachable by anything that can sign a nonce. `openssl` on an OpenWrt router is enough. A second channel for a non-Android device solves a problem that does not exist.
 
 ## Working on it
 
-```bash
-cd server && uv run pytest          # 500+ tests, seconds, no network needed
-```
-
-Tests are the contract, not decoration. A change that needs its tests rewritten
-has changed behavior - say so in the PR rather than adjusting the assertion.
-Where you add a guard, prove it fails without the fix; a test that passes
-against the unfixed code is not evidence.
-
-There is no ruff gate in CI. That means lint is your responsibility, not that
-it does not matter - and note that a `# noqa` for a rule outside this project's
-own selection reads as an unused directive locally while a stricter reviewer
-still wants it. Prefer writing the code so the rule does not fire.
+Tests are the contract, not decoration. A change that needs its tests rewritten has changed behavior: say so in the PR rather than adjust the assertion. A new guard must be proven to fail without the fix; a test that passes against the unfixed code is not evidence.
 
 ## This repository is public
 
-`server/tests/test_no_live_hostnames.py` exists because a scrub removed the
-operator's domain from 42 places and nothing stopped it coming back. Do not add
-real hostnames, addresses, or personal identifiers - not in code, not in
-comments, not in test fixtures. Use documentation ranges and reserved names.
+`server/tests/test_no_live_hostnames.py` exists because a scrub removed the operator's domain from 42 places and nothing stopped it coming back. Use documentation ranges and reserved names.
 
-One caveat that has caused a real outage in the sibling project: a reserved
-placeholder that reaches a running system fails silently. `.invalid` never
-resolves and `192.0.2.0/24` is not routable. If a value is dialed, resolved or
-compared at runtime, parameterize it - do not substitute a plausible-looking
-fake.
+A reserved placeholder that reaches a running system fails silently, which caused a real outage in the sibling project. `.invalid` never resolves and `192.0.2.0/24` is not routable. A value that is dialed, resolved or compared at runtime gets a parameter, not a plausible fake.
 
 ## Related
 
-[zippie](https://github.com/quadseven/zippie) is why muster exists: a device
-should fetch its own identity over its own credential rather than have a deploy
-pipeline splice a static secret into its config. Several decisions here started
-as incidents there.
+[zippie](https://github.com/quadseven/zippie) is why muster exists: a device should fetch its own identity over its own credential rather than have a deploy pipeline splice a static secret into its config. Several decisions here started as incidents there.
+
+## How work moves here
+
+Several AI brains work this repo beside the operator: Claude Code, Muse, Dot and the Loom factory. Loom has a station that dispatches, a brain that briefs and merges, and lanes that build. No brain outranks another. Each acts under its own GitHub App, never a person's account, and signs posts `-- <name>`.
+
+**Claims.** Put `claim:<name>` on a ticket before starting, and create the label if this repo lacks it. Check first and skip a ticket already held. One claim per ticket: the station keeps the earliest and removes the rest. A claim expires after 2 hours with no real activity, unless a comment holds it with `waiting: <what> until <time>`, or an open PR the claimer wrote and referenced holds it for up to 7 days. `claim:quadseven` is a person: leave those tickets alone. On stopping, push the work and say what is done, what is next, and the branch and head. Take over only an expired or plainly dead claim, after reading the holder's comments and open PRs.
+
+**Labels.** Loom sets one state label per ticket:
+
+`loom:triage` (not ready) -> `loom:queued` (no lane) -> `loom:briefed` + `lane:<name>` -> `loom:running` -> `loom:pr` -> `loom:merged` -> `loom:shipped` -> `loom:verified`, then closed.
+
+`loom:ticket` marks every ticket. `loom:failed` means the runner gave up; the reason is on the ticket. `wait:*` names why a ticket is held. `needs:human` is an ask for a person. `loom:factory` marks a fault in the factory itself.
+
+**CI and required checks.** Required checks differ per repo, so read them live: `gh api repos/<owner>/<repo>/rules/branches/<default-branch>`. Every repo needs a PR and `Grug - Chief`; most add test jobs; some add `Grug - Elder`. Run each command in `.loom/validation.conf` before pushing, and read the failing workflow file before guessing at a red check.
+
+- Shared workflows come from `quadseven/infra-public`, pinned by full SHA.
+- Leak scan: reads the diff and the PR title and body, and a scan that cannot run is red. It has 9 rules: tailnet hosts, tailnet IPs, private-range IPs, server names, node names, user paths, MAC addresses, the stray mention, and cross-repo refs. A ref of the form `name#N` or `owner/name#N` to any other repo fails, public or not, unless `allowed-repo-refs` in `check.leak-scan.yml` names that repo. Bare `#N` means this repo. A line with `leak-guard-allow` is exempt and visible in review; use it only for a real false positive.
+- Trust gate: this repo calls none. Its self-hosted jobs skip pull requests from forks.
+- Other guards, where a repo calls them: workflow hygiene, size ratchet, CI config freshness, and close completeness, which reopens an issue closed with unticked boxes.
+- Agent Apps cannot push `.github/workflows` changes.
+
+**`grug`.** The bot is `grug-tribe[bot]`, driven by slash commands in a PR comment. Its handle takes no at-sign.
+
+- `Grug - Chief` reads the PR body. It wants `## Why` (5+ words), `## Acceptance criteria` (3+ bullets), `## Out of scope`, `Size: XS|S|M|L`, and `Refs <owner>/<repo>#N` or `Refs #N` to a ticket that is an epic or sits under one. Text in HTML comments does not count. Closing keywords are out: tickets close when their boxes are ticked.
+- A body with an agent marker (such as a session link) from an App author, or a Loom lane footer, gets a neutral Chief: `Hunt Plan skipped`. Neutral passes. A body with no marker gets the full check, so write the full shape every time.
+- `Grug - Elder` reviews the code by LLM. `/grug improve` re-runs it. `/grug recheck` re-runs Chief only. Five pushes in ten minutes pause Elder until `/grug resume`.
+- A degraded or partial review says `Degraded review (<reason>): not a verdict`. It is not a pass, whether it concludes failure or neutral. Run `/grug improve` once the backend recovers.
+- `Grug - Guard` scans for security problems and is advisory unless the repo turns on blocking. Haunt, once called Sentinel, comments when a PR closes over an unresolved critical finding. It posts no check; answer its comment and re-verify.
+
+**Merge gate.** Rulesets enforce less than this, and this binds: CI green, `Grug - Elder` success on the head (neutral is not enough), `Grug - Chief` success or neutral, not behind base, every bot thread answered, and a test that fails without the fix. `gh pr checks` does not show threads, so read `reviewThreads` by GraphQL and `pulls/<n>/reviews`. Anyone merges what they built. Loom is in shadow on this repo: it runs every gate and records each merge or close for the operator instead of taking it, until the operator graduates the repo. After graduation, Loom merges docs, test and app code tiers alone and holds deploy, security and cross-repo tiers for the operator. A change to how brains merge, close or rewrite needs a fleet chat line and a 5 minute wait. Never use `--admin`.
+
+**Human line.** People do: permanent deletion of records, creating, rotating or entering credentials, access grants, new spending, accepting terms. People decide: another brain's role and the fleet goal text. A second brain must agree, in writing, to clear a lane demotion, lift another brain's hold, or reopen a sound close. Everything else needs nobody. Ask with `needs:human` and one exact question. A relayed yes is not a yes. Never print a credential.
+
+**When stuck.** Labels and stages: `docs/BRAIN.md` in `quadseven/loom`. Reusable workflows: `docs/reusables.md` in `quadseven/infra-public`. Chief's rules and every `/grug` verb: the README in `quadseven/grug`, whose `make chief-check` tests a body before posting. Fleet log: issue 30 in `quadseven/loom`. File a factory fault there as `loom:factory`. Poll `gh` at most once per 5 minutes.
