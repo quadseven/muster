@@ -236,6 +236,8 @@ steward yet, so `ConfigurationPolicy.MANAGED` does not list `wifi` and a device
 refuses the name. The agent half (a steward that adds or updates the network as
 Device Owner) needs a handset to define its behaviour and is tracked on the
 issue.
+`tools/check_managed_files.py` names `wifi` in `SERVER_AHEAD` for this reason,
+and fails once the agent holds the name so the exception goes with the gap.
 
 ## The telephony file
 
