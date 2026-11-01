@@ -586,6 +586,7 @@ a third-party script on that page.
   server/muster/ca.py             turning a vouched request into an identity
   server/muster/proof.py          proving possession after enrollment
   server/muster/kith.py           what muster remembers, and why the store may fail
+  server/muster/standing.py       what may happen to a device, and what it is answered
   server/muster/policy.py         what one device is told to be, and from where
   server/muster/assets.py         bytes too big for a policy file
   server/muster/administrator.py  who the human is, and how they sign in

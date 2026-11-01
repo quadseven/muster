@@ -104,7 +104,7 @@ from starlette.routing import Host, Route, Router
 
 from muster.ca import BACKDATE, Authority, Identity, Untrusted
 from muster.proof import Proofs, Verdict
-from muster import administrator, console, policy, provisioning, revocation
+from muster import administrator, console, policy, provisioning, revocation, standing
 from muster import assets as asset_store
 from muster import kith as kith_store
 from muster.enroll import (
@@ -809,7 +809,7 @@ def _proven_device(
     # reaches the CRL, which is built from these rows.
     if not recorded:
         _record_presented(state, proven, certificate_pem.encode())
-    if member is not None and member.device.revoked_at is not None:
+    if member is not None and standing.served(member.device).refused:
         # COUNTED AND NAMED. A revoked device that keeps calling is either a
         # machine nobody switched off or a machine somebody took, and the two
         # look identical from here - so it is worth being able to see that it is
@@ -1506,7 +1506,8 @@ def _turn_wipe_pending_into_revoked(state: State, proven: str) -> None:
         detail="this device is not waiting to be wiped",
         headers={"Cache-Control": "no-store"},
     )
-    if member is None or member.device.wipe_pending_at is None:
+    device = member.device if member is not None else None
+    if not standing.permits(device, standing.Verb.ACKNOWLEDGE_WIPE):
         raise not_pending
     # THE TRANSITION IS THE AUTHORITY, not the read above. Between that read
     # and this call an administrator may have called the wipe off, so a device
@@ -1559,7 +1560,8 @@ def _turn_reboot_requested_into_acknowledged(state: State, proven: str) -> None:
         detail="this device was not asked to reboot",
         headers={"Cache-Control": "no-store"},
     )
-    if member is None or member.device.reboot_requested_at is None:
+    device = member.device if member is not None else None
+    if not standing.permits(device, standing.Verb.ACKNOWLEDGE_REBOOT):
         raise not_pending
     if not state.kith.acknowledged_reboot(proven):
         raise not_pending
@@ -1661,21 +1663,19 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         # authenticated and waiting to be erased. The wipe instruction must
         # arrive BEFORE the refusal, which is exactly the ordering this flag
         # carries into policy resolution.
-        wipe_pending = (
-            member is not None and member.device.wipe_pending_at is not None
-        )
+        #
         # REBOOT-REQUESTED IS SERVED THE SAME WAY, for the same reason: it must
         # reach the device before anything could refuse it, and nothing does -
         # `reboot_requested_at` never interacts with `revoked_at` (muster#58).
-        reboot_requested = (
-            member is not None and member.device.reboot_requested_at is not None
+        answer = (
+            standing.served(member.device) if member is not None else standing.Served()
         )
         try:
             configuration = state.policies.for_device(
                 proven,
                 role=role,
-                wipe_pending=wipe_pending,
-                reboot_requested=reboot_requested,
+                wipe_pending=answer.wipe,
+                reboot_requested=answer.reboot,
             )
         except (policy.Unreadable, policy.NoSource) as cannot_say:
             # 503 AND NOT AN EMPTY ANSWER, and the difference is every managed
@@ -2127,7 +2127,8 @@ def _refuse_reboot_on_a_revoked_device(
         member = state.kith.member(key_id)
     except kith_store.Unreachable as exc:
         raise unreachable(exc) from exc
-    if member is not None and member.device.revoked_at is not None:
+    device = member.device if member is not None else None
+    if not standing.permits(device, standing.Verb.REBOOT):
         raise HTTPException(
             status_code=409,
             detail="this device is revoked; readmit it before asking it to reboot",

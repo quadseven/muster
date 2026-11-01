@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from muster import kith as kith_store
-from muster import policy
+from muster import policy, standing
 from muster.enroll import fingerprint, key_id
 from muster.kith import Certificate, Device, Kith, MemoryRecords
 from tests.test_api import (
@@ -148,6 +148,60 @@ def _render(seen: Seen, original: dt.datetime | None, since: dt.datetime) -> str
     else:
         standing = "A"
     return standing + ("" if seen.reboot_at is None else "+B" + star(seen.reboot_at))
+
+
+# ---- at the module's own interface ------------------------------------------
+
+
+def _device_in(state: str) -> Device:
+    """A row in `state`, written directly: this seam takes a row and no store."""
+    at = START
+    return Device(
+        key_id="k",
+        fingerprint="f",
+        name="n",
+        first_seen=at,
+        last_seen=at,
+        revoked_at=at if state.startswith("R") else None,
+        wipe_pending_at=at if state.startswith("Q") else None,
+        reboot_requested_at=at if state.endswith("+B") else None,
+    )
+
+
+@pytest.mark.parametrize("state", sorted(SERVED))
+def test_served_answers_the_device_channel_table(state):
+    status, files = SERVED[state]
+    answer = standing.served(_device_in(state))
+
+    assert answer.refused is (status == 403)
+    if files is not None:
+        assert answer.wipe is (policy.WIPE_FILE in files)
+        assert answer.reboot is ("+B" in state)
+
+
+@pytest.mark.parametrize(
+    "name,verb",
+    [
+        ("reboot", standing.Verb.REBOOT),
+        ("ack_wipe", standing.Verb.ACKNOWLEDGE_WIPE),
+        ("ack_reboot", standing.Verb.ACKNOWLEDGE_REBOOT),
+    ],
+)
+@pytest.mark.parametrize("state", sorted(SERVED))
+def test_permits_answers_the_transition_table(state, name, verb):
+    cell = TRANSITIONS[state, name]
+    answer = standing.permits(_device_in(state), verb)
+
+    if cell == 409:
+        assert answer is False
+    elif isinstance(cell, str):
+        assert answer is True
+
+
+def test_a_key_with_no_row_may_acknowledge_nothing():
+    assert standing.permits(None, standing.Verb.ACKNOWLEDGE_WIPE) is False
+    assert standing.permits(None, standing.Verb.ACKNOWLEDGE_REBOOT) is False
+    assert standing.permits(None, standing.Verb.REBOOT) is True
 
 
 # ---- through Kith, on each Records adapter ---------------------------------
