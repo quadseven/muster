@@ -1542,7 +1542,8 @@ minutes stops being small against it.
 
 **2026-09-01.** Evidence: `server/muster/api.py` (`_proven_device`,
 `/v1/kith/{key_id}/wipe`), `server/muster/policy.py` (`WIPE_FILE`),
-`server/muster/sql/0001_kith.sql` (`wipe_pending_at`).
+`server/muster/sql/0001_kith.sql` (`wipe_pending_at`,
+`revoked_before_wipe_at`).
 
 **Context.** D27 gave muster a revoke that takes effect on the device's next
 request, and said plainly what it does not do: it cannot retract a credential
@@ -1561,6 +1562,14 @@ by `_proven_device`: the device is still served, and what it is served is the
 wipe. `revoked_at` comes afterwards, and from then on the key is refused
 everywhere. The wrong order is written down as a test that fails if the
 distinction is ever collapsed.
+
+**Amended 2026-11-01: the lift belongs to the erase (#214).** The trap above
+holds for a device that stays revoked. Arming on a revoked device clears `revoked_at`, so
+the instruction can travel. That clearing once outlived the erase: calling it
+off left the device readmitted, and `wipe: false` cleared the column on any
+revoked device. `revoked_before_wipe_at` now holds the lifted revocation until
+the erase is acknowledged, called off, or overruled by a later revoke or
+readmit. Calling it off restores the value and never readmits a device.
 
 **The wipe does not come from the policy directory.** It is synthesized from
 the kith and returned before any policy read, because an absent policy secret

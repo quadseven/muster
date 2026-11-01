@@ -117,7 +117,9 @@ actually do and a certificate cannot.
               device again at its next request
     wipe      an administrator asks for a device to be erased; the device is
               still answered until it fetches the instruction and acknowledges
-              it, and only then is it revoked (D29)
+              it, and only then is it revoked (D29). A wipe on a revoked device
+              lifts the revocation to deliver the instruction, and calling that
+              wipe off restores it
 
 **Scan replaces the typing AND the second click.** A device that scanned arrives
 already knowing where to enroll and with what, presents itself, and is issued an

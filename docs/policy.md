@@ -77,13 +77,17 @@ An administrator can tell a device to erase itself:
 **Order matters and the API enforces it.** Revoking a device stops muster
 answering it at all, which also removes the channel a wipe would travel down.
 So wipe is a separate state that is deliberately still served: mark the device
-wipe-pending, let it collect the instruction, and revoke afterwards. Revoking
-first produces a wipe that can never arrive. `DECISIONS.md` D29 has the full
-argument.
+wipe-pending and let it collect the instruction; its acknowledgement revokes it.
+A revocation queued after the erase cancels it, so the erase never arrives.
+Queueing an erase on a device already revoked lifts the revocation first.
+`DECISIONS.md` D29 has the full argument.
 
 It is reversible - `{"wipe": false}` calls it off - because an administrator can
 name the wrong `key_id` and the alternative to a way back is a factory reset
-nobody intended.
+nobody intended. Calling it off restores the standing the device held before
+the erase was queued. Queueing an erase on a revoked device lifts the revocation
+so the instruction can travel; calling that erase off revokes the device again,
+at its original time. Calling an erase off never readmits a device.
 
 **HOW LONG IT TAKES, STATED HONESTLY, because the number is the whole value of
 the feature:**

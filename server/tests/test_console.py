@@ -658,6 +658,16 @@ def test_the_devices_section_can_queue_and_cancel_a_named_wipe(client):
     assert "device-action-name" in body
 
 
+def test_the_console_does_not_contradict_what_the_server_does_with_an_erase(client):
+    """The server lifts a revocation to deliver an erase (D29), and calling the
+    erase off restores it (#214). String assertions, with the caveat above."""
+    body = client.get("/").text
+
+    assert "cannot receive an erase instruction" not in body
+    assert "leaves this device active" not in body
+    assert "revoked if it was revoked before the erase" in body
+
+
 def test_a_revoked_device_can_be_readmitted_from_the_same_row(client):
     """Revocation is reversible by design (muster#11, D27), and the console was
     the one place where it was not: a revoked row showed a disabled button
