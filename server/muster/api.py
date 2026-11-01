@@ -2391,9 +2391,10 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         the wipe file, acknowledges it on /v1/device/wipe, and only then does
         it become revoked.
 
-        `wipe: false` cancels a wipe request. It does not readmit a device;
-        it only clears the pending instruction, so the device keeps working
-        until an administrator says otherwise.
+        `wipe: false` cancels a wipe request and restores the standing the
+        device held before it was queued. An active device stays active, and
+        a device whose revocation the erase lifted is revoked again, at its
+        original time. It never readmits a revoked device: only /revoke does.
         """
         _changed_or_refused(lambda: state.kith.set_wipe_pending(key_id, wipe), _unreachable)
         telemetry.event(

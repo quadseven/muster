@@ -3436,6 +3436,91 @@ def test_a_wipe_can_be_called_off_before_the_device_comes_back(state, tmp_path):
     )
 
 
+def _call_off_wipe(client, key_id):
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": False}, cookies=ADMIN
+    ).status_code == 200
+
+
+def _acknowledge_wipe(client, key, identity):
+    import base64
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    return client.post("/v1/device/wipe", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    })
+
+
+def test_calling_off_an_erase_puts_a_revoked_device_back_to_revoked(
+    state, tmp_path
+):
+    """Queueing an erase lifts revocation so the instruction can travel (D29).
+    That lift belongs to the erase, so calling the erase off takes it back. The
+    original time survives too, because the CRL publishes it."""
+    client, key, identity, key_id = _revoked_device(state, tmp_path)
+    revoked_at = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"]["revoked_at"]
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": True}, cookies=ADMIN
+    ).status_code == 200
+
+    _call_off_wipe(client, key_id)
+
+    response = _fetch_config(client, key, identity)
+    assert response.status_code == 403, (
+        f"got {response.status_code} - calling off an erase readmitted a device "
+        "an administrator revoked"
+    )
+    view = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"]
+    assert view["revoked_at"] == revoked_at
+    assert view["wipe_pending_at"] is None
+
+
+def test_calling_off_an_erase_that_is_not_pending_readmits_nobody(state, tmp_path):
+    """The route takes `wipe: false` whatever the device's state, and readmission
+    has its own route. No erase was queued here, so nothing changes."""
+    client, key, identity, key_id = _revoked_device(state, tmp_path)
+
+    _call_off_wipe(client, key_id)
+
+    assert _fetch_config(client, key, identity).status_code == 403
+
+
+def test_a_stale_call_off_cannot_readmit_a_device_that_already_erased(
+    state, tmp_path
+):
+    """A console page opened before the acknowledgement still offers the call
+    off. The device has gone to revoked by then and must stay there."""
+    client, key, identity, key_id = _wipe_pending_device(state, tmp_path)
+    assert _acknowledge_wipe(client, key, identity).status_code == 200
+
+    _call_off_wipe(client, key_id)
+
+    assert _fetch_config(client, key, identity).status_code == 403
+
+
+def test_a_revoked_device_can_still_be_erased(state, tmp_path):
+    """D29's deliberate path, end to end: the erase lifts the revocation, the
+    device collects the instruction, and the acknowledgement refuses it again."""
+    from muster import policy
+
+    client, key, identity, key_id = _revoked_device(state, tmp_path)
+    assert _fetch_config(client, key, identity).status_code == 403
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": True}, cookies=ADMIN
+    ).status_code == 200
+
+    served = _fetch_config(client, key, identity)
+    assert served.status_code == 200
+    assert policy.WIPE_FILE in served.json()["files"]
+
+    assert _acknowledge_wipe(client, key, identity).status_code == 200
+    assert _fetch_config(client, key, identity).status_code == 403
+
+
 def test_an_unreachable_store_refuses_a_wipe_acknowledgement_rather_than_crashing(
     state, tmp_path,
 ):

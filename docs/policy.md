@@ -83,7 +83,10 @@ argument.
 
 It is reversible - `{"wipe": false}` calls it off - because an administrator can
 name the wrong `key_id` and the alternative to a way back is a factory reset
-nobody intended.
+nobody intended. Calling it off restores the standing the device held before
+the erase was queued. Queueing an erase on a revoked device lifts the revocation
+so the instruction can travel; calling that erase off revokes the device again,
+at its original time. Only `/revoke` readmits a device.
 
 **HOW LONG IT TAKES, STATED HONESTLY, because the number is the whole value of
 the feature:**

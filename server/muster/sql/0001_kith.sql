@@ -142,6 +142,12 @@ ALTER TABLE kith_device
 ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS wipe_pending_at timestamptz;
 
+-- THE REVOCATION AN ERASE LIFTED, kept so calling the erase off can restore it.
+-- NULL means the erase lifted nothing. Written only by the wipe path and never
+-- read by a route: `revoked_at` remains the one column that refuses a device.
+ALTER TABLE kith_device
+    ADD COLUMN IF NOT EXISTS revoked_before_wipe_at timestamptz;
+
 -- The roll is read most often to answer "what is still ours". Without this it
 -- is a sequential scan over every device that has ever enrolled, including the
 -- revoked ones the query exists to exclude.

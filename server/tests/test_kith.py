@@ -739,6 +739,8 @@ def test_a_dsn_with_a_trailing_newline_is_stripped(monkeypatch):
 
 
 class FakeCursor:
+    rowcount = 1
+
     def __init__(self, log: list, rows: list) -> None:
         self.log = log
         self._rows = rows
@@ -1241,6 +1243,128 @@ def test_the_roll_selects_exactly_the_columns_member_from_row_reads():
         "d.role", "d.revoked_at", "d.wipe_pending_at", "d.admin_name",
         "d.reboot_requested_at", "d.check_in_interval_s",
     ]
+
+
+# ---- calling off an erase ------------------------------------------------
+
+
+def test_calling_off_an_erase_restores_the_earlier_revocation(kith, clock):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_revoked(key, True)
+    revoked_at = kith.member(key).device.revoked_at
+    kith.set_wipe_pending(key, True)
+    assert kith.member(key).device.revoked_at is None
+
+    kith.set_wipe_pending(key, False)
+
+    device = kith.member(key).device
+    assert device.revoked_at == revoked_at
+    assert device.wipe_pending_at is None
+
+
+def test_queueing_an_erase_twice_keeps_the_earlier_revocation(kith, clock):
+    """The second request sees no revocation on the row. It must not overwrite
+    what the first one set aside."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_revoked(key, True)
+    revoked_at = kith.member(key).device.revoked_at
+    kith.set_wipe_pending(key, True)
+    kith.set_wipe_pending(key, True)
+
+    kith.set_wipe_pending(key, False)
+
+    assert kith.member(key).device.revoked_at == revoked_at
+
+
+def test_calling_off_an_erase_leaves_an_active_device_active(kith):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_wipe_pending(key, True)
+
+    kith.set_wipe_pending(key, False)
+
+    device = kith.member(key).device
+    assert device.revoked_at is None
+    assert device.wipe_pending_at is None
+
+
+def test_calling_off_with_nothing_pending_keeps_a_revocation(kith):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_revoked(key, True)
+    revoked_at = kith.member(key).device.revoked_at
+
+    kith.set_wipe_pending(key, False)
+
+    assert kith.member(key).device.revoked_at == revoked_at
+
+
+def test_an_acknowledged_erase_stays_revoked_after_a_late_call_off(kith):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_wipe_pending(key, True)
+    kith.acknowledged_wipe(key)
+    revoked_at = kith.member(key).device.revoked_at
+    assert revoked_at is not None
+
+    kith.set_wipe_pending(key, False)
+
+    assert kith.member(key).device.revoked_at == revoked_at
+
+
+def test_a_readmission_during_an_erase_is_not_undone_by_the_call_off(kith):
+    """Readmission is the administrator's later word on standing, so the
+    revocation set aside by the erase no longer applies."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_revoked(key, True)
+    kith.set_wipe_pending(key, True)
+    kith.set_revoked(key, False)
+
+    kith.set_wipe_pending(key, False)
+
+    assert kith.member(key).device.revoked_at is None
+
+
+def test_the_store_writes_set_a_revocation_aside_and_restore_it():
+    """Statement text for the reason given above: no Postgres runs here. Both
+    columns move in one statement, so no reader or racing write can see the
+    revocation lost."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    key = a_device().key_id
+
+    records.record_wipe_pending(key, START)
+    arm_sql, arm_params = connection.log[-1]
+    records.record_wipe_pending(key, None)
+    cancel_sql, cancel_params = connection.log[-1]
+
+    assert "revoked_before_wipe_at = COALESCE(revoked_at, revoked_before_wipe_at)" in arm_sql
+    assert "revoked_at = NULL" in arm_sql
+    assert arm_params == (START, key)
+    assert "revoked_at = COALESCE(revoked_before_wipe_at, revoked_at)" in cancel_sql
+    assert "revoked_before_wipe_at = NULL" in cancel_sql
+    assert "wipe_pending_at = NULL" in cancel_sql
+    assert cancel_params == (key,)
+
+
+def test_every_exit_from_an_erase_drops_the_set_aside_revocation():
+    """Left behind, it would resurface at the next call off and overrule a
+    decision made since."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    key = a_device().key_id
+
+    records.record_revocation(key, None)
+    assert "revoked_before_wipe_at = NULL" in connection.log[-1][0]
+    records.record_wipe_acknowledged(key, START)
+    assert "revoked_before_wipe_at = NULL" in connection.log[-1][0]
 
 
 # ---- roles (muster#70) ---------------------------------------------------

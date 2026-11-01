@@ -520,9 +520,10 @@
       <div class="panel">
         <h3>Recognized devices</h3>
         <p class="muted">
-          Erasing is delivered at the device's next check-in. Queue the erase,
-          wait for the pending state to clear, then revoke. Revoking first cuts
-          off the channel and the erase will never arrive.
+          Erasing is delivered at the device's next check-in. Queue the erase
+          and leave the device unrevoked: it is revoked once it acknowledges
+          the erase. A revocation stops Muster answering it, so this page does
+          not queue an erase on a revoked device.
         </p>
         <div class="device-list" id="devices">
           <p class="muted">Loading devices...</p>
@@ -892,7 +893,7 @@
     wipe.textContent = device.wipe_pending_at ? 'Call off erase' : 'Queue erase';
     wipe.disabled = Boolean(device.revoked_at);
     wipe.title = device.revoked_at
-      ? 'A revoked device cannot receive an erase instruction'
+      ? 'This page does not queue an erase on a revoked device: delivering one lifts the revocation until the device acknowledges'
       : '';
     wipe.onclick = () => openDeviceAction(device, device.wipe_pending_at ? 'cancel-wipe' : 'wipe');
     actions.append(wipe);
@@ -1068,7 +1069,7 @@
     },
     'cancel-wipe': {
       question: 'Call off this erase?',
-      lede: 'The erase is still pending. Calling it off leaves this device active.',
+      lede: 'The erase is still pending. Calling it off returns this device to its earlier standing: active, or revoked if it was revoked before the erase.',
       confirm: 'Call off erase',
       path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/wipe',
       body: { wipe: false },

@@ -1562,6 +1562,14 @@ wipe. `revoked_at` comes afterwards, and from then on the key is refused
 everywhere. The wrong order is written down as a test that fails if the
 distinction is ever collapsed.
 
+**The lift belongs to the erase.** Arming on a revoked device clears
+`revoked_at`, so the instruction can travel. That clearing once outlived the
+erase: calling it off left the device readmitted, and `wipe: false` cleared the
+column on any revoked device. `revoked_before_wipe_at` now holds the lifted
+revocation until the erase is acknowledged, called off, or overruled by a later
+revoke or readmit. Calling it off restores the value, and only `/revoke`
+readmits (#214).
+
 **The wipe does not come from the policy directory.** It is synthesized from
 the kith and returned before any policy read, because an absent policy secret
 or one unreadable file must not be able to stand between a wipe instruction and
