@@ -186,7 +186,7 @@ class Device:
     # same step would remove the only channel the wipe instruction could travel
     # down. This state still serves configuration and specifically serves the
     # wipe file; it becomes `revoked_at` only after the device acknowledges the
-    # instruction (muster#15).
+    # instruction (muster#15), or returns to a revocation it lifted if called off.
     wipe_pending_at: dt.datetime | None = None
     # What an ADMINISTRATOR calls this device, when `name` alone does not tell
     # two of them apart (muster#29). None means no override: display `name`.

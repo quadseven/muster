@@ -522,8 +522,7 @@
         <p class="muted">
           Erasing is delivered at the device's next check-in. Queue the erase
           and leave the device unrevoked: it is revoked once it acknowledges
-          the erase. A revocation stops Muster answering it, so this page does
-          not queue an erase on a revoked device.
+          the erase. This page does not queue an erase on a revoked device.
         </p>
         <div class="device-list" id="devices">
           <p class="muted">Loading devices...</p>
@@ -1062,7 +1061,7 @@
     },
     wipe: {
       question: 'Erase this device?',
-      lede: 'This queues an erase for the named device. It will be erased at its next check-in. Do not revoke it first, or the instruction cannot arrive.',
+      lede: 'This queues an erase for the named device. It will be erased at its next check-in. Do not revoke it first: this page cannot queue an erase on a revoked device.',
       confirm: 'Queue erase',
       path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/wipe',
       body: { wipe: true },

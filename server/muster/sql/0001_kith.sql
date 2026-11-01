@@ -134,7 +134,7 @@ ALTER TABLE kith_device
 -- that was recorded as a revocation would remove the only channel the wipe
 -- instruction could travel down. Wipe-pending therefore clears `revoked_at`
 -- when it is set; only the device's own acknowledgement moves it back to
--- `revoked_at`.
+-- `revoked_at`. Calling the erase off also restores a revocation it lifted.
 --
 -- NULLABLE for the same reason `revoked_at` is: a timestamp has no honest
 -- zero value, and "never asked" and "asked at this time" must be different
@@ -143,8 +143,8 @@ ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS wipe_pending_at timestamptz;
 
 -- THE REVOCATION AN ERASE LIFTED, kept so calling the erase off can restore it.
--- NULL means the erase lifted nothing. Written only by the wipe path and never
--- read by a route: `revoked_at` remains the one column that refuses a device.
+-- NULL means the erase lifted nothing. Never read by a route: `revoked_at`
+-- remains the one column that refuses a device.
 ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS revoked_before_wipe_at timestamptz;
 
