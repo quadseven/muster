@@ -212,6 +212,8 @@ Required on `main`: a PR, `server tests` and `Grug - Chief`. Other checks run wi
 
 **A merge does not deploy.** `build - server image` publishes `ghcr.io/quadseven/muster-server:sha-<12>` from `main`, and a finished `agent - android` run on `main` rebuilds it, because the image carries the agent APK. The deployment manifest is pinned by digest and lives outside this repo. Take the digest from the run summary of `build - server image`, and repin before applying: `docs/what-is-deployed.md` has the order. `site/` is Cloudflare Pages with no workflow here. Change icons only through `site/icons/src/render.py`.
 
+Keep README.md to the sections its test pins, plus How it deploys, Layout and Docs, with a last-checked date; a change that makes it false fixes it in the same PR.
+
 ## Six things that will bite
 
 **1. muster does not use mTLS. Do not "fix" that.**
