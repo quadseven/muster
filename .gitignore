@@ -12,3 +12,8 @@ server/agent/
 
 # Claude Code session-tooling checkpoints: local resume artifacts, not source.
 .claude/
+
+# Cloudflare Pages CLI local cache and state. Not source, and it holds a
+# hosting account identifier. server/tests/test_no_tool_caches_tracked.py
+# fails if anything under it is tracked again.
+.wrangler/
