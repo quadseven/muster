@@ -122,6 +122,7 @@ from muster.enroll import (
     key_id,
 )
 from muster import short_renewal, telemetry
+from muster.short_renewal import ShortRenewals
 
 CHECK_IN_STALE_AFTER_PERIODS = int(
     os.environ.get("MUSTER_CHECK_IN_STALE_AFTER_PERIODS", "3")
@@ -273,9 +274,7 @@ class State:
     report_last_sent: dict[str, float] = field(default_factory=dict)
     # Which device gets its NEXT renewal short-lived (muster#22). In memory on
     # purpose: see short_renewal.py for why a restart forgetting it is safe.
-    short_renewals: short_renewal.ShortRenewals = field(
-        default_factory=short_renewal.ShortRenewals
-    )
+    short_renewals: ShortRenewals = field(default_factory=ShortRenewals)
 
 
 
