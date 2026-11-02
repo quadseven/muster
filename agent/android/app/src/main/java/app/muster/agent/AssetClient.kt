@@ -1,7 +1,6 @@
 package app.muster.agent
 
 import java.security.MessageDigest
-import org.json.JSONObject
 
 /**
  * Fetching one operator file from muster, over the identity this device holds.
@@ -28,8 +27,9 @@ import org.json.JSONObject
  * the body could change a header beside it.
  */
 class AssetClient(
-    private val transport: Transport,
+    private val exchange: ProvenBytesExchange,
     private val identity: ConfigurationClient.Identity,
+    private val endpoint: String,
 ) {
 
     /**
@@ -95,87 +95,50 @@ class AssetClient(
      * @param expectedDigest lowercase hex sha256 the bytes must have
      */
     fun fetch(name: String, expectedDigest: String): Fetched {
-        val certificate = identity.certificatePem() ?: return Fetched.NotEnrolled
+        val payload = JSONObject().put("name", name).toString()
 
-        val nonce = when (val challenged = challenge()) {
-            is Challenged.Nonce -> challenged.value
-            is Challenged.Failed -> return challenged.why
-        }
-
-        val signature = try {
-            identity.signBase64(nonce)
-        } catch (e: Exception) {
-            return Fetched.DeviceCannotAsk("could not sign muster's nonce: ${detail(e)}")
-        }
-
-        val body = JSONObject()
-            .put("nonce", nonce)
-            .put("signature_b64", signature)
-            .put("certificate_pem", certificate)
-            .put("name", name)
-            .toString()
-
-        val reply = try {
-            transport.postForBytes(ASSET_PATH, body)
-        } catch (e: Exception) {
-            return Fetched.Unreachable(detail(e))
-        }
-
-        if (reply.status == 401) return Fetched.Unrecognized
-        if (reply.status != 200) {
-            return Fetched.Refused(reply.status, reply.detail.take(REFUSAL_DETAIL_CHARS))
-        }
-
-        val actual = sha256(reply.bytes)
-        // Compared lowercase because the policy file refuses anything else, and
-        // a comparison that could fail on case would be a wallpaper that never
-        // applies with no line saying why.
-        if (!actual.equals(expectedDigest, ignoreCase = true)) {
-            return Fetched.DigestMismatch(expected = expectedDigest, actual = actual)
-        }
-        return Fetched.Asset(reply.bytes)
-    }
-
-    private sealed interface Challenged {
-        data class Nonce(val value: String) : Challenged
-        data class Failed(val why: Fetched) : Challenged
-    }
-
-    private fun challenge(): Challenged {
-        val reply = try {
-            transport.post(CHALLENGE_PATH, "{}")
-        } catch (e: Exception) {
-            return Challenged.Failed(Fetched.Unreachable(detail(e)))
-        }
-        if (reply.status != 201) {
-            return Challenged.Failed(
-                Fetched.Refused(reply.status, reply.body.take(REFUSAL_DETAIL_CHARS))
-            )
-        }
-        return try {
-            Challenged.Nonce(JSONObject(reply.body).getString("nonce"))
-        } catch (e: Exception) {
-            Challenged.Failed(
-                Fetched.Refused(reply.status, "unreadable challenge: ${detail(e)}")
-            )
+        return when (val outcome = exchange.exchange(
+            endpoint = endpoint,
+            provePath = "/v1/device/asset",
+            identity = identity,
+            keyId = identity.keyId(),
+            payload = payload
+        )) {
+            is BytesOutcome.Proven -> {
+                val actual = sha256(outcome.bytes)
+                // Compared lowercase because the policy file refuses anything else, and
+                // a comparison that could fail on case would be a wallpaper that never
+                // applies with no line saying why.
+                if (!actual.equals(expectedDigest, ignoreCase = true)) {
+                    Fetched.DigestMismatch(expected = expectedDigest, actual = actual)
+                } else {
+                    Fetched.Asset(outcome.bytes)
+                }
+            }
+            is BytesOutcome.NotEnrolled -> Fetched.NotEnrolled
+            is BytesOutcome.Unrecognized -> Fetched.Unrecognized
+            is BytesOutcome.Revoked -> Fetched.Refused(403, "device revoked")
+            is BytesOutcome.Unreachable -> Fetched.Unreachable(outcome.cause.javaClass.simpleName)
+            is BytesOutcome.Refused -> Fetched.Refused(outcome.status, outcome.detail.take(REFUSAL_DETAIL_CHARS))
+            is BytesOutcome.CannotSign -> Fetched.DeviceCannotAsk("could not sign muster's nonce: ${outcome.cause.javaClass.simpleName}")
         }
     }
-
-    /**
-     * An exception as one word: its class name, and nothing else.
-     *
-     * The same rule as ConfigurationClient. A message can carry the URL it
-     * failed on, and a URL here is one a device signed a nonce for.
-     */
-    private fun detail(e: Exception): String = e.javaClass.simpleName
 
     companion object {
-        const val CHALLENGE_PATH = "/v1/auth/challenge"
         const val ASSET_PATH = "/v1/device/asset"
         private const val REFUSAL_DETAIL_CHARS = 200
 
         fun sha256(bytes: ByteArray): String =
             MessageDigest.getInstance("SHA-256").digest(bytes)
                 .joinToString("") { "%02x".format(it) }
+
+        fun create(
+            transport: Transport,
+            identity: ConfigurationClient.Identity,
+            baseUrl: String,
+        ): AssetClient {
+            val exchange = DefaultProvenBytesExchange(transport)
+            return AssetClient(exchange, identity, baseUrl)
+        }
     }
 }

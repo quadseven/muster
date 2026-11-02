@@ -31,7 +31,7 @@ class RenewalFlowTest {
 
         override fun post(path: String, body: String): EnrollmentClient.Transport.Reply {
             calls += 1
-            return if (path == RenewalClient.CHALLENGE_PATH) {
+            return if (path == ProvenPost.CHALLENGE_PATH) {
                 EnrollmentClient.Transport.Reply(
                     201, JSONObject().put("nonce", "server-nonce").toString()
                 )
@@ -56,6 +56,7 @@ class RenewalFlowTest {
     private class Identity : ConfigurationClient.Identity {
         override fun certificatePem(): String = "certificate"
         override fun signBase64(nonce: String): String = "signature"
+        override fun keyId(): String = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef123456"
     }
 
     private class Store : EnrollmentFlow.IdentityStore {
@@ -80,7 +81,7 @@ class RenewalFlowTest {
         val store = Store()
         val flow = RenewalFlow(
             keys,
-            RenewalClient(transport, Identity()),
+            RenewalClient.create(transport, Identity(), "https://enroll.muster.example"),
             store,
         )
 
@@ -102,7 +103,11 @@ class RenewalFlowTest {
     fun renewalCertifiesTheExistingDeviceKey() {
         val keys = Keys()
         val transport = Transport()
-        val flow = RenewalFlow(keys, RenewalClient(transport, Identity()), Store())
+        val flow = RenewalFlow(
+            keys,
+            RenewalClient.create(transport, Identity(), "https://enroll.muster.example"),
+            Store(),
+        )
 
         flow.advance(IdentityLifecycle.Stance.ShouldRenew(60))
 
@@ -119,7 +124,11 @@ class RenewalFlowTest {
     fun aCurrentDeviceMakesNoRenewalRequest() {
         val transport = Transport()
         val store = Store()
-        val flow = RenewalFlow(Keys(), RenewalClient(transport, Identity()), store)
+        val flow = RenewalFlow(
+            Keys(),
+            RenewalClient.create(transport, Identity(), "https://enroll.muster.example"),
+            store,
+        )
 
         val move = flow.advance(IdentityLifecycle.Stance.Current)
 

@@ -84,14 +84,11 @@ class ConfigurationSteward(private val context: Context) {
             return Outcome(kept = "no muster server configured on this device")
         }
 
+        val exchange = DefaultProvenExchange(
+            HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000)
+        )
         val client = ConfigurationClient(
-            // SHORTER TIMEOUTS THAN ENROLLMENT'S, because the budget here is
-            // not this request's - it is the whole boot plan's. A broadcast
-            // receiver that has not finished is a boot being held up, and two
-            // requests at enrollment's 10s/20s could spend a minute before the
-            // restrictions step has started. Enrollment can afford to wait: a
-            // person is standing there.
-            transport = HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000),
+            exchange = exchange,
             identity = KeystoreIdentity(context),
         )
 

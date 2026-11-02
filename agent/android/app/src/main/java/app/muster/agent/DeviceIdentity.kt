@@ -2,6 +2,8 @@ package app.muster.agent
 
 import android.content.Context
 import java.io.File
+import java.security.cert.CertificateFactory
+import java.security.MessageDigest
 import java.security.Signature
 import java.util.Base64
 
@@ -39,6 +41,21 @@ class KeystoreIdentity(private val context: Context) : ConfigurationClient.Ident
         // 29; it also exists on the JVM, so nothing that uses it is untestable
         // off a device.
         return Base64.getEncoder().encodeToString(signer.sign())
+    }
+
+    override fun keyId(): String = computeKeyId(certificatePem())
+
+    private fun computeKeyId(pem: String?): String {
+        val certificate = pem ?: return ""
+        try {
+            val factory = CertificateFactory.getInstance("X.509")
+            val cert = factory.generateCertificate(certificate.byteInputStream()) as java.security.cert.X509Certificate
+            val spki = cert.publicKey.encoded
+            val digest = MessageDigest.getInstance("SHA-256").digest(spki)
+            return digest.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            return ""
+        }
     }
 
     companion object {

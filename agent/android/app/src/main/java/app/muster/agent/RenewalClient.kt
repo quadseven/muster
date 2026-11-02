@@ -16,8 +16,9 @@ import org.json.JSONObject
  * enrolled key is the vouch here, so muster returns the certificate directly.
  */
 class RenewalClient(
-    private val transport: EnrollmentClient.Transport,
+    private val exchange: ProvenExchange,
     private val identity: ConfigurationClient.Identity,
+    private val endpoint: String,
 ) {
 
     sealed interface Renewed {
@@ -36,56 +37,21 @@ class RenewalClient(
     }
 
     fun renew(csrPem: String): Renewed {
-        val certificate = identity.certificatePem() ?: return Renewed.NotEnrolled
-        val nonce = when (val challenged = challenge()) {
-            is Challenged.Nonce -> challenged.value
-            is Challenged.Failed -> return challenged.why
-        }
-        val signature = try {
-            identity.signBase64(nonce)
-        } catch (e: Exception) {
-            return Renewed.DeviceCannotAsk("could not sign muster's nonce: ${detail(e)}")
-        }
-        val body = JSONObject()
-            .put("nonce", nonce)
-            .put("signature_b64", signature)
-            .put("certificate_pem", certificate)
-            .put("csr_pem", csrPem)
-            .toString()
-        val reply = try {
-            transport.post(RENEW_PATH, body)
-        } catch (e: Exception) {
-            return Renewed.Unreachable(detail(e))
-        }
-        return when (reply.status) {
-            201 -> read(reply.body)
-            401 -> Renewed.Unrecognized
-            else -> Renewed.Refused(reply.status, reply.body.take(REFUSAL_DETAIL_CHARS))
-        }
-    }
-
-    private sealed interface Challenged {
-        data class Nonce(val value: String) : Challenged
-        data class Failed(val why: Renewed) : Challenged
-    }
-
-    private fun challenge(): Challenged {
-        val reply = try {
-            transport.post(CHALLENGE_PATH, "{}")
-        } catch (e: Exception) {
-            return Challenged.Failed(Renewed.Unreachable(detail(e)))
-        }
-        if (reply.status != 201) {
-            return Challenged.Failed(
-                Renewed.Refused(reply.status, reply.body.take(REFUSAL_DETAIL_CHARS))
-            )
-        }
-        return try {
-            Challenged.Nonce(JSONObject(reply.body).getString("nonce"))
-        } catch (e: Exception) {
-            Challenged.Failed(
-                Renewed.Refused(reply.status, "unreadable challenge: ${detail(e)}")
-            )
+        val payload = JSONObject().put("csr_pem", csrPem).toString()
+        return when (val outcome = exchange.exchange(
+            endpoint = endpoint,
+            provePath = "/v1/enroll/renew",
+            identity = identity,
+            keyId = identity.keyId(),
+            payload = payload
+        )) {
+            is Outcome.Answered -> read(outcome.body)
+            is Outcome.NotEnrolled -> Renewed.NotEnrolled
+            is Outcome.Unrecognized -> Renewed.Unrecognized
+            is Outcome.Unreachable -> Renewed.Unreachable(outcome.cause.javaClass.simpleName)
+            is Outcome.Refused -> Renewed.Refused(outcome.status, outcome.body.take(REFUSAL_DETAIL_CHARS))
+            is Outcome.CannotSign -> Renewed.DeviceCannotAsk("could not sign muster's nonce: ${outcome.cause.javaClass.simpleName}")
+            is Outcome.Revoked -> Renewed.Refused(403, "device revoked")
         }
     }
 
@@ -107,8 +73,15 @@ class RenewalClient(
     private fun detail(e: Exception): String = e.javaClass.simpleName
 
     companion object {
-        const val CHALLENGE_PATH = "/v1/auth/challenge"
-        const val RENEW_PATH = "/v1/enroll/renew"
         const val REFUSAL_DETAIL_CHARS = 200
+
+        fun create(
+            transport: EnrollmentClient.Transport,
+            identity: ConfigurationClient.Identity,
+            baseUrl: String,
+        ): RenewalClient {
+            val exchange = DefaultProvenExchange(transport)
+            return RenewalClient(exchange, identity, baseUrl)
+        }
     }
 }

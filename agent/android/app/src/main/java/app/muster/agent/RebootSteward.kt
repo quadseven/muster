@@ -33,7 +33,16 @@ import org.json.JSONObject
  * has no later if the call succeeds, and a stuck flag on a device that never
  * actually rebooted if it does not.
  */
-class RebootSteward(private val context: Context) {
+class RebootSteward(
+    private val context: Context,
+    private val exchange: ProvenExchange = DefaultProvenExchange(
+        HttpTransport(
+            KeystoreIdentity.serverBaseUrl(context),
+            connectTimeoutMs = 5_000,
+            readTimeoutMs = 8_000
+        )
+    ),
+) {
 
     data class Outcome(
         val plan: RebootPolicy.Plan,
@@ -119,30 +128,23 @@ class RebootSteward(private val context: Context) {
      * WipeSteward.acknowledge: one authentication scheme, one channel.
      */
     private fun acknowledge(baseUrl: String): String? {
-        try {
-            val transport = HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000)
-            val challenge = transport.post(ConfigurationClient.CHALLENGE_PATH, "{}")
-            if (challenge.status != 201) {
-                return "muster refused the reboot challenge: ${challenge.status}"
-            }
-            val nonce = JSONObject(challenge.body).getString("nonce")
-            val identity = KeystoreIdentity(context)
-            val certificate = identity.certificatePem()
-                ?: return "no identity certificate; cannot acknowledge the reboot"
-            val body = JSONObject()
-                .put("nonce", nonce)
-                .put("signature_b64", identity.signBase64(nonce))
-                .put("certificate_pem", certificate)
-                .toString()
-            val reply = transport.post(REBOOT_ACK_PATH, body)
-            if (reply.status != 200) {
-                return "muster refused the reboot acknowledgement: ${reply.status}"
-            }
-            return null
-        } catch (e: Exception) {
-            // The class name is the log's diagnostic, not the message, same
-            // reasoning as WipeSteward.acknowledge.
-            return "could not acknowledge the reboot: ${e.javaClass.simpleName}"
+        val identity = KeystoreIdentity(context)
+        val outcome = exchange.exchange(
+            endpoint = baseUrl,
+            provePath = "/v1/device/reboot",
+            identity = identity,
+            keyId = identity.keyId(),
+            payload = "{}"
+        )
+
+        return when (outcome) {
+            is Outcome.Answered -> null
+            is Outcome.NotEnrolled -> "no identity certificate; cannot acknowledge the reboot"
+            is Outcome.Unrecognized -> "muster does not recognize this device's certificate"
+            is Outcome.Revoked -> "muster says this device is revoked"
+            is Outcome.Unreachable -> "could not acknowledge the reboot: ${outcome.cause.javaClass.simpleName}"
+            is Outcome.Refused -> "muster refused the reboot acknowledgement: ${outcome.status}"
+            is Outcome.CannotSign -> "could not sign muster's nonce: ${outcome.cause.javaClass.simpleName}"
         }
     }
 

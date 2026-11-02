@@ -1,5 +1,6 @@
 package app.muster.agent
 
+import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 
 /**
@@ -40,7 +41,7 @@ import org.json.JSONObject
  * See docs/policy.md for the direct-boot behavior.
  */
 class ConfigurationClient(
-    private val transport: EnrollmentClient.Transport,
+    private val exchange: ProvenExchange,
     private val identity: Identity,
 ) {
 
@@ -56,6 +57,9 @@ class ConfigurationClient(
 
         /** Sign muster's nonce with the keystore key. Base64, as the API wants. */
         fun signBase64(nonce: String): String
+
+        /** The key identifier for this identity. */
+        fun keyId(): String
     }
 
     sealed interface Fetched {
@@ -95,74 +99,30 @@ class ConfigurationClient(
         data class DeviceCannotAsk(val detail: String) : Fetched
     }
 
-    fun fetch(): Fetched {
-        val certificate = identity.certificatePem() ?: return Fetched.NotEnrolled
-
-        val nonce = when (val challenged = challenge()) {
-            is Challenged.Nonce -> challenged.value
-            is Challenged.Failed -> return challenged.why
-        }
-
-        val signature = try {
-            identity.signBase64(nonce)
-        } catch (e: Exception) {
-            // The keystore refusing to sign is this device's problem, not the
-            // server's, and it must not read as "muster is down" in the log -
-            // the recovery is completely different and involves the handset.
-            return Fetched.DeviceCannotAsk("could not sign muster's nonce: ${detail(e)}")
-        }
-
-        val body = JSONObject()
-            .put("nonce", nonce)
-            .put("signature_b64", signature)
-            .put("certificate_pem", certificate)
-            // HOW OFTEN THIS DEVICE ASKS (muster#77), so the console judges
-            // "inside its cycle" from the schedule this agent really keeps
-            // rather than a constant that is wrong for the travel router.
+    suspend fun fetch(): Fetched {
+        val payload = JSONObject()
             .put("check_in_interval_s", CheckInSchedulePolicy.INTERVAL_MS / 1000)
             .toString()
 
-        val reply = try {
-            transport.post(CONFIG_PATH, body)
-        } catch (e: Exception) {
-            return Fetched.Unreachable(detail(e))
-        }
+        val endpoint = KeystoreIdentity.serverBaseUrl(identity as KeystoreIdentity)
+        val keyId = identity.keyId()
 
-        return when (reply.status) {
-            200 -> read(reply.body)
-            // The device is a stranger to this muster: a certificate it did not
-            // issue, or a signature that does not match one it did. Retrying
-            // cannot fix either.
-            401 -> Fetched.Unrecognized
-            // This status is assigned by `_proven_device` only after the proof
-            // succeeds and the kith says an administrator revoked this key.
-            // It is an answer the status screen can act on, not a network
-            // failure to hide behind another retry.
-            403 -> Fetched.Revoked
-            else -> Fetched.Refused(reply.status, reply.body.take(REFUSAL_DETAIL_CHARS))
-        }
-    }
+        val outcome = exchange.exchange(
+            endpoint = endpoint,
+            provePath = "/v1/device/config",
+            identity = identity,
+            keyId = keyId,
+            payload = payload
+        )
 
-    private sealed interface Challenged {
-        data class Nonce(val value: String) : Challenged
-        data class Failed(val why: Fetched) : Challenged
-    }
-
-    private fun challenge(): Challenged {
-        val reply = try {
-            transport.post(CHALLENGE_PATH, "{}")
-        } catch (e: Exception) {
-            return Challenged.Failed(Fetched.Unreachable(detail(e)))
-        }
-        if (reply.status != 201) {
-            return Challenged.Failed(
-                Fetched.Refused(reply.status, reply.body.take(REFUSAL_DETAIL_CHARS))
-            )
-        }
-        return try {
-            Challenged.Nonce(JSONObject(reply.body).getString("nonce"))
-        } catch (e: Exception) {
-            Challenged.Failed(Fetched.Refused(reply.status, "unreadable challenge: ${detail(e)}"))
+        return when (outcome) {
+            is Outcome.Answered -> read(outcome.body)
+            is Outcome.NotEnrolled -> Fetched.NotEnrolled
+            is Outcome.Unrecognized -> Fetched.Unrecognized
+            is Outcome.Revoked -> Fetched.Revoked
+            is Outcome.Unreachable -> Fetched.Unreachable(outcome.cause.javaClass.simpleName)
+            is Outcome.Refused -> Fetched.Refused(outcome.status, outcome.body.take(REFUSAL_DETAIL_CHARS))
+            is Outcome.CannotSign -> Fetched.DeviceCannotAsk("could not sign muster's nonce: ${outcome.cause.javaClass.simpleName}")
         }
     }
 
@@ -182,24 +142,10 @@ class ConfigurationClient(
         for (name in served.keys()) files[name] = served.getString(name)
         Fetched.Configuration(revision = json.getString("revision"), files = files)
     } catch (e: Exception) {
-        Fetched.Refused(200, "muster's answer could not be read: ${detail(e)}")
+        Fetched.Refused(200, "muster's answer could not be read: ${e.javaClass.simpleName}")
     }
 
-    /**
-     * An exception as one word: its class name, and nothing else.
-     *
-     * NOT `e.message` AND NOT `e.toString()`. Both can carry the response body,
-     * and this string goes into logcat at every boot - a configuration this
-     * device could not parse is exactly the case where that body might be the
-     * one that held a token. The class name says which of the six failures it
-     * was, which is what the log is for.
-     */
-    private fun detail(e: Exception): String = e.javaClass.simpleName
-
     companion object {
-        const val CHALLENGE_PATH = "/v1/auth/challenge"
-        const val CONFIG_PATH = "/v1/device/config"
-
         /**
          * How much of a refusal body is worth keeping for the log.
          *

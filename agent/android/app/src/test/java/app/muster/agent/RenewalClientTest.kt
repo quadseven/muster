@@ -8,14 +8,16 @@ import org.junit.Test
 /** The device side of the challenge, proof, CSR, and renewed identity exchange. */
 class RenewalClientTest {
 
+    private class Reply(val status: Int, val body: String)
+
     private class FakeTransport(
-        private val challenge: EnrollmentClient.Transport.Reply =
-            EnrollmentClient.Transport.Reply(
-                201,
-                JSONObject().put("nonce", "server-nonce").toString(),
-            ),
-        private val renewal: EnrollmentClient.Transport.Reply? = null,
-        private val throwingOn: String? = null,
+        val challenge: Reply = Reply(
+            201,
+            JSONObject().put("nonce", "server-nonce").toString(),
+        ),
+        val renewal: Reply? = null,
+        val throwing: Exception? = null,
+        val throwingOn: String? = null,
     ) : EnrollmentClient.Transport {
         val paths = mutableListOf<String>()
         val bodies = mutableListOf<String>()
@@ -23,8 +25,13 @@ class RenewalClientTest {
         override fun post(path: String, body: String): EnrollmentClient.Transport.Reply {
             paths.add(path)
             bodies.add(body)
-            if (path == throwingOn) throw java.net.SocketTimeoutException("timed out")
-            return if (path == RenewalClient.CHALLENGE_PATH) challenge else renewal!!
+            throwing?.let { if (throwingOn == null || throwingOn == path) throw it }
+            val reply = when (path) {
+                ProvenPost.CHALLENGE_PATH -> challenge
+                "/v1/enroll/renew" -> renewal!!
+                else -> throw AssertionError("unexpected path: $path")
+            }
+            return EnrollmentClient.Transport.Reply(reply.status, reply.body)
         }
 
         override fun get(path: String): EnrollmentClient.Transport.Reply =
@@ -32,8 +39,9 @@ class RenewalClientTest {
     }
 
     private class FakeIdentity(
-        private val certificate: String? = "-----BEGIN CERTIFICATE-----\nmine\n",
-        private val signingThrows: Boolean = false,
+        val certificate: String? = "-----BEGIN CERTIFICATE-----\nmine\n",
+        val signingThrows: Boolean = false,
+        val keyId: String = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef123456",
     ) : ConfigurationClient.Identity {
         var signed: String? = null
 
@@ -44,10 +52,11 @@ class RenewalClientTest {
             signed = nonce
             return "c2lnbmF0dXJl"
         }
+        override fun keyId(): String = keyId
     }
 
-    private fun issued(): EnrollmentClient.Transport.Reply =
-        EnrollmentClient.Transport.Reply(
+    private fun issued(): Reply =
+        Reply(
             201,
             JSONObject()
                 .put("certificate_pem", "new certificate")
@@ -61,13 +70,15 @@ class RenewalClientTest {
     fun renewalSendsTheSameProofTripleAsConfigurationPlusTheCsr() {
         val transport = FakeTransport(renewal = issued())
         val identity = FakeIdentity()
+        val exchange = DefaultProvenExchange(transport)
+        val client = RenewalClient(exchange, identity, "https://enroll.muster.example")
 
-        val result = RenewalClient(transport, identity).renew("a csr")
+        val result = client.renew("a csr")
 
         assertTrue(result is RenewalClient.Renewed.Identity)
         assertEquals("server-nonce", identity.signed)
         assertEquals(
-            listOf(RenewalClient.CHALLENGE_PATH, "/v1/enroll/renew"),
+            listOf(ProvenPost.CHALLENGE_PATH, "/v1/enroll/renew"),
             transport.paths,
         )
         val sent = JSONObject(transport.bodies.last())
@@ -80,8 +91,11 @@ class RenewalClientTest {
     @Test
     fun aDeviceWithoutACertificateDoesNotBurnAChallenge() {
         val transport = FakeTransport(renewal = issued())
+        val identity = FakeIdentity(certificate = null)
+        val exchange = DefaultProvenExchange(transport)
+        val client = RenewalClient(exchange, identity, "https://enroll.muster.example")
 
-        val result = RenewalClient(transport, FakeIdentity(certificate = null)).renew("a csr")
+        val result = client.renew("a csr")
 
         assertTrue(result is RenewalClient.Renewed.NotEnrolled)
         assertTrue(transport.paths.isEmpty())
@@ -90,22 +104,30 @@ class RenewalClientTest {
     @Test
     fun aRefusedChallengeStopsBeforeAnythingIsSigned() {
         val transport = FakeTransport(
-            challenge = EnrollmentClient.Transport.Reply(503, "proofs unavailable"),
+            challenge = Reply(503, "proofs unavailable"),
         )
         val identity = FakeIdentity()
+        val exchange = DefaultProvenExchange(transport)
+        val client = RenewalClient(exchange, identity, "https://enroll.muster.example")
 
-        val result = RenewalClient(transport, identity).renew("a csr")
+        val result = client.renew("a csr")
 
         assertTrue(result is RenewalClient.Renewed.Refused)
         assertEquals(null, identity.signed)
-        assertEquals(listOf(RenewalClient.CHALLENGE_PATH), transport.paths)
+        assertEquals(listOf(ProvenPost.CHALLENGE_PATH), transport.paths)
     }
 
     @Test
     fun aNetworkFailureAfterTheProofIsRetryableWithoutReplacingTheIdentity() {
-        val transport = FakeTransport(throwingOn = RenewalClient.RENEW_PATH)
+        val transport = FakeTransport(
+            throwing = java.net.SocketTimeoutException("timed out"),
+            throwingOn = "/v1/enroll/renew",
+        )
+        val identity = FakeIdentity()
+        val exchange = DefaultProvenExchange(transport)
+        val client = RenewalClient(exchange, identity, "https://enroll.muster.example")
 
-        val result = RenewalClient(transport, FakeIdentity()).renew("a csr")
+        val result = client.renew("a csr")
 
         assertTrue(result is RenewalClient.Renewed.Unreachable)
     }
@@ -113,20 +135,26 @@ class RenewalClientTest {
     @Test
     fun aKeystoreThatWillNotProvePossessionIsADeviceFailure() {
         val transport = FakeTransport(renewal = issued())
+        val identity = FakeIdentity(signingThrows = true)
+        val exchange = DefaultProvenExchange(transport)
+        val client = RenewalClient(exchange, identity, "https://enroll.muster.example")
 
-        val result = RenewalClient(transport, FakeIdentity(signingThrows = true)).renew("a csr")
+        val result = client.renew("a csr")
 
         assertTrue(result is RenewalClient.Renewed.DeviceCannotAsk)
-        assertEquals(listOf(RenewalClient.CHALLENGE_PATH), transport.paths)
+        assertEquals(listOf(ProvenPost.CHALLENGE_PATH), transport.paths)
     }
 
     @Test
     fun anUnreadableSuccessNeverReplacesAWorkingIdentity() {
         val transport = FakeTransport(
-            renewal = EnrollmentClient.Transport.Reply(201, "not json"),
+            renewal = Reply(201, "not json"),
         )
+        val identity = FakeIdentity()
+        val exchange = DefaultProvenExchange(transport)
+        val client = RenewalClient(exchange, identity, "https://enroll.muster.example")
 
-        val result = RenewalClient(transport, FakeIdentity()).renew("a csr")
+        val result = client.renew("a csr")
 
         assertTrue(result is RenewalClient.Renewed.Refused)
     }

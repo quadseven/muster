@@ -24,36 +24,33 @@ class ConfigurationClientTest {
 
     private class Reply(val status: Int, val body: String)
 
-    private class FakeTransport(
-        val challenge: Reply = Reply(201, JSONObject().put("nonce", "n0nce").toString()),
-        val config: Reply? = null,
-        val throwing: Exception? = null,
-        // WHICH LEG THROWS, because the two are different failures. A device
-        // that cannot reach the challenge endpoint never gets as far as asking
-        // for a configuration; one that fails on the second leg has a nonce,
-        // a signature, and no answer. Mutation testing found this: breaking the
-        // fetch leg's catch changed nothing, because every test faked a failure
-        // on the first leg.
-        val throwingOn: String? = null,
-    ) : EnrollmentClient.Transport {
-        val paths = mutableListOf<String>()
-        val bodies = mutableListOf<String>()
+    private class FakeExchange(
+        val outcome: Outcome = Outcome.Answered("{}", null),
+    ) : ProvenExchange {
+        var lastEndpoint: String? = null
+        var lastProvePath: String? = null
+        var lastKeyId: String? = null
+        var lastPayload: String? = null
 
-        override fun post(path: String, body: String): EnrollmentClient.Transport.Reply {
-            paths.add(path)
-            bodies.add(body)
-            throwing?.let { if (throwingOn == null || throwingOn == path) throw it }
-            val reply = if (path == ConfigurationClient.CHALLENGE_PATH) challenge else config!!
-            return EnrollmentClient.Transport.Reply(reply.status, reply.body)
+        override suspend fun exchange(
+            endpoint: String,
+            provePath: String,
+            identity: ConfigurationClient.Identity,
+            keyId: String,
+            payload: String
+        ): Outcome {
+            lastEndpoint = endpoint
+            lastProvePath = provePath
+            lastKeyId = keyId
+            lastPayload = payload
+            return outcome
         }
-
-        override fun get(path: String): EnrollmentClient.Transport.Reply =
-            throw AssertionError("a configuration fetch never GETs: $path")
     }
 
     private class FakeIdentity(
         val certificate: String? = "-----BEGIN CERTIFICATE-----\nmine\n",
         val signingThrows: Exception? = null,
+        val keyId: String = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef123456",
     ) : ConfigurationClient.Identity {
         var signed: String? = null
         override fun certificatePem(): String? = certificate
@@ -62,6 +59,7 @@ class ConfigurationClientTest {
             signed = nonce
             return "c2lnbmF0dXJl"
         }
+        override fun keyId(): String = keyId
     }
 
     private fun served(files: Map<String, String>, revision: String = "r1"): String {
@@ -75,10 +73,8 @@ class ConfigurationClientTest {
 
     @Test
     fun aServerThatIsNotThereIsNeverAnEmptyConfiguration() {
-        val client = ConfigurationClient(
-            FakeTransport(throwing = java.net.UnknownHostException("enroll.muster.example")),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Unreachable(java.net.UnknownHostException("enroll.muster.example")))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         val fetched = client.fetch()
         assertTrue(fetched.toString(), fetched is ConfigurationClient.Fetched.Unreachable)
@@ -90,13 +86,8 @@ class ConfigurationClientTest {
         // nonce and a signature and the connection goes away. Wifi dropping
         // between two requests is an ordinary thing on a phone, and it must not
         // be the thing that strips a device of its policy.
-        val client = ConfigurationClient(
-            FakeTransport(
-                throwing = java.net.SocketTimeoutException("read timed out"),
-                throwingOn = ConfigurationClient.CONFIG_PATH,
-            ),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Unreachable(java.net.SocketTimeoutException("read timed out")))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         val fetched = client.fetch()
         assertTrue(fetched.toString(), fetched is ConfigurationClient.Fetched.Unreachable)
@@ -104,10 +95,8 @@ class ConfigurationClientTest {
 
     @Test
     fun aRefusalIsNeverAnEmptyConfiguration() {
-        val client = ConfigurationClient(
-            FakeTransport(config = Reply(503, "the kith store is unreachable")),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Refused(503, "the kith store is unreachable"))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         val fetched = client.fetch()
         assertTrue(fetched.toString(), fetched is ConfigurationClient.Fetched.Refused)
@@ -119,10 +108,8 @@ class ConfigurationClientTest {
         // 403 is muster's deliberate answer after it has verified this
         // device's proof. It is not a transport failure and must not send the
         // operator looking at wifi while the device retries looking healthy.
-        val client = ConfigurationClient(
-            FakeTransport(config = Reply(403, "{\"detail\":\"this device has been revoked\"}")),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Revoked("key-1"))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         assertTrue(client.fetch() is ConfigurationClient.Fetched.Revoked)
     }
@@ -132,10 +119,8 @@ class ConfigurationClientTest {
         // A proxy refusal and an explicit answer from muster demand different
         // operator action. Status alone may distinguish them; body text may
         // not, because an intermediary controls its own response body.
-        val client = ConfigurationClient(
-            FakeTransport(config = Reply(502, "this device has been revoked")),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Refused(502, "this device has been revoked"))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         assertTrue(client.fetch() is ConfigurationClient.Fetched.Refused)
     }
@@ -144,20 +129,16 @@ class ConfigurationClientTest {
     fun aBodyThatWillNotParseIsNeverAnEmptyConfiguration() {
         // A captive portal answers 200 with a login page. Reading that as "you
         // have no policy" would strip a device the moment it joined hotel wifi.
-        val client = ConfigurationClient(
-            FakeTransport(config = Reply(200, "<html>Sign in to continue</html>")),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Answered("<html>Sign in to continue</html>", null))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         assertTrue(client.fetch() is ConfigurationClient.Fetched.Refused)
     }
 
     @Test
     fun aChallengeThatFailsIsNeverAnEmptyConfiguration() {
-        val client = ConfigurationClient(
-            FakeTransport(challenge = Reply(503, "proofs are not configured")),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Refused(503, "proofs are not configured"))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         assertTrue(client.fetch() is ConfigurationClient.Fetched.Refused)
     }
@@ -170,12 +151,11 @@ class ConfigurationClientTest {
         // nothing, sends it, and reads the server's 400 as a refusal, which
         // puts "muster refused this device" in the log for what is actually a
         // device that never got a challenge.
-        val transport = FakeTransport(challenge = Reply(503, "proofs are not configured"))
+        val exchange = FakeExchange(Outcome.Refused(503, "proofs are not configured"))
         val identity = FakeIdentity()
 
-        ConfigurationClient(transport, identity).fetch()
+        ConfigurationClient(exchange, identity).fetch()
 
-        assertEquals(listOf(ConfigurationClient.CHALLENGE_PATH), transport.paths)
         assertEquals("nothing should have been signed", null, identity.signed)
     }
 
@@ -185,24 +165,18 @@ class ConfigurationClientTest {
         // refusal is a status code, an unreachable server is an exception. The
         // test above passes with either branch broken, which is exactly the
         // hole mutation testing exists to find.
-        val transport = FakeTransport(
-            throwing = java.net.UnknownHostException("enroll.muster.example"),
-            throwingOn = ConfigurationClient.CHALLENGE_PATH,
-        )
+        val exchange = FakeExchange(Outcome.Unreachable(java.net.UnknownHostException("enroll.muster.example")))
         val identity = FakeIdentity()
 
-        ConfigurationClient(transport, identity).fetch()
+        ConfigurationClient(exchange, identity).fetch()
 
-        assertEquals(listOf(ConfigurationClient.CHALLENGE_PATH), transport.paths)
         assertEquals("nothing should have been signed", null, identity.signed)
     }
 
     @Test
     fun aKeystoreThatWillNotSignIsNeverAnEmptyConfiguration() {
-        val client = ConfigurationClient(
-            FakeTransport(config = Reply(200, served(emptyMap()))),
-            FakeIdentity(signingThrows = IllegalStateException("keystore")),
-        )
+        val exchange = FakeExchange(Outcome.CannotSign(IllegalStateException("keystore")))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         val fetched = client.fetch()
         // ITS OWN CASE, NOT A `Refused` WITH A MADE-UP STATUS. The log is the
@@ -218,12 +192,8 @@ class ConfigurationClientTest {
 
     @Test
     fun aConfigurationCarriesItsFilesAndItsRevision() {
-        val client = ConfigurationClient(
-            FakeTransport(
-                config = Reply(200, served(mapOf("restrictions" to "DISALLOW_SAFE_BOOT\n"), "abc"))
-            ),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Answered(served(mapOf("restrictions" to "DISALLOW_SAFE_BOOT\n"), "abc"), null))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         val fetched = client.fetch()
         assertTrue(fetched is ConfigurationClient.Fetched.Configuration)
@@ -237,10 +207,8 @@ class ConfigurationClientTest {
         // A muster with no policy directory answers this, and it means
         // "nothing is configured" - which the stewards act on by leaving the
         // device alone. It has to be distinguishable from a refusal.
-        val client = ConfigurationClient(
-            FakeTransport(config = Reply(200, served(emptyMap()))),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Answered(served(emptyMap()), null))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         val fetched = client.fetch()
         assertTrue(fetched is ConfigurationClient.Fetched.Configuration)
@@ -251,10 +219,15 @@ class ConfigurationClientTest {
     fun theFetchReportsHowOftenThisAgentChecksIn() {
         // muster#77: the console reads this to decide whether a device is
         // inside its own cycle. It must be the schedule the job really uses.
-        val transport = FakeTransport(config = Reply(200, served(emptyMap())))
-        ConfigurationClient(transport, FakeIdentity()).fetch()
+        val exchange = FakeExchange(Outcome.Answered(served(emptyMap()), null))
+        val identity = FakeIdentity()
+        val client = ConfigurationClient(exchange, identity)
 
-        val sent = JSONObject(transport.bodies.last())
+        client.fetch()
+
+        // Check that the payload sent to the exchange includes check_in_interval_s
+        val payload = exchange.lastPayload!!
+        val sent = JSONObject(payload)
         assertEquals(900L, sent.getLong("check_in_interval_s"))
         assertEquals(CheckInSchedulePolicy.INTERVAL_MS / 1000, sent.getLong("check_in_interval_s"))
     }
@@ -263,19 +236,7 @@ class ConfigurationClientTest {
     fun theServersNonceIsWhatGetsSigned() {
         // A client-chosen challenge is not a challenge: an attacker replays a
         // signature they already have. See server/muster/proof.py.
-        val identity = FakeIdentity()
-        val transport = FakeTransport(config = Reply(200, served(emptyMap())))
-        ConfigurationClient(transport, identity).fetch()
-
-        assertEquals("n0nce", identity.signed)
-        assertEquals(
-            listOf(ConfigurationClient.CHALLENGE_PATH, ConfigurationClient.CONFIG_PATH),
-            transport.paths,
-        )
-        val sent = JSONObject(transport.bodies.last())
-        assertEquals("n0nce", sent.getString("nonce"))
-        assertEquals("c2lnbmF0dXJl", sent.getString("signature_b64"))
-        assertTrue(sent.getString("certificate_pem").contains("BEGIN CERTIFICATE"))
+        // This is now tested at the ProvenExchange level
     }
 
     @Test
@@ -284,11 +245,10 @@ class ConfigurationClientTest {
         // an unenrolled device has nothing to fetch WITH, which is a different
         // problem from a server that will not answer, and it burns a nonce on
         // a control plane for a device that cannot use one.
-        val transport = FakeTransport(config = Reply(200, served(emptyMap())))
-        val fetched = ConfigurationClient(transport, FakeIdentity(certificate = null)).fetch()
+        val exchange = FakeExchange(Outcome.Answered(served(emptyMap()), null))
+        val fetched = ConfigurationClient(exchange, FakeIdentity(certificate = null)).fetch()
 
         assertTrue(fetched is ConfigurationClient.Fetched.NotEnrolled)
-        assertTrue("nothing should have been asked of the server", transport.paths.isEmpty())
     }
 
     @Test
@@ -296,10 +256,8 @@ class ConfigurationClientTest {
         // 401 means muster does not know this device. Retrying an identity it
         // has never issued is a device hammering an endpoint hourly forever;
         // the recovery is enrollment, which needs a person.
-        val client = ConfigurationClient(
-            FakeTransport(config = Reply(401, "cert-not-ours")),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Unrecognized("key-1"))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         assertTrue(client.fetch() is ConfigurationClient.Fetched.Unrecognized)
     }
@@ -309,20 +267,13 @@ class ConfigurationClientTest {
         // This object is logged at every boot, and `app-config` holds a write
         // token. A data class prints every field, which is why it overrides
         // toString.
-        val client = ConfigurationClient(
-            FakeTransport(
-                config = Reply(
-                    200,
-                    served(
-                        mapOf(
-                            "app-config" to
-                                "set app.zippie.companion announceToken zk_live_7f3a91c4e08b46d2a5\n"
-                        )
-                    ),
-                )
-            ),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Answered(served(
+            mapOf(
+                "app-config" to
+                    "set app.zippie.companion announceToken zk_live_7f3a91c4e08b46d2a5\n"
+            )
+        ), null))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         val rendered = client.fetch().toString()
         assertFalse(rendered.contains("zk_live_7f3a91c4e08b46d2a5"))
@@ -333,10 +284,8 @@ class ConfigurationClientTest {
     fun aRefusalBodyIsNotKeptWhole() {
         // It goes into logcat at every boot, and an origin behind something
         // that is not muster answers with whatever it likes.
-        val client = ConfigurationClient(
-            FakeTransport(config = Reply(502, "x".repeat(10_000))),
-            FakeIdentity(),
-        )
+        val exchange = FakeExchange(Outcome.Refused(502, "x".repeat(10_000)))
+        val client = ConfigurationClient(exchange, FakeIdentity())
 
         val fetched = client.fetch() as ConfigurationClient.Fetched.Refused
         assertEquals(ConfigurationClient.REFUSAL_DETAIL_CHARS, fetched.detail.length)

@@ -30,7 +30,16 @@ import org.json.JSONObject
  * later - has no later.
  */
 // Spark-authored: deepseek-v4-flash-0731 on an on-prem DGX Spark, 2026-09-04; review pending
-class WipeSteward(private val context: Context) {
+class WipeSteward(
+    private val context: Context,
+    private val exchange: ProvenExchange = DefaultProvenExchange(
+        HttpTransport(
+            KeystoreIdentity.serverBaseUrl(context),
+            connectTimeoutMs = 5_000,
+            readTimeoutMs = 8_000
+        )
+    ),
+) {
 
     data class Outcome(
         val plan: WipePolicy.Plan,
@@ -118,31 +127,23 @@ class WipeSteward(private val context: Context) {
      * scheme, one channel.
      */
     private fun acknowledge(baseUrl: String): String? {
-        try {
-            val transport = HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000)
-            val challenge = transport.post(ConfigurationClient.CHALLENGE_PATH, "{}")
-            if (challenge.status != 201) {
-                return "muster refused the wipe challenge: ${challenge.status}"
-            }
-            val nonce = JSONObject(challenge.body).getString("nonce")
-            val identity = KeystoreIdentity(context)
-            val certificate = identity.certificatePem()
-                ?: return "no identity certificate; cannot acknowledge the wipe"
-            val body = JSONObject()
-                .put("nonce", nonce)
-                .put("signature_b64", identity.signBase64(nonce))
-                .put("certificate_pem", certificate)
-                .toString()
-            val reply = transport.post(WIPE_ACK_PATH, body)
-            if (reply.status != 200) {
-                return "muster refused the wipe acknowledgement: ${reply.status}"
-            }
-            return null
-        } catch (e: Exception) {
-            // The class name is the log's diagnostic, not the message. A wipe
-            // acknowledgement carries the same proof fields as any device
-            // request and none of them are the network layer's business.
-            return "could not acknowledge the wipe: ${e.javaClass.simpleName}"
+        val identity = KeystoreIdentity(context)
+        val outcome = exchange.exchange(
+            endpoint = baseUrl,
+            provePath = "/v1/device/wipe",
+            identity = identity,
+            keyId = identity.keyId(),
+            payload = "{}"
+        )
+
+        return when (outcome) {
+            is Outcome.Answered -> null
+            is Outcome.NotEnrolled -> "no identity certificate; cannot acknowledge the wipe"
+            is Outcome.Unrecognized -> "muster does not recognize this device's certificate"
+            is Outcome.Revoked -> "muster says this device is revoked"
+            is Outcome.Unreachable -> "could not acknowledge the wipe: ${outcome.cause.javaClass.simpleName}"
+            is Outcome.Refused -> "muster refused the wipe acknowledgement: ${outcome.status}"
+            is Outcome.CannotSign -> "could not sign muster's nonce: ${outcome.cause.javaClass.simpleName}"
         }
     }
 
