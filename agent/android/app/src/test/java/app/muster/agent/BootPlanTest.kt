@@ -255,7 +255,7 @@ class BootPlanTest {
         // job must run this same plan - configuration included - and must be
         // scheduled both when the device becomes managed and at every boot.
         val job = readCode("CheckInJob.kt")
-        assertTrue("CheckInJob must run BootPlan.STEPS", job.contains("BootPlan.STEPS"))
+        assertTrue("CheckInJob must delegate the run", job.contains("CheckInRun.run"))
         for (scheduler in listOf("MusterDeviceAdminReceiver.kt", "BootReceiver.kt")) {
             assertTrue(
                 "$scheduler must schedule the periodic check-in",
@@ -271,7 +271,7 @@ class BootPlanTest {
         // have a network to send over must send one, after the steps.
         for (runner in listOf("CheckInJob.kt", "StatusActivity.kt")) {
             val code = readCode(runner)
-            val steps = code.indexOf("BootPlan.STEPS")
+            val steps = code.indexOf("CheckInRun.run")
             val report = code.indexOf("ReportSteward(this).send(steps)")
             assertTrue("$runner must send the check-in report", report >= 0)
             assertTrue("$runner must report after running the steps", report > steps)

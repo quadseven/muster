@@ -39,20 +39,15 @@ class CheckInJob : JobService() {
             RenewalTrigger.CHECK_IN
         }
         work.execute {
-            val steps = RenewalTrigger.during(trigger) {
-                BootPlan.STEPS.map { (name, run) ->
-                    SyncReport.Step(
-                        name,
-                        try {
-                            run(this)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "check-in: $name failed", e)
-                            SyncReport.Threw(name, e.message)
-                        },
-                    )
-                }
+            val run = RenewalTrigger.during(trigger) {
+                CheckInRun.run(
+                    BootPlan.STEPS.map { (name, step) ->
+                        CheckInRun.NamedStep(name) { step(this) }
+                    },
+                ) { name, error -> Log.e(TAG, "check-in: $name failed", error) }
             }
-            val report = SyncReport.of(steps)
+            val steps = run.steps
+            val report = run.view
             Log.i(TAG, "check-in diagnostics upload: ${DiagnosticsSteward(this).send(report)}")
             // AFTER EVERY STEP, so the report carries the whole check-in and
             // the versions the install steps left behind (muster#146).
@@ -68,12 +63,7 @@ class CheckInJob : JobService() {
             // without this a failed fetch waits the whole interval. For a bond
             // leg whose router just came back, that is seconds versus fifteen
             // minutes.
-            val reached = steps.none {
-                it.name == "configuration" && it.outcome.concerns().any { c ->
-                    c.contains("no fresh policy")
-                }
-            }
-            if (CheckInSchedulePolicy.needsCatchUp(reached)) scheduleCatchUp(this)
+            if (run.needsCatchUp) scheduleCatchUp(this)
             // `false`: never reschedule THIS run. The job is periodic, so the
             // next one is already coming; asking for a retry on top of that is
             // how one failing step becomes a device reconciling continuously.

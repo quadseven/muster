@@ -95,6 +95,9 @@ object SyncReport {
  * and nothing outside `AppVisibilitySteward` can tell those apart.
  */
 interface StepOutcome {
+    /** Whether the configuration exchange received an answer from muster. */
+    val musterAnswered: Boolean? get() = null
+
     /**
      * One line per thing a person has to go and look at. Empty when the step
      * did what it was told - and an empty list is a claim, so a steward that
