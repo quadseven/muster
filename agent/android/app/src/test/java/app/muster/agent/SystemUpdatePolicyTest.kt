@@ -14,18 +14,20 @@ import org.junit.Test
  */
 class SystemUpdatePolicyTest {
 
-    private class FakeTarget : SystemUpdatePolicy.Target {
+    private class FakeTarget(
+        private val result: SystemUpdatePolicy.Result = SystemUpdatePolicy.Result.Applied,
+    ) : SystemUpdatePolicy.Target {
         var automaticSet = false
         var windowedSet: Pair<Int, Int>? = null
 
-        override fun setAutomaticInstallPolicy(): Boolean {
+        override fun setAutomaticInstallPolicy(): SystemUpdatePolicy.Result {
             automaticSet = true
-            return true
+            return result
         }
 
-        override fun setWindowedInstallPolicy(startMinute: Int, endMinute: Int): Boolean {
+        override fun setWindowedInstallPolicy(startMinute: Int, endMinute: Int): SystemUpdatePolicy.Result {
             windowedSet = startMinute to endMinute
-            return true
+            return result
         }
     }
 
@@ -80,5 +82,37 @@ class SystemUpdatePolicyTest {
         assertFalse(target.automaticSet)
         assertEquals(120 to 300, target.windowedSet)
         assertEquals(listOf("applied windowed install policy (120-300)"), logs)
+    }
+
+    @Test
+    fun aRefusedPolicyComesBackAsFailedNamingWhy() {
+        val reason = "could not set automatic system update policy: SecurityException: not owner"
+        val target = FakeTarget(SystemUpdatePolicy.Result.Refused(reason))
+        val logs = mutableListOf<String>()
+
+        val plan = SystemUpdatePolicy.apply(
+            isDeviceOwner = true,
+            target = target,
+            log = { logs += it },
+        )
+
+        assertTrue(target.automaticSet)
+        assertEquals(SystemUpdatePolicy.Plan.Failed(reason), plan)
+        assertEquals(listOf(reason), logs)
+    }
+
+    @Test
+    fun aRefusedWindowedPolicyComesBackAsFailed() {
+        val reason = "could not set windowed system update policy: IllegalArgumentException: bad window"
+        val target = FakeTarget(SystemUpdatePolicy.Result.Refused(reason))
+
+        val plan = SystemUpdatePolicy.apply(
+            isDeviceOwner = true,
+            target = target,
+            window = SystemUpdatePolicy.Window(120, 300),
+        )
+
+        assertEquals(120 to 300, target.windowedSet)
+        assertEquals(SystemUpdatePolicy.Plan.Failed(reason), plan)
     }
 }

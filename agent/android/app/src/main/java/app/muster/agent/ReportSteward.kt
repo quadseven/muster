@@ -4,7 +4,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.os.Build
-import org.json.JSONObject
+import android.util.Log
 
 /**
  * Sends the check-in report (muster#146) over the platform transport, with the
@@ -24,16 +24,7 @@ class ReportSteward(private val context: Context) {
             )
             val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
             val admin = ComponentName(context, MusterDeviceAdminReceiver::class.java)
-            val pendingUpdate = try {
-                if (dpm != null && dpm.isDeviceOwnerApp(context.packageName)) {
-                    val update = dpm.getPendingSystemUpdate(admin)
-                    if (update != null) {
-                        JSONObject().put("pending", true)
-                    } else null
-                } else null
-            } catch (e: Exception) {
-                null
-            }
+            val pendingUpdate = pendingSystemUpdate(dpm, admin)
             client.send(
                 steps = steps,
                 versions = AppInstallSteward(context).managedVersions(),
@@ -44,5 +35,24 @@ class ReportSteward(private val context: Context) {
         } catch (e: Exception) {
             ProvenPost.Sent.Unreachable(e.javaClass.simpleName)
         }
+    }
+
+    /**
+     * True when the platform holds an OS update waiting to install, false when
+     * it holds none, null when the agent is not Device Owner or the platform
+     * refused the question: unknown, which the console must not read as none.
+     */
+    private fun pendingSystemUpdate(dpm: DevicePolicyManager?, admin: ComponentName): Boolean? {
+        if (dpm == null || !dpm.isDeviceOwnerApp(context.packageName)) return null
+        return try {
+            dpm.getPendingSystemUpdate(admin) != null
+        } catch (e: SecurityException) {
+            Log.w(TAG, "could not read the pending system update", e)
+            null
+        }
+    }
+
+    private companion object {
+        const val TAG = "MusterReport"
     }
 }

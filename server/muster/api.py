@@ -92,7 +92,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Callable
+from typing import Annotated, Callable
 from email.utils import format_datetime
 
 from cryptography.hazmat.primitives import serialization
@@ -1764,8 +1764,10 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         ),
         security_patch: str | None = Body(None, embed=True),
         build_id: str | None = Body(None, embed=True),
-        pending_update: Any | None = Body(None, embed=True),
-        pending_system_update: Any | None = Body(None, embed=True),
+        # A strict bool and nothing richer (muster#191): the device is not
+        # trusted to put arbitrary JSON in the report. True means an OS update
+        # is waiting, false none, absent that the agent could not ask.
+        pending_update: Annotated[bool | None, Body(embed=True, strict=True)] = None,
     ):
         """What a device did at its last check-in, kept so the console can say (muster#146).
 
@@ -1791,9 +1793,8 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         kept = tuple(_kept_step(step) for step in steps)
         if _report_bytes(kept) > REPORT_MAX_BYTES:
             raise HTTPException(status_code=413, detail="report is too large")
-        update = pending_update if pending_update is not None else pending_system_update
-        clean_patch = security_patch.strip()[:64] if isinstance(security_patch, str) else None
-        clean_build = build_id.strip()[:64] if isinstance(build_id, str) else None
+        clean_patch = security_patch.strip()[:64] if security_patch is not None else None
+        clean_build = build_id.strip()[:64] if build_id is not None else None
         try:
             state.kith.reported(
                 proven,
@@ -1804,7 +1805,7 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                 ),
                 security_patch=clean_patch,
                 build_id=clean_build,
-                pending_update=update,
+                pending_update=pending_update,
             )
         except kith_store.Unreachable as unreachable:
             # 503 and the device keeps going: it sends a fresher report at its

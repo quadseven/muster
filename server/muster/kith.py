@@ -304,7 +304,7 @@ class Report:
     packages: tuple[PackageReport, ...]
     security_patch: str | None = None
     build_id: str | None = None
-    pending_update: Any | None = None
+    pending_update: bool | None = None
 
 
 class Records(Protocol):
@@ -1575,7 +1575,7 @@ class Kith:
         packages: tuple[PackageReport, ...],
         security_patch: str | None = None,
         build_id: str | None = None,
-        pending_update: Any | None = None,
+        pending_update: bool | None = None,
     ) -> None:
         """Keep what a device says it did at its last check-in (muster#146).
 
