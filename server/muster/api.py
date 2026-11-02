@@ -2185,14 +2185,17 @@ def _issue_renewal(
     renewals racing cannot both come back short. PUT BACK ON FAILURE,
     deliberately: nothing was issued and the device still holds the
     certificate it presented, so a transient refusal must not spend the
-    operator's one-shot request. The restoration is logged.
+    operator's one-shot request, unless the operator cancelled or re-armed
+    while it was in flight. The outcome is logged.
     """
 
     def restore() -> None:
         if armed is not None:
-            state.short_renewals.put_back(proven, armed)
+            restored = state.short_renewals.put_back(proven, armed)
             telemetry.event(
-                "short renewal restored after a failed issuance", key_id=proven
+                "short renewal restored after a failed issuance" if restored
+                else "short renewal not restored: cancelled or re-armed meanwhile",
+                key_id=proven,
             )
 
     try:
@@ -2211,6 +2214,8 @@ def _issue_renewal(
     except BaseException:
         restore()
         raise
+    if armed is not None:
+        state.short_renewals.spent(proven, armed)
     return identity
 
 

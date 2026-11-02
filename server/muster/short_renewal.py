@@ -61,14 +61,22 @@ class ShortRenewals:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._armed: dict[str, Armed] = {}
+        # Requests a renewal has taken and not yet spent or put back. Kept so a
+        # cancel or a re-arm that lands mid-issuance wins over the put-back: a
+        # failed issuance must never resurrect a request the operator dropped.
+        self._taken: dict[str, Armed] = {}
 
     def arm(self, key_id: str, armed: Armed) -> None:
         with self._lock:
             self._armed[key_id] = armed
+            self._taken.pop(key_id, None)
 
     def disarm(self, key_id: str) -> Armed | None:
+        """Cancel the request, including one a renewal holds right now."""
         with self._lock:
-            return self._armed.pop(key_id, None)
+            waiting = self._armed.pop(key_id, None)
+            in_flight = self._taken.pop(key_id, None)
+            return waiting if waiting is not None else in_flight
 
     def peek(self, key_id: str) -> Armed | None:
         with self._lock:
@@ -77,13 +85,29 @@ class ShortRenewals:
     def take(self, key_id: str) -> Armed | None:
         """Read and clear in one step. The one-shot property lives here."""
         with self._lock:
-            return self._armed.pop(key_id, None)
+            armed = self._armed.pop(key_id, None)
+            if armed is not None:
+                self._taken[key_id] = armed
+            return armed
 
-    def put_back(self, key_id: str, armed: Armed) -> None:
-        """Undo a `take` whose issuance failed, unless it was re-armed since.
+    def spent(self, key_id: str, armed: Armed) -> None:
+        """The taken request was issued: nothing is left to cancel or restore."""
+        with self._lock:
+            if self._taken.get(key_id) is armed:
+                del self._taken[key_id]
+
+    def put_back(self, key_id: str, armed: Armed) -> bool:
+        """Undo a `take` whose issuance failed, unless it was cancelled or
+        re-armed since.
 
         A failed issuance leaves the device on the certificate it already holds,
         so the request has not been used up and the next attempt may have it.
+        A cancel or a re-arm in the meantime removed `armed` from `_taken`, and
+        the operator's later word stands. True when the request went back.
         """
         with self._lock:
+            if self._taken.get(key_id) is not armed:
+                return False
+            del self._taken[key_id]
             self._armed.setdefault(key_id, armed)
+            return True
