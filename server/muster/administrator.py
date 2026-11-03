@@ -64,6 +64,11 @@ FLOW_TTL_S = 600.0
 # process that holds the CA until the pod is OOMKilled. Oldest out first.
 MAX_PENDING_FLOWS = 32
 
+# How far apart the provider's clock and this pod's may be before a fresh
+# token reads as issued in the future. Seconds, applied by pyjwt to `iat`,
+# `nbf` and `exp` alike, so it also lets a session run this much past expiry.
+CLOCK_LEEWAY_S = 30
+
 # A signing key we have never seen may be a rotation rather than an attack, so
 # one unknown `kid` earns one refetch - but not more often than this, or an
 # attacker with a made-up kid has a way to make muster hammer the provider.
@@ -91,7 +96,6 @@ class Outcome(str, Enum):
     closed, so tagging by it cannot explode cardinality.
     """
 
-    OK = "ok"
     NO_SESSION = "no-session"
     MALFORMED = "malformed-token"
     UNKNOWN_KEY = "unknown-key"
@@ -125,7 +129,6 @@ class Administrator:
 
     subject: str
     email: str
-    expires_at: int
 
 
 @dataclass(frozen=True)
@@ -467,9 +470,11 @@ class SignIn:
             # status and the standard `error` code come out of here.
             error = ""
             try:
-                error = str(response.json().get("error", ""))
+                body = response.json()
             except ValueError:
-                pass
+                body = None
+            if isinstance(body, dict):
+                error = str(body.get("error", ""))
             raise Refused(
                 Outcome.PROVIDER_REFUSED,
                 f"the identity provider refused the exchange: {response.status_code} {error}".strip(),
@@ -553,6 +558,14 @@ class SignIn:
                 # sign-in token by the standard, so demanding them refuses
                 # nothing a correct provider issues.
                 options={"require": ["exp", "iat", "sub", "aud", "iss"]},
+                # A FEW SECONDS OF SKEW IS NOT A FORGERY. The provider stamps
+                # `iat` from its clock and this pod checks it against its own;
+                # with none allowed, a provider one second ahead issues a
+                # token that is "not yet valid" here, the refusal is MALFORMED,
+                # which is not worth retrying, and the cookie the callback just
+                # set is cleared on the very next request. The symptom is a
+                # sign-in button that appears to do nothing.
+                leeway=CLOCK_LEEWAY_S,
             )
         except jwt.ExpiredSignatureError as exc:
             # Separated from every other failure because it is the only one with
@@ -583,7 +596,6 @@ class SignIn:
             Administrator(
                 subject=subject,
                 email=str(claims.get("email") or ""),
-                expires_at=int(claims.get("exp") or 0),
             ),
             claims,
         )
@@ -640,8 +652,19 @@ class SignIn:
             raise Refused(Outcome.PROVIDER_UNREACHABLE, str(exc)) from exc
         finally:
             self._keys_fetched_at = self.clock()
+        # A JWKS document is an object with a `keys` list of objects. One that
+        # is not - a provider behind a captive portal, a misconfigured URL that
+        # answers with something else - is PROVIDER_UNREACHABLE, not a 500 on
+        # every request that carries a session cookie.
+        keys = document.get("keys") if isinstance(document, dict) else None
+        if not isinstance(keys, list):
+            raise Refused(
+                Outcome.PROVIDER_UNREACHABLE, "the JWKS document is not a key set"
+            )
         self._keys = {
-            key["kid"]: key for key in document.get("keys", []) if key.get("kid")
+            key["kid"]: key
+            for key in keys
+            if isinstance(key, dict) and key.get("kid")
         }
 
     def end_session_url(self, after: str) -> str:

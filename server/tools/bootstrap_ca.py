@@ -31,7 +31,8 @@ key_pem = authority._key.private_bytes(
 ssm.put_parameter(Name=KEY_PARAM, Value=key_pem, Type="SecureString",
                   Description="muster CA private key - root of trust for every enrolled device")
 ssm.put_parameter(Name=CERT_PARAM, Value=authority.certificate_pem.decode(), Type="String",
-                  Description="muster CA certificate - public, pinned by devices and by Cloudflare")
+                  Description="muster CA certificate - public; devices verify their own "
+                              "certificate against it. Nothing at the edge sees it.")
 
 cert = x509.load_pem_x509_certificate(authority.certificate_pem)
 print("CA created and stored in SSM.")

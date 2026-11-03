@@ -586,6 +586,95 @@ def test_sweep_racing_requests_does_not_tear_the_table(enroll, monkeypatch):
     assert all(not t.is_alive() for t in threads)
 
 
+def test_overlapping_presentations_cannot_spend_one_code_twice(
+    enroll, monkeypatch
+):
+    """"Spent by the first device to use it" has to hold when two
+    presentations overlap, because on the scanned path a second Pending is a
+    second certificate issued with nobody asked (CONTEXT.md).
+
+    The check that a code is unspent and the write that spends it used to sit
+    either side of the lock, so presentations landing in that gap each saw the
+    code fresh. The gap is widened here to make the race deterministic: the
+    expiry check inside the critical section parks every thread on a barrier,
+    so without the fix all four arrive there together, all pass, and all four
+    are issued. With the fix the first thread holds the lock while the barrier
+    times out (which it swallows and carries on), and the others then find the
+    code spent."""
+    import threading
+
+    from muster import enroll as module  # noqa: PLC0415
+
+    presenters = 4
+    barrier = threading.Barrier(presenters, timeout=0.5)
+    real_expired_at = module.PairingCode.expired_at
+
+    def expired_at_at_the_barrier(self, now):
+        try:
+            barrier.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return real_expired_at(self, now)
+
+    monkeypatch.setattr(module.PairingCode, "expired_at", expired_at_at_the_barrier)
+
+    code = enroll.mint(shape=Shape.SCANNED)
+    outcomes = []
+
+    def present():
+        try:
+            outcomes.append(("issued", _present(enroll, code).request_id))
+        except Refused as refused:
+            outcomes.append(("refused", refused.outcome))
+
+    threads = [threading.Thread(target=present) for _ in range(presenters)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    issued = [o for o in outcomes if o[0] == "issued"]
+    refused = [o for o in outcomes if o[0] == "refused"]
+    assert len(issued) == 1, f"one code was spent {len(issued)} times: {outcomes!r}"
+    assert len(refused) == presenters - 1
+    assert all(o[1] is Outcome.CODE_USED for o in refused)
+
+
+def test_two_administrators_vouching_at_once_get_a_refusal_not_a_crash(enroll):
+    """`vouch` reads the request, compares the fingerprint, and only then takes
+    it. A second vouch that lands between the read and the take must be
+    refused as NOT_PENDING, the answer it would have got a moment later -
+    not a KeyError that becomes a 500 on the console."""
+    code = enroll.mint()
+    pending = _present(enroll, code)
+    # The other administrator's vouch wins between this one's read and its pop.
+    enroll.pending.pop(pending.request_id)
+    enroll.pending[pending.request_id] = pending
+    real_get = enroll.pending.get
+
+    def get_then_lose_the_race(request_id):
+        entry = real_get(request_id)
+        if entry is not None:
+            del enroll.pending[request_id]
+        return entry
+
+    enroll.pending = _RacingDict(enroll.pending, get_then_lose_the_race)
+    with pytest.raises(Refused) as caught:
+        enroll.vouch(pending.request_id, pending.fingerprint)
+    assert caught.value.outcome is Outcome.NOT_PENDING
+
+
+class _RacingDict(dict):
+    """A pending table whose `get` is followed by another thread's pop."""
+
+    def __init__(self, source, get):
+        super().__init__(source)
+        self._get = get
+
+    def get(self, key, default=None):
+        return self._get(key)
+
+
 def test_a_failing_sweep_does_not_end_the_sweeper(enroll, monkeypatch):
     """Review on #117: an exception escaping `sweep()` would unwind the loop and
     kill the daemon thread silently, leaving `codes` unbounded again. One bad

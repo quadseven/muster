@@ -313,6 +313,101 @@ def test_a_wedged_store_is_reported_rather_than_waited_on(tmp_path, monkeypatch)
     assert time.monotonic() - started < 5, "muster waited on a wedged store"
 
 
+def _hanging_until_released(monkeypatch, target: str):
+    """Like `_hanging`, but the worker it occupies is given back at the end.
+
+    The pool has four workers and a touch that sleeps thirty seconds keeps one
+    for the rest of the run; three tests above already spend three of them.
+    A test that wedges a fourth would leave every healthy test after it
+    timing out, so these release theirs."""
+    import threading
+
+    release = threading.Event()
+
+    def _until_released(*args, **kwargs):
+        release.wait(30)
+
+    monkeypatch.setattr(assets, target, _until_released, raising=False)
+    return release
+
+
+def test_a_wedged_listing_is_reported_as_unavailable_not_as_no_store(
+    tmp_path, monkeypatch
+):
+    """`fetch` used to ask `names()`, which folds a wedged share into an empty
+    list for /readyz's sake - so a share that stopped answering was reported as
+    "the store holds nothing, check the PVC". Both are 503 to the device; the
+    metric and the place an operator goes to look were wrong."""
+    import time
+
+    store = assets.Assets(root=tmp_path, configured=str(tmp_path))
+    (tmp_path / "wall.png").write_bytes(b"\x89PNG")
+    monkeypatch.setattr(assets, "STORAGE_TIMEOUT_S", 0.2)
+    release = _hanging_until_released(monkeypatch, "_list_names")
+    try:
+        started = time.monotonic()
+        with pytest.raises(assets.Unavailable):
+            store.fetch("wall.png")
+        assert time.monotonic() - started < 5, "muster waited on a wedged store"
+    finally:
+        release.set()
+
+
+def test_resolving_the_name_is_bounded_like_every_other_touch(tmp_path, monkeypatch):
+    """`resolve` and `is_file` stat every path component on the share. They
+    used to run on the request thread, outside the bound, so a mount that
+    answered the listing from cache and then wedged hung the request there."""
+    import time
+
+    store = assets.Assets(root=tmp_path, configured=str(tmp_path))
+    (tmp_path / "wall.png").write_bytes(b"\x89PNG")
+    monkeypatch.setattr(assets, "STORAGE_TIMEOUT_S", 0.2)
+    release = _hanging_until_released(monkeypatch, "_locate")
+    try:
+        started = time.monotonic()
+        with pytest.raises(assets.Unavailable):
+            store.fetch("wall.png")
+        assert time.monotonic() - started < 5, "muster waited on a wedged resolve"
+    finally:
+        release.set()
+
+
+def test_a_touch_that_timed_out_before_starting_never_runs(tmp_path, monkeypatch):
+    """`submit` never refuses, so once the workers are wedged every later touch
+    queues behind them. Each caller gets its `Unavailable` on time - but when
+    the share comes back the pool used to drain that backlog of abandoned
+    reads ahead of the live requests. A timed-out touch that has not started
+    is cancelled instead."""
+    import concurrent.futures
+    import threading
+
+    workers = 2
+    monkeypatch.setattr(
+        assets, "_storage",
+        concurrent.futures.ThreadPoolExecutor(max_workers=workers),
+    )
+    monkeypatch.setattr(assets, "STORAGE_TIMEOUT_S", 0.1)
+    release = threading.Event()
+    ran = []
+
+    def wedged(root):
+        release.wait(10)
+        ran.append(root)
+        return []
+
+    queued = 3
+    for _ in range(workers + queued):
+        with pytest.raises(assets.Unavailable):
+            assets._bounded(wedged, tmp_path)
+    release.set()
+    # Everything that was going to run has run once this sentinel has.
+    assets._storage.submit(lambda: None).result(timeout=10)
+
+    # At most one per worker could have started before its caller gave up;
+    # without the cancel every queued one ran as well.
+    assert len(ran) <= workers, f"{len(ran) - workers} abandoned touches still ran"
+
+
 def test_a_wedged_store_does_not_hang_readyz(tmp_path, monkeypatch):
     """`status()` is what /readyz publishes. If it can hang, a NAS hiccup makes
     the kubelet kill a pod whose restart cannot fix a wedged mount - so it

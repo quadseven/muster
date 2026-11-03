@@ -890,6 +890,17 @@ def test_a_directory_holding_only_a_shared_wifi_file_is_not_a_live_source(root):
         policies.for_device(A)
 
 
+def test_shadowing_cannot_be_answered_from_a_directory_holding_nothing(root):
+    """`install_apps_shadowed` refused a missing directory and then answered
+    `[]` from an empty one - so a deleted policy secret read as "nothing is
+    shadowed" on the same roll entry whose drift said "muster cannot say"."""
+    policies = policy.Policies(root=root)
+
+    assert policies.files_held() == 0
+    with pytest.raises(policy.NoSource):
+        policies.install_apps_shadowed(A, role="")
+
+
 def test_a_wifi_file_that_does_not_parse_is_not_served_but_the_rest_is(root):
     _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
     _own(root, A, "wifi").write_text("ssid relay-net\nsecurity WPA\n")  # no passphrase

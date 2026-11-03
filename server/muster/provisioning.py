@@ -27,8 +27,10 @@ unapproved one can fail with "App blocked to protect your device". Reports
 indicate the check behaves like a harmful-app heuristic rather than a strict
 list - devices sometimes offer a "continue", and developers have cleared it by
 dropping permissions that read as dangerous. This agent asks for four:
-RECEIVE_BOOT_COMPLETED, SET_WALLPAPER, INTERNET, BIND_DEVICE_ADMIN. No SMS, no
-notification listener, no accessibility. That is a clean profile, and whether it
+RECEIVE_BOOT_COMPLETED, SET_WALLPAPER, INTERNET, ACCESS_NETWORK_STATE
+(BIND_DEVICE_ADMIN is a permission the receiver REQUIRES of its caller, not one
+the agent asks for - the manifest says so beside it). No SMS, no notification
+listener, no accessibility. That is a clean profile, and whether it
 clears the heuristic is an EMPIRICAL question - one wipe of a device that
 carries nothing answers it.
 """

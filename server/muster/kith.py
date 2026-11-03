@@ -154,6 +154,14 @@ UNREACHABLE = (
     "what it recorded meanwhile is waiting to be written"
 )
 
+# A read the store REFUSED, as opposed to one it could not be reached for. The
+# store is up and nothing is deferred; this one question was one it will never
+# answer, so the caller still gets no answer but the breaker is left alone.
+REFUSED_READ = (
+    "the kith store refused this read and will refuse it again; the store "
+    "itself is reachable and nothing has been deferred"
+)
+
 
 @dataclass(frozen=True)
 class Device:
@@ -1180,7 +1188,8 @@ class PostgresRecords:
             cursor.execute(
                 "SELECT serial, request_id, not_before, not_after, issued_at,"
                 "       certificate_pem, collected_at"
-                "  FROM kith_certificate WHERE key_id = %s ORDER BY issued_at",
+                "  FROM kith_certificate WHERE key_id = %s"
+                " ORDER BY issued_at, serial",
                 (key_id,),
             )
             return cursor.fetchall()
@@ -1763,6 +1772,22 @@ class Kith:
             try:
                 answer = ask(self._records)
             except Exception as exc:  # noqa: BLE001
+                # A REFUSAL IS NOT AN OUTAGE, on the read path as on the write
+                # path. `_drain` already asks the store to tell the two apart;
+                # this used to open the breaker on either, so a question the
+                # server refused on its merits - a request id carrying a NUL
+                # byte, which `text` cannot hold and the driver rejects before
+                # sending - put every device proof, the CRL and OCSP into the
+                # cooldown for 30 seconds. That request id arrives on an open
+                # route, so one unauthenticated request every 30 seconds held
+                # the whole estate at 503 while the database was healthy.
+                if self._is_permanent(exc):
+                    self._telemetry.count("kith.read.poison")
+                    telemetry.event(
+                        "the kith store refused a read it will always refuse",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    raise Unreachable(REFUSED_READ) from exc
                 self._failed("read", exc)
                 # The driver's own words go to the log, where they are useful,
                 # and not into an HTTP response, where they are a libpq string

@@ -113,6 +113,44 @@ def _read_bytes(path: pathlib.Path) -> bytes:
     return path.read_bytes()
 
 
+def _locate(root: pathlib.Path, name: str) -> pathlib.Path:
+    """The file behind a name, contained in the store, or `Unknown`.
+
+    RESOLVED AND THEN CONTAINED, rather than "refuse every symlink".
+
+    Refusing symlinks outright is what shipped first, and it refused the
+    only deployment this store actually has. A Kubernetes Secret volume
+    does not place files: it places a timestamped directory, a `..data`
+    symlink to it, and one symlink PER KEY pointing through `..data` -
+    which is how it swaps a whole Secret atomically. Every asset muster
+    serves is therefore a symlink, and the guard rejected all of them
+    while `/readyz` went on counting them (`is_file` follows a link and
+    `is_symlink` does not), so the store reported one asset and served
+    none.
+
+    What that guard was actually for is a link pointing OUT of the store,
+    and containment is the check for that: resolve, then require the
+    result to still be inside the resolved root. `..data/wall.png`
+    resolves to a sibling of the root's own subdirectory and stays inside;
+    a link to /etc/muster/ca does not.
+
+    ONE BOUNDED TOUCH, like the listing and the read. `resolve` and
+    `is_file` stat every component of the path on the share, so run on the
+    request thread they would hang it on a wedged mount exactly as an
+    unbounded read would - the thread this module exists to get back.
+    """
+    try:
+        real_root = root.resolve(strict=True)
+        path = (real_root / name).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        # RuntimeError is a symlink loop. Both are "no such asset" to the
+        # caller, for the reason `Unknown` gives.
+        raise Unknown(f"no asset named '{name}': {exc}") from exc
+    if not path.is_relative_to(real_root) or not path.is_file():
+        raise Unknown(f"no asset named '{name}'")
+    return path
+
+
 def _list_names(root: pathlib.Path) -> list[str]:
     """Isolated for the same reason as `_read_bytes`."""
     return sorted(
@@ -155,10 +193,15 @@ def _bounded(work, *args):
     try:
         return future.result(timeout=STORAGE_TIMEOUT_S)
     except concurrent.futures.TimeoutError as slow:
-        # NOT CANCELLED, because it cannot be: the thread is blocked in a
-        # syscall the interpreter does not interrupt. It is abandoned, and
-        # `_STORAGE_WORKERS` is what stops abandoning one per request from
-        # growing without bound.
+        # CANCELLED IF IT HAS NOT STARTED, ABANDONED IF IT HAS. A running touch
+        # cannot be interrupted - the thread is blocked in a syscall the
+        # interpreter does not reach into - and `_STORAGE_WORKERS` is what
+        # stops abandoning one per request from growing without bound. But
+        # `submit` never refuses: once the workers are wedged, every later
+        # touch queues behind them, and when the share comes back the pool
+        # drains a backlog of reads and publishes nobody is waiting for ahead
+        # of the live requests. `cancel` drops the queued ones.
+        future.cancel()
         raise Unavailable(
             f"the asset store did not answer within {STORAGE_TIMEOUT_S}s. The "
             "share is unreachable or wedged; muster is otherwise unaffected."
@@ -317,7 +360,15 @@ class Assets:
                 "this muster has no asset store, so it cannot serve a file "
                 f"(MUSTER_ASSET_DIR={self.configured or 'unset'})"
             )
-        if not self.names():
+        # NOT `self.names()`, which folds a wedged share into an empty list
+        # for /readyz's sake. Here that would turn "the share stopped
+        # answering" into "check the PVC": a 503 either way, but the wrong
+        # metric, and the wrong place for an operator to go and look.
+        try:
+            held = _bounded(_list_names, self.root)
+        except OSError:
+            held = []
+        if not held:
             # See NoSource. An empty store is a deleted secret at least as often
             # as it is a store nobody has filled, and only one of those two
             # readings sends somebody to look at the right thing.
@@ -328,32 +379,7 @@ class Assets:
         if not _NAME.match(name or ""):
             raise Unknown(f"'{name}' is not a name an asset can have")
 
-        # RESOLVED AND THEN CONTAINED, rather than "refuse every symlink".
-        #
-        # Refusing symlinks outright is what shipped first, and it refused the
-        # only deployment this store actually has. A Kubernetes Secret volume
-        # does not place files: it places a timestamped directory, a `..data`
-        # symlink to it, and one symlink PER KEY pointing through `..data` -
-        # which is how it swaps a whole Secret atomically. Every asset muster
-        # serves is therefore a symlink, and the guard rejected all of them
-        # while `/readyz` went on counting them (`is_file` follows a link and
-        # `is_symlink` does not), so the store reported one asset and served
-        # none.
-        #
-        # What that guard was actually for is a link pointing OUT of the store,
-        # and containment is the check for that: resolve, then require the
-        # result to still be inside the resolved root. `..data/wall.png`
-        # resolves to a sibling of the root's own subdirectory and stays inside;
-        # a link to /etc/muster/ca does not.
-        try:
-            root = self.root.resolve(strict=True)
-            path = (root / name).resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            # RuntimeError is a symlink loop. Both are "no such asset" to the
-            # caller, for the reason `Unknown` gives.
-            raise Unknown(f"no asset named '{name}': {exc}") from exc
-        if not path.is_relative_to(root) or not path.is_file():
-            raise Unknown(f"no asset named '{name}'")
+        path = _bounded(_locate, self.root, name)
         try:
             size = _bounded(lambda p: p.stat().st_size, path)
         except OSError as exc:

@@ -2831,6 +2831,24 @@ def test_an_enrolled_device_fetches_an_asset_and_its_digest(state, tmp_path):
     assert response.headers["Cache-Control"] == "no-store"
 
 
+def test_a_request_id_that_could_not_have_been_minted_is_not_asked_after(state):
+    """The collect route is open, and it used to hand whatever was in the path
+    to the store. A NUL byte there is a statement Postgres refuses before it is
+    sent, and the breaker counted that refusal as an outage - so one request
+    every thirty seconds held every device proof at 503. A request id is
+    `token_urlsafe`, and anything outside that alphabet names nothing."""
+    def never(_request_id):
+        raise AssertionError("the store was asked about an impossible request id")
+
+    state.kith.awaiting_collection = never
+    client = TestClient(create_app(state))
+
+    for impossible in ("%00", "a%00b", "%2e%2e", "with%20space", "x" * 65):
+        response = client.get(f"/v1/enroll/requests/{impossible}/identity")
+        assert response.status_code == 404, impossible
+        assert response.json() == {"detail": "no such request"}
+
+
 def test_an_administrator_uploads_an_asset_for_a_device(state, tmp_path):
     """An operator can publish from anywhere with the admin session."""
     import hashlib
@@ -2857,6 +2875,36 @@ def test_an_administrator_uploads_an_asset_for_a_device(state, tmp_path):
     assert fetched.content == content
     assert fetched.headers["X-Muster-Digest"] == hashlib.sha256(content).hexdigest()
     assert fetched.headers["Cache-Control"] == "no-store"
+
+
+def test_an_upload_is_published_off_the_event_loop(state, tmp_path, monkeypatch):
+    """The route is `async` so it can stream the body, and `put` blocks on the
+    share and then fsyncs. Called on the loop it held every other route - a
+    wedged share under one upload stalled /readyz, configuration and renewal
+    for the full bound - so it has to be handed to a worker thread."""
+    import asyncio
+
+    state.assets = _asset_store(tmp_path)
+    client = _proof_client(state)
+    client.cookies.update(ADMIN)
+    on_the_loop = []
+    real_put = state.assets.put
+
+    def put_noting_where_it_ran(name, content):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_the_loop.append(False)
+        else:
+            on_the_loop.append(True)
+        return real_put(name, content)
+
+    monkeypatch.setattr(state.assets, "put", put_noting_where_it_ran)
+
+    uploaded = client.put("/v1/assets/new.png", content=b"x")
+
+    assert uploaded.status_code == 200
+    assert on_the_loop == [False], "the upload ran on the event loop"
 
 
 def test_asset_upload_requires_an_administrator_session(state, tmp_path):
@@ -4621,6 +4669,54 @@ def test_ocsp_says_unknown_for_a_serial_the_kith_has_no_record_of():
     parsed = ocsp.load_der_ocsp_response(response.content)
     assert parsed.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL
     assert parsed.certificate_status == ocsp.OCSPCertStatus.UNKNOWN
+
+
+def _asking_about_two_certificates(single_request_der: bytes) -> bytes:
+    """One request's CertID, twice, in a requestList the parser will not read.
+
+    `OCSPRequestBuilder` refuses to build this, so it is spliced by hand: the
+    `Request` element is lifted out of a one-certificate request and repeated.
+    """
+
+    def element(der: bytes, at: int) -> tuple[int, int]:
+        length = der[at + 1]
+        if length < 0x80:
+            return at + 2, at + 2 + length
+        width = length & 0x7F
+        length = int.from_bytes(der[at + 2 : at + 2 + width], "big")
+        return at + 2 + width, at + 2 + width + length
+
+    def sequence(content: bytes) -> bytes:
+        assert len(content) < 256
+        length = bytes([len(content)]) if len(content) < 0x80 else b"\x81" + bytes([len(content)])
+        return b"\x30" + length + content
+
+    start, _ = element(single_request_der, 0)  # OCSPRequest
+    start, _ = element(single_request_der, start)  # tbsRequest
+    start, end = element(single_request_der, start)  # requestList
+    one = single_request_der[start:end]
+    return sequence(sequence(sequence(one + one)))
+
+
+def test_ocsp_answers_malformed_for_a_request_about_two_certificates():
+    """Legal DER the parser declines to read raised NotImplementedError, which
+    nothing caught: a 500 with a traceback in the CA process's log, available
+    to anyone on the internet. RFC 6960 has a signed answer for it."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+    _, identity, _ = _enrolled(state)
+
+    response = _ask_ocsp(
+        client, state,
+        _asking_about_two_certificates(
+            _ocsp_request_der(state, identity.certificate_pem.decode())
+        ),
+    )
+
+    assert response.status_code == 200
+    parsed = ocsp.load_der_ocsp_response(response.content)
+    assert parsed.response_status == ocsp.OCSPResponseStatus.MALFORMED_REQUEST
+    assert response.headers["Cache-Control"] == "no-store"
 
 
 def test_ocsp_refuses_to_answer_for_another_ca():
