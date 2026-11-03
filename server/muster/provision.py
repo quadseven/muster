@@ -260,7 +260,7 @@ def set_device_owner(adb: Adb, serial: str, component: str = ADMIN_COMPONENT) ->
     device's own policy state afterwards - the same rule the zippie deploy
     follows about the difference between what was installed and what is running.
     """
-    adb.shell(serial, f"dpm set-device-owner {component}")
+    adb.shell(serial, f"dpm set-device-owner {shlex.quote(component)}")
     owner = _parse_owner(adb.shell(serial, "dumpsys device_policy"))
     return owner.split("/")[0] == component.split("/")[0]
 
@@ -289,7 +289,7 @@ def installed_package(adb: Adb, serial: str, package: str) -> Installed:
     is there. An MDM's own record answers neither - it says what it meant to
     deliver. The device is the only witness.
     """
-    dump = adb.shell(serial, f"dumpsys package {package}")
+    dump = adb.shell(serial, f"dumpsys package {shlex.quote(package)}")
     version_name = ""
     version_code = ""
     for line in dump.splitlines():

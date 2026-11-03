@@ -655,6 +655,21 @@ def test_a_package_or_a_path_cannot_become_a_command():
     assert "'app.muster.agent; rm -rf /'" in hostile
 
 
+def test_a_component_or_a_package_name_cannot_become_a_command_either():
+    """The same two inputs reach `dpm set-device-owner` and `dumpsys package`,
+    and both were interpolated bare while `_run_as` quoted. A component with a
+    space in it silently set the wrong owner; a `;` ran as shell."""
+    from muster.provision import installed_package
+
+    adb = FakeAdb()
+    set_device_owner(adb, "fake-serial", component="app.x/.Admin; reboot")
+    assert "dpm set-device-owner 'app.x/.Admin; reboot'" in adb.shell_calls
+
+    package_adb = PackageAdb()
+    installed_package(package_adb, "fake-serial", "app.x; reboot")
+    assert "dumpsys package 'app.x; reboot'" in package_adb.shell_calls
+
+
 def test_the_cli_no_longer_stages_config_in_a_directory_it_cannot_copy_out_of():
     """The route this replaced, guarded so it cannot come back by resemblance.
 

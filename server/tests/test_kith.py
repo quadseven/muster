@@ -846,6 +846,12 @@ def test_a_renewal_upserts_the_device_and_leaves_first_seen_alone():
     # `name = EXCLUDED.name` passes every behavioral test in this file against
     # MemoryRecords and still reverts a device's name during backlog replay.
     updates = device_sql.split("DO UPDATE")[1]
+    # THE INVARIANT AGENTS.md NAMES. The behavioral test of it runs against
+    # MemoryRecords, whose `replace` keeps `revoked_at` whatever the SQL says;
+    # this is the only line that dies if a renewal on Postgres could readmit.
+    assert "revoked_at" not in updates, (
+        "a renewal must not be able to readmit a revoked device"
+    )
     assert "GREATEST(kith_device.last_seen, EXCLUDED.last_seen)" in updates
     assert "CASE WHEN EXCLUDED.last_seen >= kith_device.last_seen" in updates
 
@@ -1140,6 +1146,54 @@ def test_a_connection_whose_schema_fails_is_closed_rather_than_leaked():
     assert all(c.closed for c in connections), "a failed connection was left open"
 
 
+def test_a_read_the_store_refuses_does_not_open_the_breaker():
+    """A refusal is not an outage, on the read path as on the write path.
+
+    `_drain` already asks the store whether a failed write is one it will
+    always refuse. `_read` did not ask, so a question the server rejected on
+    its merits opened the breaker: every device proof, the CRL and OCSP then
+    answered 503 for the cooldown, and the request that did it arrived on an
+    open route - so one unauthenticated request every 30 seconds held the
+    whole estate at 503 while the database was healthy."""
+
+    class Refusing(MemoryRecords):
+        def member(self, key_id_):
+            raise ValueError("PostgreSQL text fields cannot contain NUL bytes")
+
+        def permanent(self, exc):
+            return isinstance(exc, ValueError)
+
+    from muster import telemetry
+
+    emitter = telemetry.Telemetry()
+    kith = kith_store.Kith(records=Refusing(), clock=Clock(), emitter=emitter)
+
+    with pytest.raises(kith_store.Unreachable) as refused:
+        kith.member("\x00")
+
+    assert str(refused.value) == kith_store.REFUSED_READ
+    assert kith.status()["state"] == "ok", "a refused read opened the breaker"
+    assert kith.roll() == [], "the next read was refused for the cooldown"
+    assert any("kith.read.poison" in line for line in emitter.sent)
+    assert not any("kith.store.unreachable" in line for line in emitter.sent)
+
+
+def test_a_read_the_store_cannot_answer_still_opens_the_breaker():
+    """The other half of the split, so the fix above cannot have widened it."""
+
+    class Gone(MemoryRecords):
+        def member(self, key_id_):
+            raise OSError("connection refused")
+
+    from muster import telemetry
+
+    kith = kith_store.Kith(records=Gone(), clock=Clock(), emitter=telemetry.Telemetry())
+
+    with pytest.raises(kith_store.Unreachable):
+        kith.member("abc")
+    assert kith.status()["state"] == "deferring"
+
+
 def test_every_statement_is_something_postgresql_can_actually_parse():
     """The nearest thing to a real database this repo has.
 
@@ -1173,9 +1227,17 @@ def test_every_statement_is_something_postgresql_can_actually_parse():
     records.awaiting_collection("req-1")
     records.record_report("abc", kith_store.Report(START, *a_report()))
     records.report("abc")
+    records.record_role("abc", "relay")
+    records.record_admin_name("abc", "the one by the door")
+    records.record_revocation("abc", START)
+    records.record_wipe_pending("abc", START)
+    records.record_wipe_pending("abc", None)
+    records.record_wipe_acknowledged("abc", START)
+    records.record_reboot_requested("abc", START)
+    records.record_reboot_acknowledged("abc")
 
     statements = [sql for sql, _ in connection.log]
-    assert len(statements) >= 12, statements
+    assert len(statements) >= 20, statements
 
     for sql in statements:
         # psycopg substitutes %s client-side, so the placeholder never reaches

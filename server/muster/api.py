@@ -88,6 +88,7 @@ import hashlib
 import io
 import os
 import pathlib
+import re
 import threading
 import time
 import urllib.parse
@@ -100,6 +101,7 @@ from cryptography.hazmat.primitives import serialization
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Host, Route, Router
 
 from muster.ca import BACKDATE, Authority, Identity, Untrusted
@@ -1087,8 +1089,13 @@ def create_app(state: State) -> FastAPI:
             if size > asset_store.MAX_BYTES:
                 raise HTTPException(status_code=413, detail="asset is too large")
             chunks.append(chunk)
+        # OFF THE EVENT LOOP. This route is `async` so it can stream the body,
+        # and `put` blocks: a bounded wait on the share, then an fsync of up to
+        # MAX_BYTES to it. Called directly it would hold the one loop every
+        # other route is served from, so a wedged share under one upload
+        # would stall /readyz, configuration and renewal for the full bound.
         try:
-            asset = state.assets.put(name, b"".join(chunks))
+            asset = await run_in_threadpool(state.assets.put, name, b"".join(chunks))
         except asset_store.Unknown as unknown:
             raise HTTPException(status_code=400, detail=str(unknown)) from unknown
         except asset_store.TooLarge as too_large:
@@ -1323,6 +1330,8 @@ def create_app(state: State) -> FastAPI:
         # since been replaced, which before the kith was written down meant the
         # device lost a certificate that already existed and had to enroll again
         # with a human present.
+        if not _REQUEST_ID.match(request_id):
+            raise HTTPException(status_code=404, detail="no such request")
         try:
             held = state.kith.awaiting_collection(request_id)
         except kith_store.Unreachable as unreachable:
@@ -1723,7 +1732,7 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         nonce: str = Body(..., embed=True),
         signature_b64: str = Body(..., embed=True),
         certificate_pem: str = Body(..., embed=True),
-        diagnostics: list[str] = Body(..., embed=True, max_items=DIAGNOSTIC_MAX_LINES),
+        diagnostics: list[str] = Body(..., embed=True, max_length=DIAGNOSTIC_MAX_LINES),
     ):
         """Accept a small device report after proving its enrolled identity."""
         response.headers["Cache-Control"] = "no-store"
@@ -2071,6 +2080,13 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
             "renew_after": identity.renew_after().isoformat(),
         }
 
+
+# THE SHAPE OF A REQUEST ID, checked before one reaches the store. They are
+# minted by `secrets.token_urlsafe`, so this alphabet is the whole of what one
+# can contain, and anything else names no request and need not be asked after.
+# Asking the store anyway is what let a NUL byte in this open route's path
+# become a refused statement, which the breaker then counted as an outage.
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")
 
 # What /agent.json has already worked out, keyed by the bytes it describes.
 # Module level rather than per-app so a test that builds several apps over one
@@ -3132,18 +3148,16 @@ def app_from_env() -> FastAPI:
     )
     clock = lambda: dt.datetime.now(dt.timezone.utc).timestamp()  # noqa: E731
 
-    sign_in = None
-    if provider is not None:
-        # The callback URL is derived from MUSTER_BASE_URL rather than
-        # configured separately, for the reason that variable exists at all: the
-        # request's Host is whatever a proxy says it is, and a redirect URL
-        # taken from a header is one an attacker can aim. It must match the one
-        # registered with the provider exactly - see docs/administrator-sign-in.md.
-        sign_in = administrator.SignIn(
-            provider=provider,
-            administrators=subjects,
-            redirect_uri=base_url.rstrip("/") + "/auth/callback",
-        )
+    # The callback URL is derived from MUSTER_BASE_URL rather than configured
+    # separately, for the reason that variable exists at all: the request's
+    # Host is whatever a proxy says it is, and a redirect URL taken from a
+    # header is one an attacker can aim. It must match the one registered with
+    # the provider exactly - see docs/administrator-sign-in.md.
+    sign_in = administrator.SignIn(
+        provider=provider,
+        administrators=subjects,
+        redirect_uri=base_url.rstrip("/") + "/auth/callback",
+    )
 
     # The kith is wired from the environment too, and it does NOT refuse to
     # start without a database - see kith.from_env. A control plane that

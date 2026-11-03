@@ -440,6 +440,58 @@ def test_the_first_fetch_happens_whatever_the_clock_counts_from(provider):
     assert provider.jwks_fetches == 1
 
 
+def test_a_jwks_document_that_is_not_a_key_set_is_a_provider_outage(provider):
+    """A list, a string, a key with no object around it: each used to escape
+    `administrator_for` as an AttributeError, which the middleware does not
+    catch - so every request carrying a session cookie was a 500 until the
+    next refetch. The provider answering nonsense is the provider being
+    unreachable, which keeps the cookie and tries again later."""
+    for not_a_key_set in ([{"kty": "RSA"}], "keys", {"keys": "none"}, {"keys": ["x"]}):
+        provider.jwks = lambda document=not_a_key_set: document
+        sign_in = provider.sign_in()
+        with pytest.raises(Refused) as refused:
+            run(sign_in.administrator_for(provider.id_token()))
+        assert refused.value.outcome is Outcome.PROVIDER_UNREACHABLE, not_a_key_set
+
+
+def test_a_refusal_whose_body_is_not_an_object_is_still_a_refusal(provider):
+    provider.token_status = 400
+    provider.token_body = ["invalid_grant"]
+    sign_in = provider.sign_in()
+    code, state = provider.redeem(sign_in.start().url)
+
+    with pytest.raises(Refused) as refused:
+        run(sign_in.finish(code, state))
+    assert refused.value.outcome is Outcome.PROVIDER_REFUSED
+    assert "400" in str(refused.value)
+
+
+def test_a_token_from_a_provider_a_few_seconds_ahead_is_accepted(provider):
+    """Integer `iat` against an integer clock: a provider one second ahead
+    issues a token this pod reads as from the future. Refused, that is
+    MALFORMED, which is not worth retrying, so the cookie the callback had
+    just set was cleared on the next request - a sign-in that did nothing."""
+    import time
+
+    ahead = int(time.time()) + administrator.CLOCK_LEEWAY_S // 2
+    sign_in = provider.sign_in()
+
+    person = run(sign_in.administrator_for(provider.id_token(iat=ahead)))
+
+    assert person.subject == ADMIN_SUBJECT
+
+
+def test_a_token_from_further_ahead_than_the_leeway_is_still_refused(provider):
+    import time
+
+    far_ahead = int(time.time()) + administrator.CLOCK_LEEWAY_S * 4
+    sign_in = provider.sign_in()
+
+    with pytest.raises(Refused) as refused:
+        run(sign_in.administrator_for(provider.id_token(iat=far_ahead)))
+    assert refused.value.outcome is Outcome.MALFORMED
+
+
 def test_a_key_rotation_is_picked_up_without_a_restart(provider):
     clock = Clock()
     sign_in = provider.sign_in(clock=clock)

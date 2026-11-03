@@ -127,6 +127,25 @@ def test_signing_out_says_where_to_end_it_at_the_provider_too(provider):
     assert onward.startswith("https://identity.example.test/logout?")
 
 
+def test_a_providers_error_is_shown_escaped_exactly_once(client, provider):
+    """The `error` parameter is the provider's words on muster's page. It is
+    escaped where the page is built, not by whichever caller remembered to -
+    and once, so the operator reads the provider's text and not entities."""
+    started = client.get("/auth/signin", follow_redirects=False)
+    _, flow = provider.redeem(started.headers["location"])
+
+    landed = client.get(
+        f"/auth/callback?error={urllib.parse.quote('<b>access_denied</b> & more')}"
+        f"&state={urllib.parse.quote(flow)}",
+        follow_redirects=False,
+    )
+
+    assert landed.status_code == 403
+    assert "<b>access_denied</b>" not in landed.text
+    assert "&lt;b&gt;access_denied&lt;/b&gt; &amp; more" in landed.text
+    assert "&amp;lt;" not in landed.text, "escaped twice"
+
+
 def test_a_callback_in_a_browser_that_did_not_start_it_is_refused(client, provider):
     """Login CSRF, which the `state` parameter alone does not stop.
 

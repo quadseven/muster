@@ -668,6 +668,16 @@ class Policies:
                 "this muster has no policy directory, so it cannot say what a "
                 f"device should be (MUSTER_POLICY_DIR={self.configured or 'unset'})"
             )
+        if self.files_held() == 0:
+            # THE SAME LINE `for_device` DRAWS, and the comment above already
+            # gives the reason. Without this an empty directory answered `[]`,
+            # so one roll entry could carry `drift: known false` and
+            # `concerns: known true` about the same unreadable policy.
+            raise NoSource(
+                f"the policy directory {self.root} holds nothing muster manages. "
+                "An empty directory is not an instruction to withdraw policy - "
+                "write an empty kith.restrictions to say that deliberately."
+            )
         scoped = self._install_scope_texts(key_id, role)
         kith_text = next(
             (text for scope, text in scoped if scope == KITH_SCOPE), None
