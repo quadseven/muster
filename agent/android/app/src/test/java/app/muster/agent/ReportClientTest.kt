@@ -86,6 +86,24 @@ class ReportClientTest {
     }
 
     @Test
+    fun sendsSecurityPatchBuildIdAndPendingUpdateState() {
+        val transport = FakeTransport()
+
+        ReportClient(transport, FakeIdentity()).send(
+            steps = steps,
+            versions = emptyMap(),
+            securityPatch = "2026-10-05",
+            buildId = "AP2A.241005.001",
+            pendingUpdate = true,
+        )
+
+        val body = sent(transport)
+        assertEquals("2026-10-05", body.getString("security_patch"))
+        assertEquals("AP2A.241005.001", body.getString("build_id"))
+        assertTrue(body.getBoolean("pending_update"))
+    }
+
+    @Test
     fun aDeviceThatHasNotEnrolledSendsNothing() {
         val transport = FakeTransport()
         assertEquals(
