@@ -18,6 +18,11 @@ a comment:
 Neither produces an error anybody is looking at. `wallpaper` was added to the
 server first and did exactly the first of these until this check was written.
 
+ONE NAMED EXCEPTION, `SERVER_AHEAD`. A name goes there only when the server half
+has shipped, docs/policy.md says the agent half has not, and holding the name
+without a steward would be worse than refusing it. The check fails the moment
+the agent holds such a name, so the exception cannot outlive the gap.
+
     uv run --group dev python tools/check_managed_files.py agent-managed-files.json
 """
 from __future__ import annotations
@@ -26,7 +31,13 @@ import json
 import pathlib
 import sys
 
-from muster.policy import MANAGED_FILES
+from muster.policy import MANAGED_FILES, WIFI_FILE
+
+# Served, and refused by the agent on purpose. `wifi` carries a passphrase and
+# the agent has no steward for it yet (muster#195), so adding it to
+# ConfigurationPolicy.MANAGED would leave a credential on the device that
+# nothing reads. The device reports the refusal, so this drift is not silent.
+SERVER_AHEAD = frozenset({WIFI_FILE})
 
 
 def main(argv: list[str]) -> int:
@@ -45,9 +56,12 @@ def main(argv: list[str]) -> int:
         print(f"::error::{path} could not be read as JSON: {exc}", file=sys.stderr)
         return 1
 
-    server = set(MANAGED_FILES)
+    server = set(MANAGED_FILES) - SERVER_AHEAD
     if agent == server:
-        print(f"agent and server agree on {len(server)} managed files: {sorted(server)}")
+        print(
+            f"agent and server agree on {len(server)} managed files: {sorted(server)}; "
+            f"served ahead of the agent: {sorted(SERVER_AHEAD)}"
+        )
         return 0
 
     # BOTH DIRECTIONS ARE REPORTED SEPARATELY, because the fix is in a
@@ -59,7 +73,12 @@ def main(argv: list[str]) -> int:
             "add it to ConfigurationPolicy.MANAGED",
             file=sys.stderr,
         )
-    for name in sorted(agent - server):
+    for name in sorted(agent & SERVER_AHEAD):
+        print(
+            f"::error::the agent now holds '{name}' - remove it from SERVER_AHEAD",
+            file=sys.stderr,
+        )
+    for name in sorted(agent - server - SERVER_AHEAD):
         print(
             f"::error::the agent expects '{name}' and the server will not serve it - "
             "add it to policy.MANAGED_FILES",

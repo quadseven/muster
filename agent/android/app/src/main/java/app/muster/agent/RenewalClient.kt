@@ -18,6 +18,8 @@ import org.json.JSONObject
 class RenewalClient(
     private val transport: EnrollmentClient.Transport,
     private val identity: ConfigurationClient.Identity,
+    /** What started this pass ([RenewalTrigger]), logged by muster (muster#22). */
+    private val trigger: String? = null,
 ) {
 
     sealed interface Renewed {
@@ -51,6 +53,9 @@ class RenewalClient(
             .put("signature_b64", signature)
             .put("certificate_pem", certificate)
             .put("csr_pem", csrPem)
+            .apply {
+                trigger?.let { put("trigger", it) }
+            }
             .toString()
         val reply = try {
             transport.post(RENEW_PATH, body)
