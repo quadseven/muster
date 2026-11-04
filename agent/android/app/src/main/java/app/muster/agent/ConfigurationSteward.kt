@@ -53,6 +53,7 @@ class ConfigurationSteward(private val context: Context) {
         val didNotLand: List<String> = emptyList(),
         val kept: String? = null,
         val revoked: Boolean = false,
+        override val musterAnswered: Boolean = false,
     ) : StepOutcome {
 
         override fun concerns(): List<String> = buildList {
@@ -104,18 +105,23 @@ class ConfigurationSteward(private val context: Context) {
             // SURFACE ONLY. Revocation does not remove app-config, stop local
             // enforcement, or wipe. Those actions destroy capability or data
             // and require their own decision; wiping is muster#15.
-            return Outcome(revoked = true)
+            return Outcome(revoked = true, musterAnswered = true)
         }
         // The decision itself lives in ConfigurationPolicy, where a test can
         // break it. This line only obeys it.
         val configuration = ConfigurationPolicy.instruction(fetched)
-            ?: return Outcome(kept = why(fetched))
+            ?: return Outcome(
+                kept = why(fetched),
+                musterAnswered = fetched !is ConfigurationClient.Fetched.Unreachable &&
+                    fetched !is ConfigurationClient.Fetched.DeviceCannotAsk &&
+                    fetched !is ConfigurationClient.Fetched.NotEnrolled,
+            )
         // WHEN TO RENEW, as muster says it today (muster#22). The renewal step
         // reads this file on the next pass, so an administrator's decision
         // reaches the device within a check-in instead of waiting for the date
         // the last renewal handed out.
         val adopted = adoptRenewAfter(configuration.renewAfter)
-        val outcome = apply(configuration)
+        val outcome = apply(configuration).copy(musterAnswered = true)
         // Reported with the files, because a device that could not store this
         // still renews at the old date and nothing else would say why.
         return if (adopted) outcome else outcome.copy(didNotLand = outcome.didNotLand + "renew-after")

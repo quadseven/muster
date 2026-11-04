@@ -69,20 +69,15 @@ class StatusActivity : Activity() {
         button.isEnabled = false
         setStatus("Checking in...")
         work.execute {
-            val steps = RenewalTrigger.during(RenewalTrigger.SYNC) {
-                BootPlan.STEPS.map { (name, run) ->
-                    SyncReport.Step(
-                        name,
-                        try {
-                            run(this)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "sync: $name failed", e)
-                            SyncReport.Threw(name, e.message)
-                        },
-                    )
-                }
+            val run = RenewalTrigger.during(RenewalTrigger.SYNC) {
+                CheckInRun.run(
+                    BootPlan.STEPS.map { (name, step) ->
+                        CheckInRun.NamedStep(name) { step(this) }
+                    },
+                ) { name, error -> Log.e(TAG, "sync: $name failed", error) }
             }
-            val report = SyncReport.of(steps)
+            val steps = run.steps
+            val report = run.view
             val diagnosticsSent = DiagnosticsSteward(this).send(report)
             val reportSent = ReportSteward(this).send(steps)
             CheckIn.record(this, System.currentTimeMillis() / 1000)

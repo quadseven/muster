@@ -85,29 +85,15 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun run(context: Context, action: String) {
-        // EACH STEP IS GUARDED SEPARATELY, which the single try/catch this
-        // replaced did not do. With one block around everything, a wallpaper
-        // that failed to decode took the restrictions down with it - and the
-        // log said the wallpaper failed, so the missing restrictions looked
-        // like they had never been asked for.
-        for ((name, step) in BootPlan.STEPS) {
-            try {
-                val outcome = step(context)
-                Log.i(TAG, "boot ($action): $name $outcome")
-                // AT ERROR, SEPARATELY FROM THE LINE ABOVE. `logcat -s muster:E`
-                // is what somebody runs against a device that is not behaving,
-                // and a step that enforced nothing used to be invisible there -
-                // its whole outcome arrived at INFO alongside the steps that
-                // worked.
-                for (concern in outcome.concerns()) {
-                    Log.e(TAG, "boot ($action): $name CONCERN $concern")
-                }
-            } catch (e: Exception) {
-                // Never let one of these kill the receiver. A device that fails
-                // to apply a picture is cosmetic; a receiver that throws at
-                // every boot is a device that never runs anything else added
-                // here later.
-                Log.e(TAG, "boot ($action): $name failed", e)
+        val report = CheckInRun.run(
+            BootPlan.STEPS.map { (name, step) ->
+                CheckInRun.NamedStep(name) { step(context) }
+            },
+        ) { name, error -> Log.e(TAG, "boot ($action): $name failed", error) }
+        for (step in report.steps) {
+            Log.i(TAG, "boot ($action): ${step.name} ${step.outcome}")
+            step.outcome.concerns().forEach { concern ->
+                Log.e(TAG, "boot ($action): ${step.name} CONCERN $concern")
             }
         }
         // Recorded even if a step failed. "Last check-in" answers whether the
