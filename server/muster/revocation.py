@@ -37,10 +37,6 @@ class Artifact:
     this_update: dt.datetime | None
     next_update: dt.datetime | None
 
-    @property
-    def cacheable(self) -> bool:
-        return self.next_update is not None
-
 
 class Responder:
     """Build signed artifacts from the authoritative kith read path."""
@@ -76,7 +72,12 @@ class Responder:
     def ocsp(self, request_der: bytes) -> Artifact:
         try:
             request = self._authority.ocsp_request(request_der)
-        except ValueError:
+        except (ValueError, NotImplementedError):
+            # NotImplementedError is a request that is legal DER and asks about
+            # more than one certificate, which the parser declines to read.
+            # This route is open to the internet, and a 500 here was a
+            # traceback in the CA process's log for anyone who cared to send
+            # one; RFC 6960 has a signed-protocol answer for it instead.
             return _unsuccessful(ocsp.OCSPResponseStatus.MALFORMED_REQUEST)
         except Untrusted:
             return _unsuccessful(ocsp.OCSPResponseStatus.UNAUTHORIZED)

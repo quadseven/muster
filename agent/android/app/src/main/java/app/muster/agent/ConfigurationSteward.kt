@@ -110,7 +110,22 @@ class ConfigurationSteward(private val context: Context) {
         // break it. This line only obeys it.
         val configuration = ConfigurationPolicy.instruction(fetched)
             ?: return Outcome(kept = why(fetched))
-        return apply(configuration)
+        // WHEN TO RENEW, as muster says it today (muster#22). The renewal step
+        // reads this file on the next pass, so an administrator's decision
+        // reaches the device within a check-in instead of waiting for the date
+        // the last renewal handed out.
+        val adopted = adoptRenewAfter(configuration.renewAfter)
+        val outcome = apply(configuration)
+        // Reported with the files, because a device that could not store this
+        // still renews at the old date and nothing else would say why.
+        return if (adopted) outcome else outcome.copy(didNotLand = outcome.didNotLand + "renew-after")
+    }
+
+    /** False only when muster's value could not be stored; `write` logged why. */
+    private fun adoptRenewAfter(renewAfter: String?): Boolean {
+        val value = renewAfter ?: return true
+        val stale = FileIdentityStore(context).staleRenewAfter(value) ?: return true
+        return write(stale, value)
     }
 
     /**

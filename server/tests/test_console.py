@@ -127,6 +127,25 @@ def test_signing_out_says_where_to_end_it_at_the_provider_too(provider):
     assert onward.startswith("https://identity.example.test/logout?")
 
 
+def test_a_providers_error_is_shown_escaped_exactly_once(client, provider):
+    """The `error` parameter is the provider's words on muster's page. It is
+    escaped where the page is built, not by whichever caller remembered to -
+    and once, so the operator reads the provider's text and not entities."""
+    started = client.get("/auth/signin", follow_redirects=False)
+    _, flow = provider.redeem(started.headers["location"])
+
+    landed = client.get(
+        f"/auth/callback?error={urllib.parse.quote('<b>access_denied</b> & more')}"
+        f"&state={urllib.parse.quote(flow)}",
+        follow_redirects=False,
+    )
+
+    assert landed.status_code == 403
+    assert "<b>access_denied</b>" not in landed.text
+    assert "&lt;b&gt;access_denied&lt;/b&gt; &amp; more" in landed.text
+    assert "&amp;lt;" not in landed.text, "escaped twice"
+
+
 def test_a_callback_in_a_browser_that_did_not_start_it_is_refused(client, provider):
     """Login CSRF, which the `state` parameter alone does not stop.
 
@@ -656,6 +675,16 @@ def test_the_devices_section_can_queue_and_cancel_a_named_wipe(client):
     assert "revoke.disabled" in body
     assert "Do not revoke it first" in body
     assert "device-action-name" in body
+
+
+def test_the_console_does_not_contradict_what_the_server_does_with_an_erase(client):
+    """The server lifts a revocation to deliver an erase (D29), and calling the
+    erase off restores it (#214). String assertions, with the caveat above."""
+    body = client.get("/").text
+
+    assert "cannot receive an erase instruction" not in body
+    assert "leaves this device active" not in body
+    assert "revoked if it was revoked before the erase" in body
 
 
 def test_a_revoked_device_can_be_readmitted_from_the_same_row(client):

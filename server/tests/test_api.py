@@ -2551,6 +2551,9 @@ ADMINISTRATOR_ONLY = {
     # muster#58: a device that could reboot itself on request could be told
     # to by whatever compromised it, at a moment of the attacker's choosing.
     ("POST", "/v1/kith/{key_id}/reboot"),
+    # muster#22: a device that could arm its own short renewal could pick
+    # its own certificate lifetime, which is the CA's decision.
+    ("POST", "/v1/kith/{key_id}/short-renewal"),
 }
 
 # THE FOURTH AUDIENCE: public, unauthenticated, and cacheable - standard
@@ -2900,6 +2903,24 @@ def test_an_enrolled_device_fetches_an_asset_and_its_digest(state, tmp_path):
     assert response.headers["Cache-Control"] == "no-store"
 
 
+def test_a_request_id_that_could_not_have_been_minted_is_not_asked_after(state):
+    """The collect route is open, and it used to hand whatever was in the path
+    to the store. A NUL byte there is a statement Postgres refuses before it is
+    sent, and the breaker counted that refusal as an outage - so one request
+    every thirty seconds held every device proof at 503. A request id is
+    `token_urlsafe`, and anything outside that alphabet names nothing."""
+    def never(_request_id):
+        raise AssertionError("the store was asked about an impossible request id")
+
+    state.kith.awaiting_collection = never
+    client = TestClient(create_app(state))
+
+    for impossible in ("%00", "a%00b", "%2e%2e", "with%20space", "x" * 65):
+        response = client.get(f"/v1/enroll/requests/{impossible}/identity")
+        assert response.status_code == 404, impossible
+        assert response.json() == {"detail": "no such request"}
+
+
 def test_an_administrator_uploads_an_asset_for_a_device(state, tmp_path):
     """An operator can publish from anywhere with the admin session."""
     import hashlib
@@ -2926,6 +2947,36 @@ def test_an_administrator_uploads_an_asset_for_a_device(state, tmp_path):
     assert fetched.content == content
     assert fetched.headers["X-Muster-Digest"] == hashlib.sha256(content).hexdigest()
     assert fetched.headers["Cache-Control"] == "no-store"
+
+
+def test_an_upload_is_published_off_the_event_loop(state, tmp_path, monkeypatch):
+    """The route is `async` so it can stream the body, and `put` blocks on the
+    share and then fsyncs. Called on the loop it held every other route - a
+    wedged share under one upload stalled /readyz, configuration and renewal
+    for the full bound - so it has to be handed to a worker thread."""
+    import asyncio
+
+    state.assets = _asset_store(tmp_path)
+    client = _proof_client(state)
+    client.cookies.update(ADMIN)
+    on_the_loop = []
+    real_put = state.assets.put
+
+    def put_noting_where_it_ran(name, content):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_the_loop.append(False)
+        else:
+            on_the_loop.append(True)
+        return real_put(name, content)
+
+    monkeypatch.setattr(state.assets, "put", put_noting_where_it_ran)
+
+    uploaded = client.put("/v1/assets/new.png", content=b"x")
+
+    assert uploaded.status_code == 200
+    assert on_the_loop == [False], "the upload ran on the event loop"
 
 
 def test_asset_upload_requires_an_administrator_session(state, tmp_path):
@@ -3503,6 +3554,91 @@ def test_a_wipe_can_be_called_off_before_the_device_comes_back(state, tmp_path):
     assert policy.WIPE_FILE not in response.json()["files"], (
         "the wipe was called off and the device was still told to wipe"
     )
+
+
+def _call_off_wipe(client, key_id):
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": False}, cookies=ADMIN
+    ).status_code == 200
+
+
+def _acknowledge_wipe(client, key, identity):
+    import base64
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    return client.post("/v1/device/wipe", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    })
+
+
+def test_calling_off_an_erase_puts_a_revoked_device_back_to_revoked(
+    state, tmp_path
+):
+    """Queueing an erase lifts revocation so the instruction can travel (D29).
+    That lift belongs to the erase, so calling the erase off takes it back. The
+    original time survives too, because the CRL publishes it."""
+    client, key, identity, key_id = _revoked_device(state, tmp_path)
+    revoked_at = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"]["revoked_at"]
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": True}, cookies=ADMIN
+    ).status_code == 200
+
+    _call_off_wipe(client, key_id)
+
+    response = _fetch_config(client, key, identity)
+    assert response.status_code == 403, (
+        f"got {response.status_code} - calling off an erase readmitted a device "
+        "an administrator revoked"
+    )
+    view = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"]
+    assert view["revoked_at"] == revoked_at
+    assert view["wipe_pending_at"] is None
+
+
+def test_calling_off_an_erase_that_is_not_pending_readmits_nobody(state, tmp_path):
+    """The route takes `wipe: false` whatever the device's state, and readmission
+    has its own route. No erase was queued here, so nothing changes."""
+    client, key, identity, key_id = _revoked_device(state, tmp_path)
+
+    _call_off_wipe(client, key_id)
+
+    assert _fetch_config(client, key, identity).status_code == 403
+
+
+def test_a_stale_call_off_cannot_readmit_a_device_that_already_erased(
+    state, tmp_path
+):
+    """A console page opened before the acknowledgement still offers the call
+    off. The device has gone to revoked by then and must stay there."""
+    client, key, identity, key_id = _wipe_pending_device(state, tmp_path)
+    assert _acknowledge_wipe(client, key, identity).status_code == 200
+
+    _call_off_wipe(client, key_id)
+
+    assert _fetch_config(client, key, identity).status_code == 403
+
+
+def test_a_revoked_device_can_still_be_erased(state, tmp_path):
+    """D29's deliberate path, end to end: the erase lifts the revocation, the
+    device collects the instruction, and the acknowledgement refuses it again."""
+    from muster import policy
+
+    client, key, identity, key_id = _revoked_device(state, tmp_path)
+    assert _fetch_config(client, key, identity).status_code == 403
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": True}, cookies=ADMIN
+    ).status_code == 200
+
+    served = _fetch_config(client, key, identity)
+    assert served.status_code == 200
+    assert policy.WIPE_FILE in served.json()["files"]
+
+    assert _acknowledge_wipe(client, key, identity).status_code == 200
+    assert _fetch_config(client, key, identity).status_code == 403
 
 
 def test_an_unreachable_store_refuses_a_wipe_acknowledgement_rather_than_crashing(
@@ -4607,6 +4743,54 @@ def test_ocsp_says_unknown_for_a_serial_the_kith_has_no_record_of():
     assert parsed.certificate_status == ocsp.OCSPCertStatus.UNKNOWN
 
 
+def _asking_about_two_certificates(single_request_der: bytes) -> bytes:
+    """One request's CertID, twice, in a requestList the parser will not read.
+
+    `OCSPRequestBuilder` refuses to build this, so it is spliced by hand: the
+    `Request` element is lifted out of a one-certificate request and repeated.
+    """
+
+    def element(der: bytes, at: int) -> tuple[int, int]:
+        length = der[at + 1]
+        if length < 0x80:
+            return at + 2, at + 2 + length
+        width = length & 0x7F
+        length = int.from_bytes(der[at + 2 : at + 2 + width], "big")
+        return at + 2 + width, at + 2 + width + length
+
+    def sequence(content: bytes) -> bytes:
+        assert len(content) < 256
+        length = bytes([len(content)]) if len(content) < 0x80 else b"\x81" + bytes([len(content)])
+        return b"\x30" + length + content
+
+    start, _ = element(single_request_der, 0)  # OCSPRequest
+    start, _ = element(single_request_der, start)  # tbsRequest
+    start, end = element(single_request_der, start)  # requestList
+    one = single_request_der[start:end]
+    return sequence(sequence(sequence(one + one)))
+
+
+def test_ocsp_answers_malformed_for_a_request_about_two_certificates():
+    """Legal DER the parser declines to read raised NotImplementedError, which
+    nothing caught: a 500 with a traceback in the CA process's log, available
+    to anyone on the internet. RFC 6960 has a signed answer for it."""
+    state = _revocation_state()
+    client = TestClient(create_app(state))
+    _, identity, _ = _enrolled(state)
+
+    response = _ask_ocsp(
+        client, state,
+        _asking_about_two_certificates(
+            _ocsp_request_der(state, identity.certificate_pem.decode())
+        ),
+    )
+
+    assert response.status_code == 200
+    parsed = ocsp.load_der_ocsp_response(response.content)
+    assert parsed.response_status == ocsp.OCSPResponseStatus.MALFORMED_REQUEST
+    assert response.headers["Cache-Control"] == "no-store"
+
+
 def test_ocsp_refuses_to_answer_for_another_ca():
     """The request names a different issuer. Answering it at all - even
     'unknown' - would be speaking for certificates this CA never signed."""
@@ -4762,7 +4946,7 @@ def test_revocation_answers_are_cacheable_until_their_signed_next_update():
 
 
 
-def _renew(client, key, identity, csr_key=None, path="/v1/enroll/renew"):
+def _renew(client, key, identity, csr_key=None, path="/v1/enroll/renew", **extra):
     """The exchange a device makes to renew: challenge, sign, present a CSR.
 
     `csr_key` defaults to the device's own key, which is renewal. Passing a
@@ -4784,6 +4968,7 @@ def _renew(client, key, identity, csr_key=None, path="/v1/enroll/renew"):
         ).decode(),
         "certificate_pem": identity.certificate_pem.decode(),
         "csr_pem": csr.public_bytes(serialization.Encoding.PEM).decode(),
+        **extra,
     })
 
 
@@ -5149,3 +5334,349 @@ def test_an_implausible_interval_is_ignored_not_refused(state, tmp_path, nonsens
 
     assert _fetch_config_reporting(client, key, identity, nonsense).status_code == 200
     assert state.kith.member(key_id_).device.check_in_interval_s is None
+
+
+# ---- a per-device wifi policy (muster#195) --------------------------------
+
+_WIFI_PASSPHRASE = "pw-7f3a91c4e08b46d2a5"  # noqa: S105 - a fixture, not a credential
+
+
+def _wifi_file(ssid="relay-net", security="WPA", passphrase=_WIFI_PASSPHRASE):
+    return f"ssid {ssid}\nsecurity {security}\npassphrase {passphrase}\n"
+
+
+def test_a_wifi_file_is_served_to_that_device_only_and_kith_wifi_is_refused(
+    state, tmp_path
+):
+    """The wifi file holds a passphrase, so it reaches the device it names and
+    nobody else, and a shared `kith.wifi` is refused and logged, never served."""
+    import io
+    import json as _json
+
+    from muster import telemetry as _telemetry
+
+    state.policies = _policy_root(tmp_path)
+    client = _proof_client(state)
+    key_a, identity_a, key_id_a = _enrolled(state, name="relay-a")
+    key_b, identity_b, _key_id_b = _enrolled(state, name="relay-b")
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    (tmp_path / f"{key_id_a}.wifi").write_text(_wifi_file())
+    (tmp_path / "kith.wifi").write_text(_wifi_file(ssid="everyone"))
+
+    stream = io.StringIO()
+    _telemetry.configure_logging(stream)
+    mine = _fetch_config(client, key_a, identity_a).json()["files"]
+    theirs = _fetch_config(client, key_b, identity_b).json()["files"]
+
+    assert mine["wifi"] == _wifi_file(), "the named device gets its own file"
+    assert "wifi" not in theirs, "another device never gets it"
+    assert "everyone" not in repr(mine) + repr(theirs), "kith.wifi is never served"
+
+    refusals = [
+        _json.loads(line) for line in stream.getvalue().splitlines()
+        if "refuses a shared wifi file" in _json.loads(line)["message"]
+    ]
+    assert refusals, "a refused kith.wifi must be logged"
+    assert {r["refused_file"] for r in refusals} == {"kith.wifi"}
+
+
+def test_the_wifi_file_agrees_with_what_the_qr_encodes(state, tmp_path):
+    """The QR and the policy describe one network. They are built from the same
+    fields, so a phone provisioned by QR and then reconciled by policy cannot
+    flap between two descriptions of it."""
+    from muster import policy, provisioning
+
+    network = policy.WifiNetwork.parse(_wifi_file(ssid="relay-net", security="WEP"))
+    client, _apk = _published(state, tmp_path)
+
+    described = client.post(
+        "/v1/provision/qr", json=network.qr_fields(), cookies=ADMIN
+    ).json()
+
+    assert described["wifi"]["ssid"] == network.ssid == "relay-net"
+    assert described["wifi"]["security"] == network.security == "WEP"
+    extras = provisioning.payload(
+        component="c", download_url="https://x", checksum="k", **network.qr_fields()
+    )
+    assert extras[provisioning.WIFI_SSID] == network.ssid
+    assert extras[provisioning.WIFI_SECURITY] == network.security
+
+
+def test_the_wifi_passphrase_never_reaches_a_log_or_a_metric(state, tmp_path):
+    """The device is served the file, and nothing else ever sees the passphrase:
+    not the log, not a metric, not the printed form of the parsed network."""
+    import io
+
+    from muster import policy, telemetry as _telemetry
+
+    state.policies = _policy_root(tmp_path)
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state)
+    (tmp_path / f"{key_id_}.wifi").write_text(_wifi_file())
+    (tmp_path / "kith.wifi").write_text(_wifi_file())  # refused: also logged
+    (tmp_path / f"{'b' * 64}.wifi").write_text("ssid x\nbogus " + _WIFI_PASSPHRASE)
+
+    stream = io.StringIO()
+    _telemetry.configure_logging(stream)
+    response = _fetch_config(client, key, identity)
+    assert _WIFI_PASSPHRASE in response.text, "the DEVICE still gets it"
+
+    assert _WIFI_PASSPHRASE not in stream.getvalue(), "the passphrase reached a log"
+    assert _WIFI_PASSPHRASE not in "\n".join(state.telemetry.sent), "and a metric"
+    network = policy.WifiNetwork.parse(_wifi_file())
+    for rendered in (str(network), repr(network), f"{network}"):
+        assert _WIFI_PASSPHRASE not in rendered
+
+
+# ---- the operator's one short renewal (muster#22) -------------------------
+#
+# Proving renewal on a handset means watching its scheduled check-in cross
+# renew_after, and at 90 days that is a month away. An administrator arms ONE
+# device; its next check-in is told it may renew now, that renewal comes back
+# short with the 14-day floor waived, and the renewal after it is standard.
+
+# The test CA signs as of this instant (the `state` fixture's authority clock).
+_CA_NOW = dt.datetime(2026, 8, 18, tzinfo=dt.UTC)
+
+
+def _at(state, monkeypatch, when):
+    monkeypatch.setattr(state.kith, "now", lambda: when)
+
+
+def _arm(client, key_id, **body):
+    return client.post(
+        f"/v1/kith/{key_id}/short-renewal", json=body, cookies=ADMIN
+    )
+
+
+def _as_identity(renewed):
+    """A renewal response as the device stores it."""
+    from muster.ca import Identity
+
+    certificate = x509.load_pem_x509_certificate(renewed["certificate_pem"].encode())
+    return Identity(
+        certificate_pem=renewed["certificate_pem"].encode(),
+        not_before=certificate.not_valid_before_utc,
+        not_after=certificate.not_valid_after_utc,
+        serial=certificate.serial_number,
+    )
+
+
+def test_an_armed_check_in_tells_the_device_it_may_renew_now(state, monkeypatch, tmp_path):
+    """The field the agent stores is renew_after, so that is the one that moves.
+
+    Unarmed, a check-in reports the presented certificate's own renew_after;
+    armed, it reports now; cancelled, it goes back."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    now = _CA_NOW + dt.timedelta(minutes=5)
+    _at(state, monkeypatch, now)
+    natural = _as_identity(
+        {"certificate_pem": identity.certificate_pem.decode()}
+    ).renew_after()
+
+    before = _fetch_config(client, key, identity).json()["renew_after"]
+    assert _arm(client, key_id_).status_code == 200
+    armed = _fetch_config(client, key, identity).json()["renew_after"]
+    assert _arm(client, key_id_, armed=False).status_code == 200
+    after = _fetch_config(client, key, identity).json()["renew_after"]
+
+    assert before == natural.isoformat()
+    assert armed == now.isoformat()
+    assert after == natural.isoformat()
+
+
+def test_an_armed_renewal_is_short_lived_with_the_floor_waived(state, monkeypatch):
+    from muster.ca import MIN_RENEWAL_RUNWAY
+
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    # Five minutes after issuance: a month before this certificate's own
+    # renew_after, so only the armed request can let this renewal through.
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    assert _renew(client, key, identity).status_code == 409
+
+    armed = _arm(client, key_id_, lifetime_hours=36)
+    response = _renew(client, key, identity, trigger="check-in")
+
+    assert armed.status_code == 200, armed.text
+    assert armed.json()["short_renewal"]["lifetime_hours"] == 36
+    assert response.status_code == 201, response.text
+    short = _as_identity(response.json())
+    assert short.not_after == _CA_NOW + dt.timedelta(hours=36)
+    # renew_after = t + (L - 24h) / 3 with the 12h backdate: 4h after issuance.
+    assert short.renew_after() == _CA_NOW + dt.timedelta(hours=4)
+    assert response.json()["renew_after"] == short.renew_after().isoformat()
+    assert short.not_after - short.renew_after() < MIN_RENEWAL_RUNWAY
+
+
+def test_the_short_renewal_is_used_once(state, monkeypatch, tmp_path):
+    """One-shot: the flag clears on use, so the same early request is refused
+    again and the next check-in reports the short certificate's own date."""
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_)
+
+    first = _renew(client, key, identity)
+    second = _renew(client, key, identity)
+    short = _as_identity(first.json())
+
+    assert first.status_code == 201
+    assert state.short_renewals.peek(key_id_) is None
+    assert second.status_code == 409, second.text
+    assert _fetch_config(client, key, short).json()["renew_after"] == (
+        short.renew_after().isoformat()
+    )
+
+
+def test_two_renewals_racing_on_one_armed_request_get_one_short_and_one_409(
+    state, monkeypatch
+):
+    """The gate and the one-shot are ONE decision. With a peek at the gate and
+    a take at issuance, the request that lost the take was issued a standard
+    certificate before renew_after. Here the loser is refused.
+
+    The race is forced, not hoped for: when the first request reaches the
+    one-shot store, a second request for the same device runs to completion
+    before the first is allowed to take."""
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_, lifetime_hours=36)
+    real_take = state.short_renewals.take
+    raced, started = [], []
+
+    def take_after_another_renewal(key_id):
+        if not started:
+            started.append(True)
+            raced.append(_renew(client, key, identity))
+        return real_take(key_id)
+
+    monkeypatch.setattr(state.short_renewals, "take", take_after_another_renewal)
+    responses = [_renew(client, key, identity), *raced]
+
+    statuses = sorted(r.status_code for r in responses)
+    assert statuses == [201, 409], [r.text for r in responses]
+    short = next(r for r in responses if r.status_code == 201)
+    refused = next(r for r in responses if r.status_code == 409)
+    assert _as_identity(short.json()).not_after == _CA_NOW + dt.timedelta(hours=36)
+    assert "too early" in refused.json()["detail"]
+
+
+def test_the_renewal_after_the_short_one_is_standard(state, monkeypatch):
+    """The device ends back on the standard lifetime with nobody acting."""
+    from muster.ca import DEFAULT_VALIDITY_DAYS
+
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_, lifetime_hours=36)
+    short = _as_identity(_renew(client, key, identity).json())
+
+    _at(state, monkeypatch, short.renew_after() - dt.timedelta(minutes=1))
+    too_early = _renew(client, key, short)
+    _at(state, monkeypatch, short.renew_after() + dt.timedelta(minutes=1))
+    response = _renew(client, key, short, trigger="check-in")
+
+    assert too_early.status_code == 409
+    assert response.status_code == 201, response.text
+    standard = _as_identity(response.json())
+    assert standard.not_after == _CA_NOW + dt.timedelta(days=DEFAULT_VALIDITY_DAYS)
+
+
+def test_arming_one_device_does_not_shorten_another(state, monkeypatch, tmp_path):
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    _key_a, _identity_a, key_id_a = _enrolled(state, name="a", record=True)
+    key_b, identity_b, _key_id_b = _enrolled(state, name="b", record=True)
+    _arm(client, key_id_a, lifetime_hours=6)
+    _past_renew_after(state, monkeypatch, identity_b)
+
+    other = _renew(client, key_b, identity_b)
+
+    assert other.status_code == 201, other.text
+    assert _as_identity(other.json()).not_after == _CA_NOW + dt.timedelta(days=90)
+    assert state.short_renewals.peek(key_id_a) is not None
+    natural_b = _as_identity(
+        {"certificate_pem": identity_b.certificate_pem.decode()}
+    ).renew_after()
+    assert _fetch_config(client, key_b, identity_b).json()["renew_after"] == (
+        natural_b.isoformat()
+    )
+
+
+def test_only_an_administrator_can_arm_a_short_renewal(state):
+    client = _proof_client(state)
+    _key, _identity, key_id_ = _enrolled(state, record=True)
+
+    response = client.post(
+        f"/v1/kith/{key_id_}/short-renewal", json={"lifetime_hours": 6}
+    )
+
+    assert response.status_code in (401, 403), response.text
+    assert state.short_renewals.peek(key_id_) is None
+
+
+def test_a_short_renewal_names_a_real_device_and_a_bounded_lifetime(state):
+    client = _proof_client(state)
+    _key, _identity, key_id_ = _enrolled(state, record=True)
+
+    assert _arm(client, "0" * 64).status_code == 404
+    assert _arm(client, key_id_, lifetime_hours=1).status_code == 422
+    assert _arm(client, key_id_, lifetime_hours=24 * 14).status_code == 422
+    assert state.short_renewals.peek(key_id_) is None
+
+
+def test_a_failed_short_issuance_leaves_the_request_armed(state, monkeypatch):
+    """Nothing was issued, so the device still holds the certificate it had and
+    the one-shot request is not spent on a failure."""
+    from muster.ca import Untrusted
+
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_)
+
+    def refuse(*_args, **_kwargs):
+        raise Untrusted("refused for the test")
+
+    monkeypatch.setattr(state.authority, "issue", refuse)
+    response = _renew(client, key, identity)
+
+    assert response.status_code == 422
+    assert state.short_renewals.peek(key_id_) is not None
+    assert state.kith.history(key_id_)[-1].serial == f"{identity.serial:X}"
+
+
+def test_a_renewal_logs_scheduled_check_in_evidence(state, monkeypatch, caplog):
+    """Record device, certificate serials, trigger, and short issuance status."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="muster")
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    _at(state, monkeypatch, _CA_NOW + dt.timedelta(minutes=5))
+    _arm(client, key_id_, lifetime_hours=36)
+
+    response = _renew(client, key, identity, trigger="check-in", direct_boot=True)
+    untrusted_word = _renew(
+        client, key, identity, trigger="anything a client likes"
+    )
+
+    renewed = [r for r in caplog.records if r.message == "device renewed"]
+    refused = [r for r in caplog.records if r.message == "renewal refused as too early"]
+    fields = renewed[-1].fields
+    assert fields["key_id"] == key_id_
+    assert fields["old_serial"] == f"{identity.serial:X}"
+    assert fields["new_serial"] == f"{_as_identity(response.json()).serial:X}"
+    assert fields["trigger"] == "check-in"
+    assert "direct_boot" not in fields
+    assert fields["short_lived_hours"] == 36
+    assert untrusted_word.status_code == 409
+    assert refused[-1].fields["trigger"] == "other"

@@ -154,6 +154,14 @@ UNREACHABLE = (
     "what it recorded meanwhile is waiting to be written"
 )
 
+# A read the store REFUSED, as opposed to one it could not be reached for. The
+# store is up and nothing is deferred; this one question was one it will never
+# answer, so the caller still gets no answer but the breaker is left alone.
+REFUSED_READ = (
+    "the kith store refused this read and will refuse it again; the store "
+    "itself is reachable and nothing has been deferred"
+)
+
 
 @dataclass(frozen=True)
 class Device:
@@ -186,7 +194,7 @@ class Device:
     # same step would remove the only channel the wipe instruction could travel
     # down. This state still serves configuration and specifically serves the
     # wipe file; it becomes `revoked_at` only after the device acknowledges the
-    # instruction (muster#15).
+    # instruction (muster#15), or returns to a revocation it lifted if called off.
     wipe_pending_at: dt.datetime | None = None
     # What an ADMINISTRATOR calls this device, when `name` alone does not tell
     # two of them apart (muster#29). None means no override: display `name`.
@@ -384,6 +392,9 @@ class MemoryRecords:
 
     def __init__(self) -> None:
         self._devices: dict[str, Device] = {}
+        # What `revoked_before_wipe_at` is to the Postgres row. Not on `Device`:
+        # no read returns it, so a field there would only ever be true here.
+        self._revoked_before_wipe: dict[str, dt.datetime] = {}
         self._certificates: dict[str, list[Certificate]] = {}
         self._reports: dict[str, Report] = {}
 
@@ -499,7 +510,9 @@ class MemoryRecords:
         # wiping are two states, not one; an administrator choosing the second
         # state directly is saying the first no longer applies, and readmitting
         # a device that was waiting to be erased would otherwise be readmitted
-        # into a wipe it did not ask for.
+        # into a wipe it did not ask for. Either way this is a later decision
+        # on standing, so a revocation set aside for an erase no longer applies.
+        self._revoked_before_wipe.pop(key_id, None)
         self._devices[key_id] = replace(device, revoked_at=at, wipe_pending_at=None)
         return True
 
@@ -512,6 +525,18 @@ class MemoryRecords:
         # serves anything, so a wipe requested on a revoked device would never
         # travel. The state that serves the wipe must therefore be the state
         # that removes the refusal.
+        #
+        # THE LIFT BELONGS TO THE ERASE, so the revocation is set aside rather
+        # than lost, and calling the erase off (`at=None`) puts it back. With
+        # no erase pending there is nothing set aside, and a revocation stands.
+        if at is None:
+            restored = self._revoked_before_wipe.pop(key_id, device.revoked_at)
+            self._devices[key_id] = replace(
+                device, revoked_at=restored, wipe_pending_at=None
+            )
+            return True
+        if device.revoked_at is not None:
+            self._revoked_before_wipe[key_id] = device.revoked_at
         self._devices[key_id] = replace(device, revoked_at=None, wipe_pending_at=at)
         return True
 
@@ -523,6 +548,7 @@ class MemoryRecords:
         # wipe-pending state becomes the refusal. Doing this in the same admin
         # call that set wipe-pending would starve the instruction; doing it
         # never would leave a wiped device readmitted as soon as it renewed.
+        self._revoked_before_wipe.pop(key_id, None)
         self._devices[key_id] = replace(device, revoked_at=at, wipe_pending_at=None)
         return True
 
@@ -969,9 +995,12 @@ class PostgresRecords:
             # A REVOCATION OR A READMISSION ALSO CLEARS WIPE-PENDING, for the
             # reason `MemoryRecords` states: the two states are alternatives,
             # and a readmitted wipe-pending device must not walk back into a
-            # wipe it did not ask for.
+            # wipe it did not ask for. It also drops a revocation set aside for
+            # an erase: this write is the later decision on standing.
             cursor.execute(
-                "UPDATE kith_device SET revoked_at = %s, wipe_pending_at = NULL"
+                "UPDATE kith_device"
+                "   SET revoked_at = %s, wipe_pending_at = NULL,"
+                "       revoked_before_wipe_at = NULL"
                 " WHERE key_id = %s",
                 (at, key_id),
             )
@@ -985,8 +1014,26 @@ class PostgresRecords:
             # must not be got backwards: `_proven_device` refuses `revoked_at`
             # before any route serves anything, so a wipe-pending device that
             # stayed revoked would never receive the wipe file.
+            #
+            # THE LIFT BELONGS TO THE ERASE, so the revocation is set aside in
+            # the same statement. Calling the erase off (`at=None`) puts it
+            # back; with nothing set aside the COALESCE keeps `revoked_at`, so
+            # a late or stray call off cannot readmit anyone.
+            if at is None:
+                cursor.execute(
+                    "UPDATE kith_device"
+                    "   SET revoked_at = COALESCE(revoked_before_wipe_at, revoked_at),"
+                    "       revoked_before_wipe_at = NULL,"
+                    "       wipe_pending_at = NULL"
+                    " WHERE key_id = %s",
+                    (key_id,),
+                )
+                return cursor.rowcount
             cursor.execute(
-                "UPDATE kith_device SET revoked_at = NULL, wipe_pending_at = %s"
+                "UPDATE kith_device"
+                "   SET revoked_before_wipe_at = COALESCE(revoked_at, revoked_before_wipe_at),"
+                "       revoked_at = NULL,"
+                "       wipe_pending_at = %s"
                 " WHERE key_id = %s",
                 (at, key_id),
             )
@@ -1003,7 +1050,8 @@ class PostgresRecords:
             # making a second revocation row.
             cursor.execute(
                 "UPDATE kith_device"
-                "   SET revoked_at = %s, wipe_pending_at = NULL"
+                "   SET revoked_at = %s, wipe_pending_at = NULL,"
+                "       revoked_before_wipe_at = NULL"
                 " WHERE key_id = %s AND wipe_pending_at IS NOT NULL",
                 (at, key_id),
             )
@@ -1164,7 +1212,8 @@ class PostgresRecords:
             cursor.execute(
                 "SELECT serial, request_id, not_before, not_after, issued_at,"
                 "       certificate_pem, collected_at"
-                "  FROM kith_certificate WHERE key_id = %s ORDER BY issued_at",
+                "  FROM kith_certificate WHERE key_id = %s"
+                " ORDER BY issued_at, serial",
                 (key_id,),
             )
             return cursor.fetchall()
@@ -1496,6 +1545,9 @@ class Kith:
         because the next thing they expect is the handset erasing itself - and a
         queued write would report that expectation as fact.
 
+        `wipe: false` restores the standing the device held before the erase
+        was queued. It never readmits a revoked device; that is `set_revoked`.
+
         Returns whether a device was actually changed. False means the kith has
         never heard of that key.
         """
@@ -1761,6 +1813,22 @@ class Kith:
             try:
                 answer = ask(self._records)
             except Exception as exc:  # noqa: BLE001
+                # A REFUSAL IS NOT AN OUTAGE, on the read path as on the write
+                # path. `_drain` already asks the store to tell the two apart;
+                # this used to open the breaker on either, so a question the
+                # server refused on its merits - a request id carrying a NUL
+                # byte, which `text` cannot hold and the driver rejects before
+                # sending - put every device proof, the CRL and OCSP into the
+                # cooldown for 30 seconds. That request id arrives on an open
+                # route, so one unauthenticated request every 30 seconds held
+                # the whole estate at 503 while the database was healthy.
+                if self._is_permanent(exc):
+                    self._telemetry.count("kith.read.poison")
+                    telemetry.event(
+                        "the kith store refused a read it will always refuse",
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    raise Unreachable(REFUSED_READ) from exc
                 self._failed("read", exc)
                 # The driver's own words go to the log, where they are useful,
                 # and not into an HTTP response, where they are a libpq string

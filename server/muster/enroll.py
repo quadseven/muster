@@ -478,8 +478,7 @@ class Enrollment:
         something already approved. That row is exactly what a QR-provisioned
         phone produced before this, and clicking it enrolled a second device.
         """
-        record = self._claimable(code)
-        record.used = True
+        record = self._claim(code)
 
         request_id = secrets.token_urlsafe(12)
         entry = Pending(
@@ -495,8 +494,18 @@ class Enrollment:
             self.pending[request_id] = entry
         return entry
 
-    def _claimable(self, code: str):
-        """The four ways a code is refused, in the order they can be told apart.
+    def _claim(self, code: str) -> PairingCode:
+        """Spend a code, or raise one of the four refusals, in the order they can be told apart.
+
+        CHECKED AND SPENT UNDER ONE LOCK. This used to look the code up under
+        the lock, release it, read `used` off the record, and let `present`
+        set `used = True` afterwards. Two presentations of the same code that
+        overlapped in that gap each saw it unspent and each got a Pending -
+        and on the scanned path a Pending is a certificate, issued with nobody
+        asked. "Spent by the first device to use it" (CONTEXT.md) is the
+        whole of what stands between a photographed QR and a second device,
+        so the check and the spend are one critical section, and a code is
+        marked used before anything else can read it.
 
         Compared with `hmac.compare_digest` rather than `==`. The timing signal
         on a six-digit code is not the weak point here, but a lookup that leaks
@@ -517,25 +526,29 @@ class Enrollment:
         """
         record = None
         if code.isascii() and len(code) <= MAX_CODE_LENGTH:
-            # The lookup holds the lock; the refusal checks below only read
-            # fields off the record we are holding, so they run outside it.
-            # `_charge_attempts` takes the lock itself, which is why it is
-            # called after this block exits rather than inside it.
+            # `_charge_attempts` takes the lock itself, which is why the
+            # unknown-code refusal is raised after this block exits rather
+            # than inside it. Every other refusal, and the spend, stay inside:
+            # the moment the lock is released the record may be read by the
+            # next presentation, and it has to be marked by then.
             with self._lock:
                 for candidate, held in self.codes.items():
                     if hmac.compare_digest(candidate, code):
                         record = held
                         break
-        if record is None:
-            self._charge_attempts()
-            raise Refused(Outcome.NO_SUCH_CODE)
-        if record.used:
-            raise Refused(Outcome.CODE_USED, shape=record.shape)
-        if record.attempts >= MAX_ATTEMPTS:
-            raise Refused(Outcome.TOO_MANY_ATTEMPTS, shape=record.shape)
-        if record.expired_at(self._now()):
-            raise Refused(Outcome.CODE_EXPIRED, shape=record.shape)
-        return record
+                if record is not None:
+                    if record.used:
+                        raise Refused(Outcome.CODE_USED, shape=record.shape)
+                    if record.attempts >= MAX_ATTEMPTS:
+                        raise Refused(
+                            Outcome.TOO_MANY_ATTEMPTS, shape=record.shape
+                        )
+                    if record.expired_at(self._now()):
+                        raise Refused(Outcome.CODE_EXPIRED, shape=record.shape)
+                    record.used = True
+                    return record
+        self._charge_attempts()
+        raise Refused(Outcome.NO_SUCH_CODE)
 
     def _charge_attempts(self) -> None:
         """A wrong guess costs every live TYPED code an attempt.
@@ -580,6 +593,12 @@ class Enrollment:
         no second request to confuse this one with. `Pending.shape` is carried
         so the console can say which of the two an administrator is doing.
         """
+        # LOOKED UP WITHOUT BEING TAKEN. The request stays pending until the
+        # fingerprint below matches, so a mistyped fingerprint can be retried,
+        # and the pop at the end is what spends it. Two administrators
+        # vouching for the same request at once both reach that pop, and the
+        # second must get the same `NOT_PENDING` the first would have got a
+        # moment later - not a KeyError.
         entry = self.pending.get(request_id)
         if entry is None:
             raise Refused(Outcome.NOT_PENDING)
@@ -593,7 +612,10 @@ class Enrollment:
                 "the fingerprint on the device does not match this request - "
                 "somebody else may be enrolling against your pairing code",
             )
-        return self.pending.pop(request_id)
+        taken = self.pending.pop(request_id, None)
+        if taken is None:
+            raise Refused(Outcome.NOT_PENDING)
+        return taken
 
     # ---- housekeeping ----------------------------------------------------
 
@@ -628,7 +650,7 @@ class Enrollment:
         Pairing codes are minted by administrators drawing QRs, which on a quiet
         fleet can be weeks apart - and every QR mints one. Without a timer,
         `codes` grows for the life of the pod, and the two scans that touch
-        every live code (`_claimable`, `_charge_attempts`) grow with it, on the
+        every live code (`_claim`, `_charge_attempts`) grow with it, on the
         process that holds the CA private key. Daemon thread, so it can never
         hold a shutdown open. Started and stopped by the app lifespan.
         """

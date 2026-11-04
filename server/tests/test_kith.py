@@ -745,6 +745,8 @@ def test_a_dsn_with_a_trailing_newline_is_stripped(monkeypatch):
 
 
 class FakeCursor:
+    rowcount = 1
+
     def __init__(self, log: list, rows: list) -> None:
         self.log = log
         self._rows = rows
@@ -850,6 +852,12 @@ def test_a_renewal_upserts_the_device_and_leaves_first_seen_alone():
     # `name = EXCLUDED.name` passes every behavioral test in this file against
     # MemoryRecords and still reverts a device's name during backlog replay.
     updates = device_sql.split("DO UPDATE")[1]
+    # THE INVARIANT AGENTS.md NAMES. The behavioral test of it runs against
+    # MemoryRecords, whose `replace` keeps `revoked_at` whatever the SQL says;
+    # this is the only line that dies if a renewal on Postgres could readmit.
+    assert "revoked_at" not in updates, (
+        "a renewal must not be able to readmit a revoked device"
+    )
     assert "GREATEST(kith_device.last_seen, EXCLUDED.last_seen)" in updates
     assert "CASE WHEN EXCLUDED.last_seen >= kith_device.last_seen" in updates
 
@@ -1144,6 +1152,54 @@ def test_a_connection_whose_schema_fails_is_closed_rather_than_leaked():
     assert all(c.closed for c in connections), "a failed connection was left open"
 
 
+def test_a_read_the_store_refuses_does_not_open_the_breaker():
+    """A refusal is not an outage, on the read path as on the write path.
+
+    `_drain` already asks the store whether a failed write is one it will
+    always refuse. `_read` did not ask, so a question the server rejected on
+    its merits opened the breaker: every device proof, the CRL and OCSP then
+    answered 503 for the cooldown, and the request that did it arrived on an
+    open route - so one unauthenticated request every 30 seconds held the
+    whole estate at 503 while the database was healthy."""
+
+    class Refusing(MemoryRecords):
+        def member(self, key_id_):
+            raise ValueError("PostgreSQL text fields cannot contain NUL bytes")
+
+        def permanent(self, exc):
+            return isinstance(exc, ValueError)
+
+    from muster import telemetry
+
+    emitter = telemetry.Telemetry()
+    kith = kith_store.Kith(records=Refusing(), clock=Clock(), emitter=emitter)
+
+    with pytest.raises(kith_store.Unreachable) as refused:
+        kith.member("\x00")
+
+    assert str(refused.value) == kith_store.REFUSED_READ
+    assert kith.status()["state"] == "ok", "a refused read opened the breaker"
+    assert kith.roll() == [], "the next read was refused for the cooldown"
+    assert any("kith.read.poison" in line for line in emitter.sent)
+    assert not any("kith.store.unreachable" in line for line in emitter.sent)
+
+
+def test_a_read_the_store_cannot_answer_still_opens_the_breaker():
+    """The other half of the split, so the fix above cannot have widened it."""
+
+    class Gone(MemoryRecords):
+        def member(self, key_id_):
+            raise OSError("connection refused")
+
+    from muster import telemetry
+
+    kith = kith_store.Kith(records=Gone(), clock=Clock(), emitter=telemetry.Telemetry())
+
+    with pytest.raises(kith_store.Unreachable):
+        kith.member("abc")
+    assert kith.status()["state"] == "deferring"
+
+
 def test_every_statement_is_something_postgresql_can_actually_parse():
     """The nearest thing to a real database this repo has.
 
@@ -1177,9 +1233,17 @@ def test_every_statement_is_something_postgresql_can_actually_parse():
     records.awaiting_collection("req-1")
     records.record_report("abc", kith_store.Report(START, *a_report()))
     records.report("abc")
+    records.record_role("abc", "relay")
+    records.record_admin_name("abc", "the one by the door")
+    records.record_revocation("abc", START)
+    records.record_wipe_pending("abc", START)
+    records.record_wipe_pending("abc", None)
+    records.record_wipe_acknowledged("abc", START)
+    records.record_reboot_requested("abc", START)
+    records.record_reboot_acknowledged("abc")
 
     statements = [sql for sql, _ in connection.log]
-    assert len(statements) >= 12, statements
+    assert len(statements) >= 20, statements
 
     for sql in statements:
         # psycopg substitutes %s client-side, so the placeholder never reaches
@@ -1247,6 +1311,128 @@ def test_the_roll_selects_exactly_the_columns_member_from_row_reads():
         "d.role", "d.revoked_at", "d.wipe_pending_at", "d.admin_name",
         "d.reboot_requested_at", "d.check_in_interval_s",
     ]
+
+
+# ---- calling off an erase ------------------------------------------------
+
+
+def test_calling_off_an_erase_restores_the_earlier_revocation(kith, clock):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_revoked(key, True)
+    revoked_at = kith.member(key).device.revoked_at
+    kith.set_wipe_pending(key, True)
+    assert kith.member(key).device.revoked_at is None
+
+    kith.set_wipe_pending(key, False)
+
+    device = kith.member(key).device
+    assert device.revoked_at == revoked_at
+    assert device.wipe_pending_at is None
+
+
+def test_queueing_an_erase_twice_keeps_the_earlier_revocation(kith, clock):
+    """The second request sees no revocation on the row. It must not overwrite
+    what the first one set aside."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_revoked(key, True)
+    revoked_at = kith.member(key).device.revoked_at
+    kith.set_wipe_pending(key, True)
+    kith.set_wipe_pending(key, True)
+
+    kith.set_wipe_pending(key, False)
+
+    assert kith.member(key).device.revoked_at == revoked_at
+
+
+def test_calling_off_an_erase_leaves_an_active_device_active(kith):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_wipe_pending(key, True)
+
+    kith.set_wipe_pending(key, False)
+
+    device = kith.member(key).device
+    assert device.revoked_at is None
+    assert device.wipe_pending_at is None
+
+
+def test_calling_off_with_nothing_pending_keeps_a_revocation(kith):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_revoked(key, True)
+    revoked_at = kith.member(key).device.revoked_at
+
+    kith.set_wipe_pending(key, False)
+
+    assert kith.member(key).device.revoked_at == revoked_at
+
+
+def test_an_acknowledged_erase_stays_revoked_after_a_late_call_off(kith):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_wipe_pending(key, True)
+    kith.acknowledged_wipe(key)
+    revoked_at = kith.member(key).device.revoked_at
+    assert revoked_at is not None
+
+    kith.set_wipe_pending(key, False)
+
+    assert kith.member(key).device.revoked_at == revoked_at
+
+
+def test_a_readmission_during_an_erase_is_not_undone_by_the_call_off(kith):
+    """Readmission is the administrator's later word on standing, so the
+    revocation set aside by the erase no longer applies."""
+    kith.issued(a_device(), a_certificate("AAAA"))
+    key = a_device().key_id
+    kith.set_revoked(key, True)
+    kith.set_wipe_pending(key, True)
+    kith.set_revoked(key, False)
+
+    kith.set_wipe_pending(key, False)
+
+    assert kith.member(key).device.revoked_at is None
+
+
+def test_the_store_writes_set_a_revocation_aside_and_restore_it():
+    """Statement text for the reason given above: no Postgres runs here. Both
+    columns move in one statement, so no reader or racing write can see the
+    revocation lost."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    key = a_device().key_id
+
+    records.record_wipe_pending(key, START)
+    arm_sql, arm_params = connection.log[-1]
+    records.record_wipe_pending(key, None)
+    cancel_sql, cancel_params = connection.log[-1]
+
+    assert "revoked_before_wipe_at = COALESCE(revoked_at, revoked_before_wipe_at)" in arm_sql
+    assert "revoked_at = NULL" in arm_sql
+    assert arm_params == (START, key)
+    assert "revoked_at = COALESCE(revoked_before_wipe_at, revoked_at)" in cancel_sql
+    assert "revoked_before_wipe_at = NULL" in cancel_sql
+    assert "wipe_pending_at = NULL" in cancel_sql
+    assert cancel_params == (key,)
+
+
+def test_every_exit_from_an_erase_drops_the_set_aside_revocation():
+    """Left behind, it would resurface at the next call off and overrule a
+    decision made since."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    key = a_device().key_id
+
+    records.record_revocation(key, None)
+    assert "revoked_before_wipe_at = NULL" in connection.log[-1][0]
+    records.record_wipe_acknowledged(key, START)
+    assert "revoked_before_wipe_at = NULL" in connection.log[-1][0]
 
 
 # ---- roles (muster#70) ---------------------------------------------------

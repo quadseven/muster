@@ -77,13 +77,17 @@ An administrator can tell a device to erase itself:
 **Order matters and the API enforces it.** Revoking a device stops muster
 answering it at all, which also removes the channel a wipe would travel down.
 So wipe is a separate state that is deliberately still served: mark the device
-wipe-pending, let it collect the instruction, and revoke afterwards. Revoking
-first produces a wipe that can never arrive. `DECISIONS.md` D29 has the full
-argument.
+wipe-pending and let it collect the instruction; its acknowledgement revokes it.
+A revocation queued after the erase cancels it, so the erase never arrives.
+Queueing an erase on a device already revoked lifts the revocation first.
+`DECISIONS.md` D29 has the full argument.
 
 It is reversible - `{"wipe": false}` calls it off - because an administrator can
 name the wrong `key_id` and the alternative to a way back is a factory reset
-nobody intended.
+nobody intended. Calling it off restores the standing the device held before
+the erase was queued. Queueing an erase on a revoked device lifts the revocation
+so the instruction can travel; calling that erase off revokes the device again,
+at its original time. Calling an erase off never readmits a device.
 
 **HOW LONG IT TAKES, STATED HONESTLY, because the number is the whole value of
 the feature:**
@@ -208,6 +212,36 @@ currently in, including ON, and removes the Settings toggle that would have
 turned them off. It is useful only AFTER alerts have already been turned off
 by hand on the device; set first, it locks them on rather than silencing
 them.
+
+## The wifi file (muster#195)
+
+`<key_id>.wifi` names the network one device must be able to join, so a handset
+that forgot it can rejoin at its next check-in without a person holding the
+enrollment QR:
+
+    ssid relay-net
+    security WPA
+    passphrase <the network passphrase>
+
+`security` is `WPA` (the default), `WEP` or `NONE`, the same words the
+provisioning QR carries, and `passphrase` is required unless it is `NONE`.
+
+**Device scope only.** It holds a passphrase, so `kith.wifi` and `role-*.wifi`
+are refused: never served, and a log line names the file (never its content).
+A device file that does not parse is likewise not served, with a log line saying
+why; the rest of that device's configuration is unaffected. This includes a file
+that cannot be read or is not valid UTF-8: wifi is the one managed file where an
+unreadable file is treated as unparsable rather than failing the whole config
+with a 503 (every other managed file keeps that rule). Neither the log nor
+a metric ever carries the passphrase.
+
+**Status: server side only.** muster serves the file, but the agent has no wifi
+steward yet, so `ConfigurationPolicy.MANAGED` does not list `wifi` and a device
+refuses the name. The agent half (a steward that adds or updates the network as
+Device Owner) needs a handset to define its behaviour and is tracked on the
+issue.
+`tools/check_managed_files.py` names `wifi` in `SERVER_AHEAD` for this reason,
+and fails once the agent holds the name so the exception goes with the gap.
 
 ## The telephony file
 

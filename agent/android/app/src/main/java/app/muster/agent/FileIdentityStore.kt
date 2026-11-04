@@ -39,4 +39,13 @@ class FileIdentityStore(context: Context) : EnrollmentFlow.IdentityStore {
     fun notAfter(): String? = File(dir, "not-after").takeIf { it.isFile }?.readText()?.trim()
 
     fun renewAfter(): String? = File(dir, "renew-after").takeIf { it.isFile }?.readText()?.trim()
+
+    /**
+     * The file a check-in's renew-after replaces (muster#22), or null when
+     * there is nothing to replace: no identity yet, or the value is unchanged.
+     * The write itself is ConfigurationSteward's, the one staged-and-renamed
+     * write the fetch already has, so a reader never sees half a timestamp.
+     */
+    fun staleRenewAfter(renewAfter: String): File? =
+        File(dir, "renew-after").takeIf { hasIdentity() && renewAfter != renewAfter() }
 }

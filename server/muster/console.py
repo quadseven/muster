@@ -464,13 +464,11 @@ def _register_sign_in_routes(app: FastAPI, state: "State") -> None:
         if error:
             # The provider refused before muster was ever involved - a cancelled
             # sign-in, or a client that is not allowed this redirect URL.
-            return _refusal(
-                state, admin_module.Outcome.PROVIDER_REFUSED, html.escape(error)
-            )
+            return _refusal(state, admin_module.Outcome.PROVIDER_REFUSED, error)
         try:
             person, tokens = await state.sign_in.finish(code, flow)
         except admin_module.Refused as refused:
-            return _refusal(state, refused.outcome, html.escape(str(refused)))
+            return _refusal(state, refused.outcome, str(refused))
 
         state.telemetry.count("auth.signin.completed")
         telemetry.event("administrator signed in", actor=person.subject)
@@ -533,7 +531,14 @@ def _refusal(state: "State", outcome: admin_module.Outcome, detail: str) -> HTML
 
 
 def _not_signed_in_page(state: "State", detail: str) -> HTMLResponse:
-    """403 with a sentence on it, and every cookie cleared on the way out."""
+    """403 with a sentence on it, and every cookie cleared on the way out.
+
+    THE ESCAPING HAPPENS HERE, not at the callers. `detail` is interpolated
+    into HTML, and the provider's `error` parameter is one of the things that
+    reaches it; both callers used to escape it themselves, which held until
+    the first one that forgot.
+    """
+    detail = html.escape(detail)
     nonce = secrets.token_urlsafe(16)
     body = (
         "<!doctype html><meta charset=utf-8><title>Muster</title>"

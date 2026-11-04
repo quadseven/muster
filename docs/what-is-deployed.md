@@ -40,6 +40,12 @@ without it, deliberately: see `docs/administrator-sign-in.md`).
                 kith in memory, says so at boot and on /readyz, and keeps
                 issuing. Step 7 below is what creates it.
 
+## Device certificate trust chain
+
+The trust decision recorded in [DECISIONS.md](../DECISIONS.md#d31-one-household-trust-root-with-muster-as-an-intermediate) is an offline household root with the device CA below it. `MUSTER_CA_CERT` is an ordered PEM bundle: the signing intermediate first, followed by its parents through the root. `MUSTER_CA_KEY` must match the first certificate. The server validates the chain before it issues identities; enrollment and renewal responses carry the public chain. A single self-signed certificate remains supported until a deployment completes the cutover.
+
+This describes supported code, not the live deployment. This change does not sign a certificate, replace a live secret, or re-enroll devices. Before cutover, record the active device count from the live store and plan to re-enroll those devices, because existing leaves were issued by the previous CA.
+
 ## The splash page's infrastructure, applied by hand and unmanaged
 
 `site/` ships a static page, and `site/README.md` says "Cloudflare Pages,

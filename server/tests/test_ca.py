@@ -18,6 +18,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from muster.ca import (
     BACKDATE,
     DEFAULT_VALIDITY_DAYS,
+    MIN_RENEWAL_RUNWAY,
     Authority,
     Untrusted,
 )
@@ -169,6 +170,29 @@ def test_renewal_starts_at_a_third_of_life(ca, clock):
 
     runway = identity.not_after - identity.renew_after()
     assert dt.timedelta(days=59) < runway < dt.timedelta(days=62)
+
+
+def test_a_lifetime_under_the_fortnight_runway_is_refused(ca):
+    """The fortnight tolerance is enforced, not only described (muster#22).
+
+    20 days leaves a runway of 13 days 8 hours, under the 14-day floor."""
+    csr_der, _ = _csr()
+    with pytest.raises(ValueError, match="floor"):
+        ca.issue(csr_der, "pixel", valid_days=20)
+    with pytest.raises(ValueError, match="floor"):
+        ca.issue(csr_der, "pixel", lifetime=dt.timedelta(hours=36))
+
+
+def test_the_floor_is_waived_only_when_the_caller_says_so(ca, clock):
+    """The one-shot short renewal names the waiver at its call site."""
+    csr_der, _ = _csr()
+    _cert, identity = _issued(
+        ca, csr_der, lifetime=dt.timedelta(hours=36), waive_runway_floor=True
+    )
+
+    assert identity.not_after == clock() + dt.timedelta(hours=36)
+    assert identity.renew_after() == clock() + dt.timedelta(hours=4)
+    assert identity.not_after - identity.renew_after() < MIN_RENEWAL_RUNWAY
 
 
 def test_two_devices_do_not_share_a_serial(ca):

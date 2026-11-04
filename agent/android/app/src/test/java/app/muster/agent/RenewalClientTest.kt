@@ -2,6 +2,7 @@ package app.muster.agent
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -75,6 +76,42 @@ class RenewalClientTest {
         assertEquals("c2lnbmF0dXJl", sent.getString("signature_b64"))
         assertTrue(sent.getString("certificate_pem").contains("BEGIN CERTIFICATE"))
         assertEquals("a csr", sent.getString("csr_pem"))
+    }
+
+    @Test
+    fun renewalNamesWhatStartedItWithoutClaimingLockState() {
+        // muster#22: the server can tell a scheduled check-in from the sync
+        // button when the request says which one sent it.
+        val transport = FakeTransport(renewal = issued())
+
+        RenewalClient(
+            transport, FakeIdentity(),
+            trigger = RenewalTrigger.CHECK_IN,
+        ).renew("a csr")
+
+        val sent = JSONObject(transport.bodies.last())
+        assertEquals("check-in", sent.getString("trigger"))
+        assertFalse(sent.has("direct_boot"))
+    }
+
+    @Test
+    fun aRenewalThatKnowsNeitherLeavesBothOut() {
+        val transport = FakeTransport(renewal = issued())
+
+        RenewalClient(transport, FakeIdentity()).renew("a csr")
+
+        val sent = JSONObject(transport.bodies.last())
+        assertFalse(sent.has("trigger"))
+        assertFalse(sent.has("direct_boot"))
+    }
+
+    @Test
+    fun theTriggerIsSeenOnlyInsideThePassThatSetIt() {
+        assertEquals(null, RenewalTrigger.current())
+        val inside = RenewalTrigger.during(RenewalTrigger.SYNC) { RenewalTrigger.current() }
+
+        assertEquals("sync", inside)
+        assertEquals(null, RenewalTrigger.current())
     }
 
     @Test

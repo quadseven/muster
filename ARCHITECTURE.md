@@ -208,6 +208,14 @@ Three numbers, each with a reason:
   from a broken one on a device that cannot fix its clock without the network
   the certificate is for.
 
+The fortnight in the second number is enforced: `ca.issue` refuses any
+lifetime whose runway after renew-after is under 14 days. It is waived in one
+place, `POST /v1/kith/{key_id}/short-renewal` (muster#22): an administrator
+arms one device, its next check-in is told it may renew now, that renewal is
+issued for a few hours, and the renewal after it is standard again. It exists
+to watch a real handset cross renew-after within a day instead of a month;
+`server/muster/short_renewal.py` carries the arithmetic.
+
 The authority never creates a CA as a side effect of failing to find one. One
 that mints itself a key silently invalidates every device it has issued to, at
 the moment somebody mounts the wrong volume.

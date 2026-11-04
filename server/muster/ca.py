@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509 import ocsp
@@ -47,6 +49,17 @@ RENEW_AFTER_FRACTION = 1 / 3
 # from a broken one, and the device cannot fix its own clock without the network
 # the certificate is for.
 BACKDATE = dt.timedelta(hours=12)
+
+# The fortnight tolerance above, as a rule `issue` enforces rather than a
+# sentence it hopes stays true: a router off for two weeks must still wake up
+# inside its renewal window, so `not_after - renew_after` may not be shorter
+# than this. At 90 days the runway is about 60 days, far clear of it.
+#
+# WAIVED IN EXACTLY ONE PLACE, and by name: the operator's one-shot short
+# renewal (muster#22, `short_renewal.py`), which exists to watch a real handset
+# cross renew_after within a day. Every other issuance meets this floor or
+# raises, so no code path can quietly shorten a certificate.
+MIN_RENEWAL_RUNWAY = dt.timedelta(days=14)
 
 # Plain http on purpose: see the scheme check in api._register_revocation_routes.
 # A CRL fetched over TLS would need the CRL host's certificate verified first,
@@ -73,6 +86,36 @@ class Identity:
         return self.not_before + life * RENEW_AFTER_FRACTION
 
 
+def validate_ca_chain(certificates: tuple[x509.Certificate, ...]) -> None:
+    """Refuse an incomplete, unordered, or invalid CA path.
+
+    The bundle is ordered from the device issuer to its trust root. A single
+    self-signed CA remains valid for existing installations.
+    """
+    if not certificates:
+        raise ValueError("certificate chain must contain at least one CA certificate")
+
+    for index, certificate in enumerate(certificates):
+        try:
+            constraints = certificate.extensions.get_extension_for_class(
+                x509.BasicConstraints
+            ).value
+            usage = certificate.extensions.get_extension_for_class(x509.KeyUsage).value
+        except x509.ExtensionNotFound as exc:
+            raise ValueError("certificate chain CA is missing required constraints") from exc
+        if not constraints.ca or not usage.key_cert_sign:
+            raise ValueError("certificate chain contains a certificate that cannot issue CAs")
+        if constraints.path_length is not None and constraints.path_length < index:
+            raise ValueError("certificate chain exceeds a CA path length constraint")
+
+    try:
+        for child, parent in pairwise(certificates):
+            child.verify_directly_issued_by(parent)
+        certificates[-1].verify_directly_issued_by(certificates[-1])
+    except (InvalidSignature, ValueError, TypeError) as exc:
+        raise ValueError("certificate chain signature or issuer is invalid") from exc
+
+
 class Authority:
     """A CA that signs device certificates.
 
@@ -90,9 +133,22 @@ class Authority:
         *,
         crl_url: str = DEFAULT_CRL_URL,
         ocsp_url: str = DEFAULT_OCSP_URL,
+        certificate_chain: tuple[x509.Certificate, ...] | None = None,
     ) -> None:
         self._key = key
         self._cert = certificate
+        self._certificate_chain = certificate_chain or (certificate,)
+        if self._certificate_chain[0] != certificate:
+            raise ValueError("certificate chain must start with the signing certificate")
+        validate_ca_chain(self._certificate_chain)
+        key_spki = key.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        cert_spki = certificate.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        if key_spki != cert_spki:
+            raise ValueError("CA private key does not match the first certificate")
         self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
         self.crl_url = crl_url
         self.ocsp_url = ocsp_url
@@ -149,13 +205,28 @@ class Authority:
         key = serialization.load_pem_private_key(
             Path(key_path).read_bytes(), password=password
         )
-        cert = x509.load_pem_x509_certificate(Path(cert_path).read_bytes())
-        return cls(key, cert, clock=clock, crl_url=crl_url, ocsp_url=ocsp_url)
+        certificates = tuple(
+            x509.load_pem_x509_certificates(Path(cert_path).read_bytes())
+        )
+        if not certificates:
+            raise ValueError("CA certificate file contains no certificates")
+        return cls(
+            key, certificates[0], clock=clock, crl_url=crl_url, ocsp_url=ocsp_url,
+            certificate_chain=certificates,
+        )
+
+    @property
+    def certificate_chain(self) -> tuple[x509.Certificate, ...]:
+        """The device issuer followed by each certificate up to its root."""
+        return self._certificate_chain
 
     @property
     def certificate_pem(self) -> bytes:
-        """What devices pin. Public, and safe to ship anywhere."""
-        return self._cert.public_bytes(serialization.Encoding.PEM)
+        """The public CA path devices need to build trust to the root."""
+        return b"".join(
+            certificate.public_bytes(serialization.Encoding.PEM)
+            for certificate in self._certificate_chain
+        )
 
     def crl(
         self,
@@ -241,12 +312,24 @@ class Authority:
     # ---- issuance --------------------------------------------------------
 
     def issue(self, csr_der: bytes, device_name: str,
-              valid_days: int = DEFAULT_VALIDITY_DAYS) -> Identity:
+              valid_days: int = DEFAULT_VALIDITY_DAYS, *,
+              lifetime: dt.timedelta | None = None,
+              waive_runway_floor: bool = False) -> Identity:
         """Sign a vouched CSR, using ONLY its public key.
 
         `device_name` comes from the vouch, not from the request. See the module
         docstring: everything else in a CSR is written by the enrolling party.
+
+        `lifetime`, when given, replaces `valid_days` and is measured from now,
+        exactly as `valid_days` is. A lifetime whose renewal runway is shorter
+        than MIN_RENEWAL_RUNWAY raises ValueError unless `waive_runway_floor`
+        says, at the call site, that this one issuance is the exception.
         """
+        life_from_now = (
+            lifetime if lifetime is not None else dt.timedelta(days=valid_days)
+        )
+        if life_from_now <= dt.timedelta(0):
+            raise ValueError(f"a certificate lifetime must be positive, not {life_from_now}")
         try:
             csr = x509.load_der_x509_csr(csr_der)
         except Exception as exc:  # noqa: BLE001 - any parse failure is the same answer
@@ -282,7 +365,15 @@ class Authority:
 
         now = self._clock()
         not_before = now - BACKDATE
-        not_after = now + dt.timedelta(days=valid_days)
+        not_after = now + life_from_now
+        # CHECKED BEFORE SIGNING, through the same arithmetic devices are
+        # handed, so the floor and `renew_after` can never disagree.
+        runway = not_after - Identity(b"", not_before, not_after, 0).renew_after()
+        if runway < MIN_RENEWAL_RUNWAY and not waive_runway_floor:
+            raise ValueError(
+                f"a {life_from_now} lifetime leaves a renewal runway of {runway}, "
+                f"under the {MIN_RENEWAL_RUNWAY} floor"
+            )
         serial = x509.random_serial_number()
 
         cert = (
