@@ -237,6 +237,12 @@
   /* Wrap BETWEEN facts, never inside one: "Aug 23," and "2026" on separate
      lines read as two facts. */
   .facts span { white-space: nowrap; }
+  .facts .out-of-date { font-weight: 500; color: var(--charcoal); }
+  .out-of-date-badge {
+    font-size: .75rem; font-weight: normal;
+    border: 1px solid var(--charcoal);
+    padding: .05rem .35rem; border-radius: .25rem;
+  }
   .device-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
   .action.danger { border-color: var(--charcoal); }
   .action.danger:hover { background: var(--charcoal); color: var(--warm-white); }
@@ -811,7 +817,21 @@
       return;
     }
     target.replaceChildren();
-    for (const device of devices) target.append(deviceRow(device));
+    const newestPatch = fleetNewestPatch(devices);
+    for (const device of devices) target.append(deviceRow(device, newestPatch));
+  }
+
+  // NEWEST SECURITY PATCH LEVEL IN THE FLEET (muster#191).
+  // Security patch dates (e.g. 2026-10-05) sort lexicographically.
+  function fleetNewestPatch(devices) {
+    let newest = null;
+    for (const d of devices) {
+      const patch = d.security_patch || (d.report && d.report.security_patch);
+      if (patch && (!newest || patch > newest)) {
+        newest = patch;
+      }
+    }
+    return newest;
   }
 
   // WHAT AN OPERATOR CALLS THIS DEVICE (muster#29). `admin_name` overrides
@@ -822,7 +842,7 @@
     return device.admin_name || device.name;
   }
 
-  function deviceRow(device) {
+  function deviceRow(device, newestPatch) {
     const row = document.createElement('div');
     row.className = 'row device-row';
     const left = document.createElement('div');
@@ -847,6 +867,11 @@
       nameEl.append(mark);
     }
     nameEl.append(element('span', '', displayName(device)));
+    const patch = device.security_patch || (device.report && device.report.security_patch);
+    const outOfDate = Boolean(newestPatch && patch && patch < newestPatch);
+    if (outOfDate) {
+      nameEl.append(element('span', 'shape out-of-date-badge', 'out of date'));
+    }
     // THE DEVICE'S OWN REPORT, kept reachable rather than replaced. An
     // operator who renamed a device still needs to see what it calls itself,
     // the same field the console showed before the rename existed.
@@ -858,9 +883,9 @@
     );
     const stale = isStale(device);
     const status = element('div', 'device-status', stale
-      ? 'Stale - ' + deviceStatus(device) : deviceStatus(device));
+      ? 'Stale - ' + deviceStatus(device, outOfDate) : deviceStatus(device, outOfDate));
     status.classList.add('muted');
-    left.append(status, deviceFacts(device));
+    left.append(status, deviceFacts(device, outOfDate));
 
     const actions = document.createElement('div');
     actions.className = 'device-actions';
@@ -915,10 +940,11 @@
     return row;
   }
 
-  function deviceStatus(device) {
+  function deviceStatus(device, outOfDate) {
     if (device.revoked_at) return 'Revoked';
     if (device.wipe_pending_at) return 'Erase queued - waiting for check-in';
     if (device.reboot_requested_at) return 'Reboot queued - waiting for check-in';
+    if (outOfDate) return 'Active - Out of date';
     return 'Active';
   }
 
@@ -966,12 +992,25 @@
   }
 
   // The facts an operator asks first, each with its exact value on hover.
-  function deviceFacts(device) {
+  function deviceFacts(device, outOfDate) {
     const facts = document.createElement('div');
     facts.className = 'facts';
     const checked = element('span', '', 'Checked in ' + sinceText(device.last_seen));
     checked.title = exactTime(device.last_seen);
     facts.append(checked);
+    const patch = device.security_patch || (device.report && device.report.security_patch);
+    if (patch) {
+      const patchEl = element(
+        'span',
+        outOfDate ? 'out-of-date' : '',
+        'Patch ' + patch + (outOfDate ? ' (out of date)' : '')
+      );
+      if (device.build_id) patchEl.title = 'Build ' + device.build_id;
+      facts.append(patchEl);
+    }
+    if (device.pending_update) {
+      facts.append(element('span', '', 'Update pending'));
+    }
     if (device.not_after) {
       const cert = element('span', '', 'Certificate to ' + shortDate(device.not_after));
       cert.title = device.certificates + ' issued; current serial ' + device.serial;

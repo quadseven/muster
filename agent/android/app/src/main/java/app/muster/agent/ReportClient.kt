@@ -33,11 +33,30 @@ class ReportClient(
     /**
      * @param versions every managed package to its installed versionCode, null
      *   where it is not installed - which is an answer, not a missing one.
+     * @param securityPatch ro.build.version.security_patch or null (muster#191).
+     * @param buildId Build.ID or null (muster#191).
+     * @param pendingUpdate true when the platform holds an OS update waiting to
+     *   install, false when it holds none, null when the agent cannot ask (muster#191).
      */
-    fun send(steps: List<SyncReport.Step>, versions: Map<String, Long?>): ProvenPost.Sent {
+    fun send(
+        steps: List<SyncReport.Step>,
+        versions: Map<String, Long?>,
+        securityPatch: String? = null,
+        buildId: String? = null,
+        pendingUpdate: Boolean? = null,
+    ): ProvenPost.Sent {
         val fields = JSONObject()
             .put("steps", bounded(steps))
             .put("packages", packages(versions))
+        if (securityPatch != null) {
+            fields.put("security_patch", securityPatch)
+        }
+        if (buildId != null) {
+            fields.put("build_id", buildId)
+        }
+        if (pendingUpdate != null) {
+            fields.put("pending_update", pendingUpdate)
+        }
         return post.send(REPORT_PATH, fields)
     }
 
