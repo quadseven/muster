@@ -3644,7 +3644,7 @@ def test_a_revoked_device_can_still_be_erased(state, tmp_path):
 def test_an_unreachable_store_refuses_a_wipe_acknowledgement_rather_than_crashing(
     state, tmp_path,
 ):
-    """muster#59. `_turn_wipe_pending_into_revoked` referenced `_unreachable`
+    """muster#59. the wipe acknowledgement (now `_acknowledge`) referenced `_unreachable`
     as if it were module-level; it is actually a closure local to a different
     function (`_register_kith_routes`). A kith outage landing on exactly this
     read used to crash with `NameError` instead of answering 503 - the same
@@ -3656,7 +3656,7 @@ def test_an_unreachable_store_refuses_a_wipe_acknowledgement_rather_than_crashin
     client, key, identity, key_id = _wipe_pending_device(state, tmp_path)
 
     # THE FIRST CALL MUST SUCCEED: `_proven_device` reads `state.kith.member`
-    # too, before `_turn_wipe_pending_into_revoked` ever gets a turn, and it
+    # too, before `_acknowledge` ever gets a turn, and it
     # already handles `Unreachable` correctly. A blanket raise would return
     # 503 from THAT call and never exercise the buggy line at all - which
     # this test's first draft did, and which passed for the wrong reason.
@@ -3685,7 +3685,7 @@ def test_an_unreachable_store_refuses_a_wipe_acknowledgement_rather_than_crashin
 
     assert calls["n"] == 2, (
         "expected exactly two state.kith.member calls (_proven_device, then "
-        f"_turn_wipe_pending_into_revoked); got {calls['n']} - this test is "
+        f"_acknowledge); got {calls['n']} - this test is "
         "not exercising the call site it claims to"
     )
     assert response.status_code == 503, (
@@ -5743,3 +5743,27 @@ def test_the_spacing_bound_fails_closed_when_the_kith_cannot_answer(state, monke
     response = _renew(client, key, identity)
 
     assert response.status_code == 503, response.text
+
+
+def test_the_roll_offers_the_verbs_standing_allows(state, tmp_path):
+    """The console draws its buttons from `offered` (muster#217), so the roll
+    and the single-device view must carry `standing.offered` for each device,
+    and it must follow the device through a change of standing."""
+    client, _apk = _published_and_proving(state, tmp_path)
+    key_id, _key = _enrolled_device(client, state, tmp_path)
+
+    def offered():
+        roll = client.get("/v1/kith", cookies=ADMIN).json()["devices"]
+        one = client.get(f"/v1/kith/{key_id}", cookies=ADMIN).json()["device"]
+        assert [d["offered"] for d in roll if d["key_id"] == key_id] == [one["offered"]]
+        return one["offered"]
+
+    assert offered() == ["reboot", "wipe", "revoke"]
+    assert client.post(
+        f"/v1/kith/{key_id}/revoke", json={"revoked": True}, cookies=ADMIN
+    ).status_code == 200
+    assert offered() == ["wipe", "readmit"]
+    assert client.post(
+        f"/v1/kith/{key_id}/wipe", json={"wipe": True}, cookies=ADMIN
+    ).status_code == 200
+    assert offered() == ["reboot", "call_off_wipe"]

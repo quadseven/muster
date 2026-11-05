@@ -121,7 +121,7 @@ from muster.enroll import (
     fingerprint,
     key_id,
 )
-from muster import short_renewal, telemetry
+from muster import short_renewal, standing, telemetry
 from muster.short_renewal import ShortRenewals
 
 CHECK_IN_STALE_AFTER_PERIODS = int(
@@ -819,7 +819,7 @@ def _proven_device(
     # reaches the CRL, which is built from these rows.
     if not recorded:
         _record_presented(state, proven, certificate_pem.encode())
-    if member is not None and member.device.revoked_at is not None:
+    if member is not None and standing.served(standing.Standing.of(member.device)).refused:
         # COUNTED AND NAMED. A revoked device that keeps calling is either a
         # machine nobody switched off or a machine somebody took, and the two
         # look identical from here - so it is worth being able to see that it is
@@ -828,7 +828,7 @@ def _proven_device(
         state.telemetry.count("proof.refused", tags=["verdict:revoked"])
         raise HTTPException(
             status_code=403,
-            detail="this device has been revoked",
+            detail=standing.REVOKED_DETAIL,
             headers=uncached,
         )
 
@@ -1479,111 +1479,78 @@ def _register_proof_routes(app: FastAPI, state: State) -> None:
         return {"verdict": Verdict.OK.value}
 
 
-def _turn_wipe_pending_into_revoked(state: State, proven: str) -> None:
-    """The wipe-pending -> revoked transition, or a 409 saying it does not apply.
+# What each device acknowledgement is called where an operator reads it.
+_ACKNOWLEDGED = {
+    standing.ACK_WIPE: ("wipe", "device.wipe.acknowledged", "device wipe acknowledged"),
+    standing.ACK_REBOOT: (
+        "reboot", "device.reboot.acknowledged", "device reboot acknowledged",
+    ),
+}
 
-    EXTRACTED FROM THE ROUTE, not for tidiness: `_register_device_routes` is
-    over the complexity cap and this is the branchiest thing in it. Keeping the
-    transition here leaves the route reading as "prove, transition, answer".
+
+def _acknowledge(state: State, proven: str, verb: str) -> None:
+    """A device's acknowledgement of a waiting instruction, or the refusal `standing` gives.
+
+    ONE FUNCTION FOR BOTH INSTRUCTIONS (muster#217). The wipe and reboot
+    acknowledgements were two copies of one shape; the rule that decides
+    whether each applies now lives in `standing.permits`, and this reads it.
 
     BOTH REFUSALS ARE THE SAME SENTENCE, DELIBERATELY. One is "this device was
-    never told to wipe"; the other is "something else already moved it out of
-    wipe-pending" - two devices racing, or an administrator calling the wipe off
-    between the proof and this line. A device cannot act differently on the two,
-    and telling it which one it lost would say something about a state it is not
-    entitled to know.
-
-    THE `Unreachable` CASE IS HANDLED INLINE, matching `_register_device_
-    routes`'s own convention (`device_config`'s role lookup, and
-    `_turn_reboot_requested_into_acknowledged` beside this function) -
-    NOT a bare `_unreachable` reference. That reference used to sit here and
-    resolved against nothing: `_unreachable` is a closure local to
-    `_register_kith_routes`, a different function this one is not nested
-    inside, so a kith outage landing on the read below crashed with
-    `NameError` instead of ever reaching this docstring's own reasoning about
-    which refusal to give (muster#59).
-    """
-    try:
-        member = state.kith.member(proven)
-    except kith_store.Unreachable as exc:
-        state.telemetry.count("kith.read.refused")
-        telemetry.event(
-            "muster cannot say whether a device was asked to wipe",
-            key_id=proven, error=str(exc),
-        )
-        raise HTTPException(
-            status_code=503,
-            detail=f"{exc}. The device is unaffected: nothing has acted on "
-                   "the wipe instruction, whichever state it turns out to be "
-                   "in.",
-            headers={"Cache-Control": "no-store"},
-        ) from exc
-
-    not_pending = HTTPException(
-        status_code=409,
-        detail="this device is not waiting to be wiped",
-        headers={"Cache-Control": "no-store"},
-    )
-    if member is None or member.device.wipe_pending_at is None:
-        raise not_pending
-    # THE TRANSITION IS THE AUTHORITY, not the read above. Between that read
-    # and this call an administrator may have called the wipe off, so a device
-    # that acknowledges must not be revoked on the strength of a stale row.
-    if not state.kith.acknowledged_wipe(proven):
-        raise not_pending
-
-    state.telemetry.count("device.wipe.acknowledged")
-    telemetry.event("device wipe acknowledged", key_id=proven)
-
-
-def _turn_reboot_requested_into_acknowledged(state: State, proven: str) -> None:
-    """The reboot-requested -> acknowledged transition, or a 409 saying it does not apply.
-
-    SAME SHAPE AS `_turn_wipe_pending_into_revoked` ABOVE, with one deliberate
-    difference: the `Unreachable` case is handled INLINE, matching how every
-    other route inside `_register_device_routes` already does it (see
-    `device_config`'s own role lookup a little above this), rather than
-    reaching for `_register_kith_routes`'s `_unreachable` closure the way that
-    sibling function does. That closure is not in scope here, and
-    `_turn_wipe_pending_into_revoked` referencing it anyway is a real bug -
-    filed separately as muster#59 rather than fixed here, since fixing it is
-    not this ticket's job. Copying its shape into a new function would have
-    reproduced the same bug; this does not.
-
-    BOTH REFUSALS ARE THE SAME SENTENCE, for the same reason
-    `_turn_wipe_pending_into_revoked` gives: a device cannot act differently on
-    "never asked" versus "an administrator cancelled it between the proof and
-    this line", and telling it which one it lost would say something about a
+    never told to"; the other is "something else already moved it out of that
+    state" - two devices racing, or an administrator calling the instruction
+    off between the proof and this line. A device cannot act differently on
+    the two, and telling it which one it lost would say something about a
     state it is not entitled to know.
+
+    THE `Unreachable` CASE IS HANDLED INLINE, not through `_register_kith_
+    routes`'s `_unreachable` closure, which is not in scope here (muster#59).
     """
+    noun, counter, event = _ACKNOWLEDGED[verb]
     try:
         member = state.kith.member(proven)
     except kith_store.Unreachable as exc:
         state.telemetry.count("kith.read.refused")
         telemetry.event(
-            "muster cannot say whether a device was asked to reboot",
+            f"muster cannot say whether a device was asked to {noun}",
             key_id=proven, error=str(exc),
         )
         raise HTTPException(
             status_code=503,
             detail=f"{exc}. The device is unaffected: nothing has acted on "
-                   "the reboot instruction, whichever state it turns out to "
+                   f"the {noun} instruction, whichever state it turns out to "
                    "be in.",
             headers={"Cache-Control": "no-store"},
         ) from exc
 
-    not_pending = HTTPException(
-        status_code=409,
-        detail="this device was not asked to reboot",
-        headers={"Cache-Control": "no-store"},
+    # A device with no row was never asked, which is the empty standing.
+    now = (
+        standing.Standing.of(member.device) if member is not None
+        else standing.Standing()
     )
-    if member is None or member.device.reboot_requested_at is None:
-        raise not_pending
-    if not state.kith.acknowledged_reboot(proven):
-        raise not_pending
+    answer = standing.permits(now, verb)
+    if isinstance(answer, standing.Refusal):
+        raise HTTPException(
+            status_code=answer.status,
+            detail=answer.detail,
+            headers={"Cache-Control": "no-store"},
+        )
+    # THE TRANSITION IS THE AUTHORITY, not the read above. The store applies
+    # it in one conditional write, so an administrator calling the instruction
+    # off after that read leaves nothing to acknowledge.
+    write = {
+        standing.ACK_WIPE: state.kith.acknowledged_wipe,
+        standing.ACK_REBOOT: state.kith.acknowledged_reboot,
+    }[verb]
+    if not write(proven):
+        refusal = standing.permits(standing.Standing(), verb)
+        raise HTTPException(
+            status_code=refusal.status,
+            detail=refusal.detail,
+            headers={"Cache-Control": "no-store"},
+        )
 
-    state.telemetry.count("device.reboot.acknowledged")
-    telemetry.event("device reboot acknowledged", key_id=proven)
+    state.telemetry.count(counter)
+    telemetry.event(event, key_id=proven)
 
 
 def _register_device_routes(app: FastAPI, state: State) -> None:
@@ -1679,21 +1646,20 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         # authenticated and waiting to be erased. The wipe instruction must
         # arrive BEFORE the refusal, which is exactly the ordering this flag
         # carries into policy resolution.
-        wipe_pending = (
-            member is not None and member.device.wipe_pending_at is not None
-        )
         # REBOOT-REQUESTED IS SERVED THE SAME WAY, for the same reason: it must
         # reach the device before anything could refuse it, and nothing does -
         # `reboot_requested_at` never interacts with `revoked_at` (muster#58).
-        reboot_requested = (
-            member is not None and member.device.reboot_requested_at is not None
+        # Both answers are `standing.served`, the one place that says so.
+        given = standing.served(
+            standing.Standing.of(member.device) if member is not None
+            else standing.Standing()
         )
         try:
             configuration = state.policies.for_device(
                 proven,
                 role=role,
-                wipe_pending=wipe_pending,
-                reboot_requested=reboot_requested,
+                wipe_pending=given.wipe,
+                reboot_requested=given.reboot,
             )
         except (policy.Unreadable, policy.NoSource) as cannot_say:
             # 503 AND NOT AN EMPTY ANSWER, and the difference is every managed
@@ -1872,7 +1838,7 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         """
         response.headers["Cache-Control"] = "no-store"
         proven = _proven_device(state, nonce, signature_b64, certificate_pem)
-        _turn_wipe_pending_into_revoked(state, proven)
+        _acknowledge(state, proven, standing.ACK_WIPE)
         return {"key_id": proven, "revoked": True}
 
     @app.post("/v1/device/reboot")
@@ -1893,7 +1859,7 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         """
         response.headers["Cache-Control"] = "no-store"
         proven = _proven_device(state, nonce, signature_b64, certificate_pem)
-        _turn_reboot_requested_into_acknowledged(state, proven)
+        _acknowledge(state, proven, standing.ACK_REBOOT)
         return {"key_id": proven, "reboot_acknowledged": True}
 
     @app.post("/v1/device/renew", status_code=201, include_in_schema=False)
@@ -2383,34 +2349,38 @@ def _changed_or_refused(write, unreachable) -> None:
         raise HTTPException(status_code=404, detail="no such device")
 
 
-def _refuse_reboot_on_a_revoked_device(
+def _refuse_unless_permitted(
     state: State,
     key_id: str,
+    verb: str,
     unreachable: Callable[[kith_store.Unreachable], HTTPException],
 ) -> None:
-    """A 409 if arming a reboot on this device would silently readmit it (muster#58).
+    """The refusal `standing.permits` gives an administrator verb, if any (muster#217).
 
-    EXTRACTED FROM THE ROUTE, not for tidiness: `_register_kith_routes` is
-    over the complexity cap (Grug: cyclomatic 24/15, cognitive 31/25), and a
-    branchy check left inline would move it around without removing it from
-    that function's count - the same reason `_turn_wipe_pending_into_revoked`
-    lives at module level instead of inside its own registrar.
+    READS ONLY WHEN A REFUSAL IS POSSIBLE. Most administrator verbs are
+    permitted from every standing, and `standing.refusable` says which are
+    not, so revoke and wipe keep writing without a read in front of them.
+    Arming a reboot on a revoked device is the one refusal today (D30): a
+    plain read before the write, which D30 accepts because the race it leaves
+    lands an inert flag on a device that is refused every request anyway.
 
-    THE UNREACHABLE-HANDLER IS A PARAMETER, matching `_changed_or_refused`'s
-    already-working shape, rather than a bare `_unreachable` reference. That
-    bare reference is exactly what made `_turn_wipe_pending_into_revoked` a
-    real bug (muster#59, filed rather than fixed there) - this function does
-    not repeat it.
+    A missing device is not refused here: the write after this answers 404,
+    the same as every other administrator write to a device row.
+
+    THE UNREACHABLE-HANDLER IS A PARAMETER, matching `_changed_or_refused`,
+    because `_unreachable` is a closure in another registrar (muster#59).
     """
+    if not standing.refusable(verb):
+        return
     try:
         member = state.kith.member(key_id)
     except kith_store.Unreachable as exc:
         raise unreachable(exc) from exc
-    if member is not None and member.device.revoked_at is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="this device is revoked; readmit it before asking it to reboot",
-        )
+    if member is None:
+        return
+    answer = standing.permits(standing.Standing.of(member.device), verb)
+    if isinstance(answer, standing.Refusal):
+        raise HTTPException(status_code=answer.status, detail=answer.detail)
 
 
 def _register_unrecorded_route(app: FastAPI, state: State, admin) -> None:
@@ -2676,6 +2646,8 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         a device whose revocation the erase lifted is revoked again, at its
         original time. It never readmits a device.
         """
+        verb = standing.WIPE if wipe else standing.CALL_OFF_WIPE
+        _refuse_unless_permitted(state, key_id, verb, _unreachable)
         _changed_or_refused(lambda: state.kith.set_wipe_pending(key_id, wipe), _unreachable)
         telemetry.event(
             "device wipe requested" if wipe else "device wipe cancelled",
@@ -2712,10 +2684,9 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         readmitting to deliver it is correct. A reboot is the opposite: far
         weaker than revocation, and silently readmitting a device an
         administrator revoked on purpose just to reboot it would be a
-        dangerous surprise rather than a convenience. `_refuse_reboot_on_a_
-        revoked_device` does a plain read before the write rather than a
-        database-level guard, matching `_turn_wipe_pending_into_revoked`'s own
-        use of a member-read for a friendly refusal - accepted here because
+        dangerous surprise rather than a convenience. `standing.permits` says
+        so, and `_refuse_unless_permitted` does a plain read before the write
+        rather than a database-level guard - accepted here because
         the race it leaves (revoking and reboot-arming the same device in the
         same instant, from two admin calls) leaves an inert flag on a device
         that already refuses every request, not a security property like
@@ -2732,8 +2703,8 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         reboot itself on request could be told to by whatever compromised it,
         at a moment of the attacker's choosing.
         """
-        if reboot:
-            _refuse_reboot_on_a_revoked_device(state, key_id, _unreachable)
+        verb = standing.REBOOT if reboot else standing.CALL_OFF_REBOOT
+        _refuse_unless_permitted(state, key_id, verb, _unreachable)
         _changed_or_refused(
             lambda: state.kith.set_reboot_requested(key_id, reboot), _unreachable
         )
@@ -2776,6 +2747,8 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         # NOT a silent success, and here that matters more than anywhere else in
         # this file: an administrator who believes a stolen device is cut off
         # stops looking for it.
+        verb = standing.REVOKE if revoked else standing.READMIT
+        _refuse_unless_permitted(state, key_id, verb, _unreachable)
         _changed_or_refused(lambda: state.kith.set_revoked(key_id, revoked), _unreachable)
         telemetry.event(
             "device revoked" if revoked else "device readmitted", key_id=key_id
@@ -2918,6 +2891,10 @@ def _member(member: kith_store.Member, report: kith_store.Report | None = None) 
             if member.device.wipe_pending_at is not None
             else None
         ),
+        # WHAT AN ADMINISTRATOR MAY DO NEXT (muster#217), from `standing.offered`.
+        # The console draws its buttons from this list rather than deciding
+        # again, so the console and the server cannot rule differently.
+        "offered": list(standing.offered(standing.Standing.of(member.device))),
         "first_seen": member.device.first_seen.isoformat(),
         "last_seen": member.device.last_seen.isoformat(),
         "certificates": member.certificates,

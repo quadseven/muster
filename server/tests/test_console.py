@@ -650,8 +650,10 @@ def test_the_devices_section_can_queue_and_cancel_a_named_wipe(client):
     """The destructive device action belongs on the device row, not in a
     terminal, and every confirmation has to identify the device it will erase.
 
-    The revoke control is disabled while an erase is pending: D29 says that
-    revoking first removes the only channel the erase can travel down.
+    Which controls a row shows is the server's call (muster#217): each button
+    is drawn from the roll's `offered` list, and `standing.offered` holds the
+    revoke control back while an erase is pending, because revoking overrules
+    the erase (D29).
 
     WHAT THIS PROVES, AND WHAT IT DOES NOT. These are string assertions over
     the served page. They prove the controls, the confirmation's device-name
@@ -672,9 +674,39 @@ def test_the_devices_section_can_queue_and_cancel_a_named_wipe(client):
     assert "Queue erase" in body
     assert "Call off erase" in body
     assert "Erase queued - waiting for check-in" in body
-    assert "revoke.disabled" in body
+    assert "['call_off_wipe', 'Call off erase'], ['wipe', 'Queue erase']" in body
     assert "Do not revoke it first" in body
     assert "device-action-name" in body
+
+
+def test_the_device_buttons_are_drawn_from_what_the_roll_offers(client):
+    """The console no longer re-derives standing rules from timestamps
+    (muster#217). It reads `device.offered` and maps each verb to its dialog,
+    so the console and the server cannot rule differently. String assertions,
+    with the caveat the wipe test above gives."""
+    body = client.get("/").text
+
+    assert "new Set(device.offered || [])" in body
+    assert "function verbButton(" in body
+    for verb, action in (
+        ("reboot", "reboot"),
+        ("call_off_reboot", "cancel-reboot"),
+        ("wipe", "wipe"),
+        ("call_off_wipe", "cancel-wipe"),
+        ("revoke", "revoke"),
+        ("readmit", "readmit"),
+    ):
+        assert f"{verb}: '{action}'," in body
+    # The old local rules are gone: no button decides from a timestamp.
+    for rule in (
+        "wipe.disabled = Boolean(device.revoked_at)",
+        "revoke.disabled = Boolean(device.wipe_pending_at)",
+        "reboot.disabled = !device.reboot_requested_at",
+    ):
+        assert rule not in body
+    # The page no longer claims the server cannot erase a revoked device.
+    assert "does not queue an erase on a revoked device" not in body
+    assert "cannot queue an erase on a revoked device" not in body
 
 
 def test_the_console_does_not_contradict_what_the_server_does_with_an_erase(client):
@@ -700,16 +732,17 @@ def test_a_revoked_device_can_be_readmitted_from_the_same_row(client):
     """
     body = client.get("/").text
 
-    assert "'Readmit' : 'Revoke'" in body
+    assert "['readmit', 'Readmit'], ['revoke', 'Revoke']" in body
     assert "readmit: {" in body
     assert "body: { revoked: false }" in body
     assert "Readmit device" in body
     # The old dead-end control is gone: a revoked row is never a disabled
     # button with nothing behind it.
     assert "? 'Revoked' : 'Revoke'" not in body
-    # The ordering guard from D29 is unchanged: neither direction is offered
-    # while an erase is pending.
-    assert "revoke.disabled = Boolean(device.wipe_pending_at)" in body
+    # The ordering guard from D29 now lives in `standing.offered`, which
+    # offers neither direction while an erase is pending; the console only
+    # explains the disabled slot.
+    assert "before revoking" in body
 
 
 def test_the_product_is_capitalized_wherever_a_person_reads_it(client):

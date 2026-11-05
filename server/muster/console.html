@@ -527,8 +527,9 @@
         <h3>Recognized devices</h3>
         <p class="muted">
           Erasing is delivered at the device's next check-in. Queue the erase
-          and leave the device unrevoked: it is revoked once it acknowledges
-          the erase. This page does not queue an erase on a revoked device.
+          instead of revoking: the device is revoked once it acknowledges the
+          erase. An erase queued on a revoked device lifts the revocation so
+          the instruction can travel, and calling it off restores it.
         </p>
         <div class="device-list" id="devices">
           <p class="muted">Loading devices...</p>
@@ -895,49 +896,63 @@
     rename.onclick = () => openDeviceAction(device, 'rename');
     actions.append(rename);
 
+    // WHAT THE SERVER OFFERS, NOT WHAT THIS PAGE DECIDES (muster#217). Each
+    // roll entry carries `offered`, the administrator verbs `standing.offered`
+    // allows from this device's standing, and every button below is drawn
+    // from that list. A slot with nothing offered is shown disabled so the
+    // row keeps its shape; its title says why.
+    const offered = new Set(device.offered || []);
+
     // BETWEEN RENAME AND WIPE ON PURPOSE - a troubleshooting action, lighter
     // than either the destructive one after it or revoke (muster#58).
-    const reboot = document.createElement('button');
-    reboot.className = 'action';
-    reboot.textContent = device.reboot_requested_at ? 'Cancel reboot' : 'Reboot';
-    // ARMING is refused server-side on a revoked device; CANCELLING never is
-    // (see the reboot route's own docstring) - so only the arming direction
-    // disables here.
-    reboot.disabled = !device.reboot_requested_at && Boolean(device.revoked_at);
-    reboot.title = reboot.disabled
-      ? 'A revoked device cannot be told to reboot - readmit it first'
-      : '';
-    reboot.onclick = () => openDeviceAction(
-      device, device.reboot_requested_at ? 'cancel-reboot' : 'reboot',
-    );
-    actions.append(reboot);
+    actions.append(verbButton(device, offered, 'action', [
+      ['call_off_reboot', 'Cancel reboot'], ['reboot', 'Reboot'],
+    ], 'A revoked device cannot be told to reboot - readmit it first'));
 
-    const wipe = document.createElement('button');
-    wipe.className = 'action danger';
-    wipe.textContent = device.wipe_pending_at ? 'Call off erase' : 'Queue erase';
-    wipe.disabled = Boolean(device.revoked_at);
-    wipe.title = device.revoked_at
-      ? 'This page does not queue an erase on a revoked device: delivering one lifts the revocation until the device acknowledges'
-      : '';
-    wipe.onclick = () => openDeviceAction(device, device.wipe_pending_at ? 'cancel-wipe' : 'wipe');
-    actions.append(wipe);
+    // An erase is offered on a revoked device too: the server lifts the
+    // revocation to deliver it and restores it if the erase is called off.
+    actions.append(verbButton(device, offered, 'action danger', [
+      ['call_off_wipe', 'Call off erase'], ['wipe', 'Queue erase'],
+    ], 'The server offers no erase action for this device'));
 
     // ONE BUTTON, TWO DIRECTIONS. The API has always accepted `revoked: false`
     // (muster#11 argued that a revoke with no way back is a wipe with extra
-    // steps), but until this control existed the way back was a terminal. A
-    // revoked device shows Readmit here, so the person who revoked the wrong
-    // row can undo it from the same place they did it.
-    const revoke = document.createElement('button');
-    revoke.className = 'action';
-    revoke.textContent = device.revoked_at ? 'Readmit' : 'Revoke';
-    revoke.disabled = Boolean(device.wipe_pending_at);
-    revoke.title = device.wipe_pending_at
-      ? 'Wait for the erase to land before revoking'
-      : '';
-    revoke.onclick = () => openDeviceAction(device, device.revoked_at ? 'readmit' : 'revoke');
-    actions.append(revoke);
+    // steps). A revoked device shows Readmit here, so the person who revoked
+    // the wrong row can undo it from the same place they did it. Neither is
+    // offered while an erase is queued, because either would drop the erase.
+    actions.append(verbButton(device, offered, 'action', [
+      ['readmit', 'Readmit'], ['revoke', 'Revoke'],
+    ], 'Wait for the erase to land, or call it off, before revoking'));
     row.append(left, actions);
     return row;
+  }
+
+  // The confirmation each offered verb opens.
+  const VERB_ACTIONS = {
+    reboot: 'reboot',
+    call_off_reboot: 'cancel-reboot',
+    wipe: 'wipe',
+    call_off_wipe: 'cancel-wipe',
+    revoke: 'revoke',
+    readmit: 'readmit',
+  };
+
+  // One button for a slot: the first of `choices` the server offers, or the
+  // last choice disabled with `idleTitle` when it offers none of them.
+  function verbButton(device, offered, className, choices, idleTitle) {
+    const button = document.createElement('button');
+    button.className = className;
+    const choice = choices.find(([verb]) => offered.has(verb));
+    if (!choice) {
+      button.textContent = choices[choices.length - 1][1];
+      button.disabled = true;
+      button.title = idleTitle;
+      return button;
+    }
+    const [verb, label] = choice;
+    button.textContent = label;
+    button.onclick = () => openDeviceAction(device, VERB_ACTIONS[verb]);
+    return button;
   }
 
   function deviceStatus(device, outOfDate) {
@@ -1100,7 +1115,7 @@
     },
     wipe: {
       question: 'Erase this device?',
-      lede: 'This queues an erase for the named device. It will be erased at its next check-in. Do not revoke it first: this page cannot queue an erase on a revoked device.',
+      lede: 'This queues an erase for the named device. It will be erased at its next check-in. Do not revoke it first: it is revoked once it acknowledges the erase. On a revoked device the revocation is lifted until then, and restored if the erase is called off.',
       confirm: 'Queue erase',
       path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/wipe',
       body: { wipe: true },

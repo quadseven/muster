@@ -76,7 +76,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, replace
 from typing import Callable, Protocol
 
-from muster import telemetry
+from muster import standing, telemetry
 
 # How long to stop touching a store that just failed. Without this, every
 # request during an outage pays a full connect timeout - so "issuance does not
@@ -500,79 +500,66 @@ class MemoryRecords:
         self._devices[key_id] = replace(device, admin_name=name)
         return True
 
-    def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool:
+    def _transition(self, key_id: str, verb: str, at: dt.datetime | None) -> bool:
+        """Apply one `standing` transition to this device's row (muster#217).
+
+        THE RULES ARE `standing.written`, not repeated here. Every standing
+        write below is one verb through this method, so the in-memory store
+        and the table cannot drift; `PostgresRecords` writes the same rows,
+        each verb in one conditional UPDATE.
+        """
         device = self._devices.get(key_id)
         if device is None:
             return False
-        # BOTH DIRECTIONS THROUGH ONE METHOD, `at=None` being readmission. A
-        # separate un-revoke would be a second write path to the same column,
-        # and the one used less often is the one that would rot.
-        #
-        # A REVOCATION OR A READMISSION ALSO CLEARS WIPE-PENDING. Revoking and
-        # wiping are two states, not one; an administrator choosing the second
-        # state directly is saying the first no longer applies, and readmitting
-        # a device that was waiting to be erased would otherwise be readmitted
-        # into a wipe it did not ask for. Either way this is a later decision
-        # on standing, so a revocation set aside for an erase no longer applies.
-        self._revoked_before_wipe.pop(key_id, None)
-        self._devices[key_id] = replace(device, revoked_at=at, wipe_pending_at=None)
+        after = standing.written(
+            verb,
+            standing.Stamps(
+                revoked_at=device.revoked_at,
+                wipe_pending_at=device.wipe_pending_at,
+                reboot_requested_at=device.reboot_requested_at,
+                revoked_before_wipe_at=self._revoked_before_wipe.get(key_id),
+            ),
+            at,
+        )
+        if after is None:
+            return False
+        if after.revoked_before_wipe_at is None:
+            self._revoked_before_wipe.pop(key_id, None)
+        else:
+            self._revoked_before_wipe[key_id] = after.revoked_before_wipe_at
+        self._devices[key_id] = replace(
+            device,
+            revoked_at=after.revoked_at,
+            wipe_pending_at=after.wipe_pending_at,
+            reboot_requested_at=after.reboot_requested_at,
+        )
         return True
+
+    def record_revocation(self, key_id: str, at: dt.datetime | None) -> bool:
+        # BOTH DIRECTIONS THROUGH ONE METHOD, `at=None` being readmission. Either
+        # also clears wipe-pending and any revocation set aside for an erase:
+        # this is the later decision on standing (`standing.written`).
+        verb = standing.READMIT if at is None else standing.REVOKE
+        return self._transition(key_id, verb, at)
 
     def record_wipe_pending(self, key_id: str, at: dt.datetime | None) -> bool:
-        device = self._devices.get(key_id)
-        if device is None:
-            return False
-        # SETTING WIPE-PENDING CLEARS REVOCATION, and that ordering is the
-        # whole of muster#15: `_proven_device` refuses a revoked key before it
-        # serves anything, so a wipe requested on a revoked device would never
-        # travel. The state that serves the wipe must therefore be the state
-        # that removes the refusal.
-        #
-        # THE LIFT BELONGS TO THE ERASE, so the revocation is set aside rather
-        # than lost, and calling the erase off (`at=None`) puts it back. With
-        # no erase pending there is nothing set aside, and a revocation stands.
-        if at is None:
-            restored = self._revoked_before_wipe.pop(key_id, device.revoked_at)
-            self._devices[key_id] = replace(
-                device, revoked_at=restored, wipe_pending_at=None
-            )
-            return True
-        if device.revoked_at is not None:
-            self._revoked_before_wipe[key_id] = device.revoked_at
-        self._devices[key_id] = replace(device, revoked_at=None, wipe_pending_at=at)
-        return True
+        # SETTING WIPE-PENDING CLEARS REVOCATION and sets it aside; calling the
+        # erase off (`at=None`) puts it back (D29, #214, `standing.written`).
+        verb = standing.CALL_OFF_WIPE if at is None else standing.WIPE
+        return self._transition(key_id, verb, at)
 
     def record_wipe_acknowledged(self, key_id: str, at: dt.datetime) -> bool:
-        device = self._devices.get(key_id)
-        if device is None or device.wipe_pending_at is None:
-            return False
-        # THE DEVICE SAID IT IS ABOUT TO WIPE, so now - and only now - the
-        # wipe-pending state becomes the refusal. Doing this in the same admin
-        # call that set wipe-pending would starve the instruction; doing it
-        # never would leave a wiped device readmitted as soon as it renewed.
-        self._revoked_before_wipe.pop(key_id, None)
-        self._devices[key_id] = replace(device, revoked_at=at, wipe_pending_at=None)
-        return True
+        # Only from wipe-pending: the serving state becomes the refusal now.
+        return self._transition(key_id, standing.ACK_WIPE, at)
 
     def record_reboot_requested(self, key_id: str, at: dt.datetime | None) -> bool:
-        device = self._devices.get(key_id)
-        if device is None:
-            return False
-        # NO REVOCATION SIDE EFFECT, unlike wipe. This is deliberately the one
-        # place this column's write path departs from `record_wipe_pending`
-        # above - see the field's own comment on `Device`.
-        self._devices[key_id] = replace(device, reboot_requested_at=at)
-        return True
+        # NO REVOCATION SIDE EFFECT, unlike wipe (D30).
+        verb = standing.CALL_OFF_REBOOT if at is None else standing.REBOOT
+        return self._transition(key_id, verb, at)
 
     def record_reboot_acknowledged(self, key_id: str) -> bool:
-        device = self._devices.get(key_id)
-        if device is None or device.reboot_requested_at is None:
-            return False
-        # THE DEVICE SAID IT IS ABOUT TO REBOOT, so now the instruction clears.
-        # No second state to transition into, unlike wipe's move into
-        # `revoked_at`: a rebooted device is expected back, not gone.
-        self._devices[key_id] = replace(device, reboot_requested_at=None)
-        return True
+        # Only from reboot-requested; a rebooted device is expected back.
+        return self._transition(key_id, standing.ACK_REBOOT, None)
 
     def record_collected(self, request_id: str, at: dt.datetime) -> None:
         for held in self._certificates.values():
@@ -1611,9 +1598,9 @@ class Kith:
         there is no way to un-ring that.
 
         Returns whether a device was actually changed. Whether the target is
-        currently revoked is the caller's business (api.py refuses that case
-        outright, rather than this method silently readmitting it the way
-        `set_wipe_pending` deliberately does).
+        currently revoked is the caller's business: `standing.permits` refuses
+        that case and api.py reads it, rather than this method silently
+        readmitting it the way `set_wipe_pending` deliberately does.
         """
         return bool(
             self._write_now(
