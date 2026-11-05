@@ -45,13 +45,17 @@ COPY agent/agent-version.txt /app/agent/agent-version.txt
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Non-root. This process holds the CA private key; there is no reason for it to
-# be able to write anywhere it was not explicitly given.
-RUN adduser -D -u 10001 muster && chown -R muster:muster /app
+# be able to write anywhere it was not explicitly given. /app, its code and its
+# virtualenv stay owned by root, so the runtime user can read them and change
+# nothing. Nothing at runtime writes under /app: the policy, asset and CA
+# directories are mounted volumes configured by environment.
+RUN adduser -D -u 10001 muster
 USER muster
 
 EXPOSE 8000
 
-# --factory, because app_from_env REFUSES TO START without MUSTER_ADMIN_TOKEN.
+# --factory, because app_from_env REFUSES TO START without administrator
+# sign-in (MUSTER_OIDC_*) and MUSTER_ADMIN_SUBJECTS.
 # That refusal has to happen at startup, where the pod goes CrashLoopBackOff and
 # somebody notices - not at first request, quietly serving an open console.
 CMD ["uvicorn", "--factory", "muster.api:app_from_env", "--host", "0.0.0.0", "--port", "8000"]

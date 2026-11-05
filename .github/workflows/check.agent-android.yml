@@ -286,8 +286,8 @@ jobs:
           # tests and the manifest checks without ever holding the key.
           #
           # Safe by construction on the consumer side too: build.server-image.yml
-          # bakes only `?branch=main&status=success` runs, so a PR artifact is
-          # never published.
+          # bakes only `?branch=main&event=push&status=success` runs, so neither
+          # a PR artifact nor a debug build from a dispatch is ever published.
           #
           # ACCEPTED RESIDUAL RISK, recorded deliberately - see
           # docs/signing-ceremony.md. This is a persistent self-hosted runner,
@@ -329,8 +329,8 @@ jobs:
             # to main is expected to be able to sign, so only a push to main is
             # wrong when it cannot.
             if [ -n "${PINNED_CERT:-}" ] \
-               && [ "${{ github.event_name }}" = "push" ] \
-               && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+               && [ "$GITHUB_EVENT_NAME" = "push" ] \
+               && [ "$GITHUB_REF" = "refs/heads/main" ]; then
               echo "::error::MUSTER_RELEASE_CERT_SHA256 is set, so this estate HAS a release key - but MUSTER_KEYSTORE_BASE64 is missing on a $GITHUB_EVENT_NAME build. Refusing to publish a debug-signed agent. Re-seed the secret from SSM; see docs/signing-ceremony.md."
               exit 1
             fi
