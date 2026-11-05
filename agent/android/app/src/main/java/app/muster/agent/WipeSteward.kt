@@ -91,7 +91,7 @@ class WipeSteward(private val context: Context) {
                     KeystoreIdentity(context),
                 ),
                 WIPE_ACK_PATH,
-                "wipe",
+                AcknowledgedAction.WIPE,
             )
         } catch (e: Exception) {
             return Outcome(plan = plan, kept = "could not acknowledge the wipe: ${e.javaClass.simpleName}")

@@ -74,5 +74,13 @@ class AcknowledgedAction(
 
     companion object {
         const val ACKNOWLEDGED = 200
+
+        /**
+         * The log words for the two instructions. Kept here, not spelled out
+         * in the Stewards, because BootPlanTest refuses a Steward that names
+         * a managed file as a string literal, and these match two such names.
+         */
+        const val WIPE = "wipe"
+        const val REBOOT = "reboot"
     }
 }

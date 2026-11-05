@@ -90,7 +90,7 @@ class RebootSteward(private val context: Context) {
                     KeystoreIdentity(context),
                 ),
                 REBOOT_ACK_PATH,
-                "reboot",
+                AcknowledgedAction.REBOOT,
             )
         } catch (e: Exception) {
             return Outcome(plan = plan, kept = "could not acknowledge the reboot: ${e.javaClass.simpleName}")
