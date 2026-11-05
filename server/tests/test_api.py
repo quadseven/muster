@@ -29,7 +29,8 @@ from starlette.routing import Host
 
 from muster import console
 from muster import kith as kith_store
-from muster.api import State, _take_diagnostic_slot, create_app
+from muster.api import State, create_app
+from muster.device_channel import _take_diagnostic_slot
 from muster.ca import Authority
 from muster.enroll import (
     DEFAULT_CODE_TTL_S,
@@ -617,7 +618,7 @@ def test_diagnostic_upload_is_rate_limited_per_device(state):
 def test_diagnostic_upload_is_not_suppressed_when_monotonic_clock_starts_at_zero(
     state, monkeypatch
 ):
-    monkeypatch.setattr("muster.api.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr("muster.device_channel.time.monotonic", lambda: 0.0)
 
     assert _take_diagnostic_slot(state, "device") is True
     assert _take_diagnostic_slot(state, "device") is False
@@ -1596,12 +1597,12 @@ def _qr_for(state, apk, code):
     the bundle: on a handset that looks like a phone which provisions perfectly
     and then sits waiting to be typed at.
 
-    The drawing constants come from muster.api rather than being repeated, so
-    this cannot pass by both sides being wrong in the same way.
+    The drawing constants come from muster.routes_agent rather than being
+    repeated, so this cannot pass by both sides being wrong in the same way.
     """
     import segno  # noqa: PLC0415
 
-    from muster import api as _api  # noqa: PLC0415
+    from muster import routes_agent  # noqa: PLC0415
     from muster import provisioning  # noqa: PLC0415
 
     data = provisioning.payload(
@@ -1615,10 +1616,10 @@ def _qr_for(state, apk, code):
     segno.make(provisioning.encode(data), error="m").save(
         buffer,
         kind="svg",
-        scale=_api._QR_SCALE,
-        border=_api._QUIET_ZONE,
-        dark=_api._QR_DARK,
-        light=_api._QR_LIGHT,
+        scale=routes_agent._QR_SCALE,
+        border=routes_agent._QUIET_ZONE,
+        dark=routes_agent._QR_DARK,
+        light=routes_agent._QR_LIGHT,
     )
     return buffer.getvalue().decode()
 
@@ -4435,7 +4436,7 @@ def test_an_unrecorded_device_is_recorded_once_in_a_real_store():
 # cannot fetch its CRL over TLS without first verifying the CRL host's own
 # certificate, so the standards put these URIs on http and the verifiers that
 # follow them only follow http. See the comment on the scheme check in
-# api._register_revocation_routes.
+# routes_revocation.register.
 REVOCATION_CRL_URL = "http://crl.muster.example.test/"
 REVOCATION_OCSP_URL = "http://ocsp.muster.example.test/"
 
@@ -5134,7 +5135,7 @@ def test_other_proof_routes_keep_the_unchanged_expiry_refusal(
     """Only renewal words expiry as "enroll again"; the shared proof keeps cert-expired."""
     from fastapi import HTTPException
 
-    from muster.api import _proven_device
+    from muster.device_channel import _proven_device
     from muster.proof import Verdict
 
     _proof_client(state)
@@ -5716,7 +5717,7 @@ def test_two_renewals_inside_the_spacing_bound_mint_one_certificate(state, monke
 def test_a_renewal_past_the_spacing_bound_is_signed(state, monkeypatch):
     """The bound spaces renewals out; it does not end them. A device whose
     write failed gets another chance once the bound has passed."""
-    from muster.api import RENEWAL_SPACING
+    from muster.device_channel import RENEWAL_SPACING
 
     client = _proof_client(state)
     key, identity, key_id_ = _enrolled(state, record=True)

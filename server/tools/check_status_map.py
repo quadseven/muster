@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Do the agent and the server agree what each HTTP status means?
 
-THE SEAM. `muster.api._STATUS` maps an enrollment refusal to a status code; the
+THE SEAM. `muster.routes_enroll._STATUS` maps an enrollment refusal to a status code; the
 Android client maps that code back to a behaviour. They are two halves of one
 contract written in different languages, and neither test suite can see the
 other - so a code that quietly changes meaning on one side produces a device
@@ -18,7 +18,7 @@ import json
 import pathlib
 import sys
 
-from muster.api import DEVICE_FACING, _STATUS
+from muster.routes_enroll import DEVICE_FACING, _STATUS
 
 
 def main(argv: list[str]) -> int:
