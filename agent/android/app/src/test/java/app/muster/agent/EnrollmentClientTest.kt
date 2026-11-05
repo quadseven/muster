@@ -3,6 +3,7 @@ package app.muster.agent
 import java.io.File
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -151,6 +152,49 @@ class EnrollmentClientTest {
         val outcome = clientReplying(503).second.collect("abc")
         assertTrue(outcome is EnrollmentClient.Collected.Unexpected)
         assertEquals(503, (outcome as EnrollmentClient.Collected.Unexpected).status)
+    }
+
+    // ---- replies that are not the JSON they claim to be (muster#229) ------
+
+    private val portalPage =
+        "<html><body>Sign in to the guest network to continue</body></html>"
+
+    @Test
+    fun anHtmlBodyOnAnAcceptedPresentationIsAFailureNotACrash() {
+        // A captive portal answers with its own page and whatever status it
+        // likes. The enrollment screen used to die here while the operator
+        // was typing the code.
+        val outcome = clientReplying(202, portalPage).second.present("1", "c", "d")
+        assertTrue(outcome is EnrollmentClient.Presented.Unexpected)
+        outcome as EnrollmentClient.Presented.Unexpected
+        assertEquals(202, outcome.status)
+        assertEquals("malformed reply", outcome.reason)
+        assertFalse(outcome.toString().contains("guest network"))
+    }
+
+    @Test
+    fun anHtmlBodyOnAnIssuedIdentityIsAFailureNotACrash() {
+        val outcome = clientReplying(200, portalPage).second.collect("abc")
+        assertTrue(outcome is EnrollmentClient.Collected.Unexpected)
+        outcome as EnrollmentClient.Collected.Unexpected
+        assertEquals(200, outcome.status)
+        assertEquals("malformed reply", outcome.reason)
+        assertFalse(outcome.toString().contains("guest network"))
+    }
+
+    @Test
+    fun aJsonBodyMissingItsKeysIsAFailureNotACrash() {
+        val presented = clientReplying(202, """{"request_id":"abc"}""")
+            .second.present("1", "c", "d")
+        assertTrue(presented is EnrollmentClient.Presented.Unexpected)
+        assertEquals("malformed reply",
+            (presented as EnrollmentClient.Presented.Unexpected).reason)
+
+        val collected = clientReplying(200, """{"certificate_pem":"CERT"}""")
+            .second.collect("abc")
+        assertTrue(collected is EnrollmentClient.Collected.Unexpected)
+        assertEquals("malformed reply",
+            (collected as EnrollmentClient.Collected.Unexpected).reason)
     }
 
     // ---- the seam --------------------------------------------------------

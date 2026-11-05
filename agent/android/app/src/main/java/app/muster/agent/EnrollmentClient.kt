@@ -47,7 +47,12 @@ class EnrollmentClient(private val transport: Transport) {
         object MalformedRequest : Presented
         /** Network, DNS, TLS. Retry with backoff. */
         data class Unreachable(val detail: String) : Presented
-        data class Unexpected(val status: Int) : Presented
+        /**
+         * A status this client does not model, or a modelled one whose body
+         * could not be read (`reason`). The reason is short and fixed: the
+         * body itself may be a captive portal's page and is never carried.
+         */
+        data class Unexpected(val status: Int, val reason: String? = null) : Presented
     }
 
     sealed interface Collected {
@@ -62,7 +67,8 @@ class EnrollmentClient(private val transport: Transport) {
         /** Unknown, or already collected. Polling will not fix it. */
         object Gone : Collected
         data class Unreachable(val detail: String) : Collected
-        data class Unexpected(val status: Int) : Collected
+        /** As Presented.Unexpected. */
+        data class Unexpected(val status: Int, val reason: String? = null) : Collected
     }
 
     fun present(code: String, csrPem: String, deviceName: String): Presented {
@@ -79,13 +85,12 @@ class EnrollmentClient(private val transport: Transport) {
         }
 
         return when (reply.status) {
-            202 -> {
-                val json = JSONObject(reply.body)
+            202 -> reply.readBody<Presented> { json ->
                 Presented.Accepted(
                     requestId = json.getString("request_id"),
                     fingerprint = json.getString("fingerprint"),
                 )
-            }
+            } ?: Presented.Unexpected(reply.status, MALFORMED)
             400 -> Presented.MalformedRequest
             403 -> Presented.WrongCode
             409 -> Presented.CodeAlreadyUsed
@@ -103,22 +108,39 @@ class EnrollmentClient(private val transport: Transport) {
         }
 
         return when (reply.status) {
-            200 -> {
-                val json = JSONObject(reply.body)
+            200 -> reply.readBody<Collected> { json ->
                 Collected.Issued(
                     certificatePem = json.getString("certificate_pem"),
                     caPem = json.getString("ca_pem"),
                     notAfter = json.getString("not_after"),
                     renewAfter = json.getString("renew_after"),
                 )
-            }
+            } ?: Collected.Unexpected(reply.status, MALFORMED)
             202 -> Collected.Waiting
             404 -> Collected.Gone
             else -> Collected.Unexpected(reply.status)
         }
     }
 
+    /**
+     * Read a reply body as JSON, or null when it is not the JSON expected.
+     *
+     * Guarded like ConfigurationClient.read and RenewalClient.read (muster#229).
+     * A captive portal answers 200 with an HTML page, which used to throw out
+     * of the enrollment screen's executor and kill the process. The exception
+     * is dropped on purpose: org.json puts the whole body in its message, and
+     * that body would otherwise travel into logcat and the diagnostics upload.
+     */
+    private fun <T> Transport.Reply.readBody(read: (JSONObject) -> T): T? = try {
+        read(JSONObject(body))
+    } catch (e: org.json.JSONException) {
+        null
+    }
+
     companion object {
+        /** The fixed reason a modelled status with an unreadable body reports. */
+        const val MALFORMED = "malformed reply"
+
         /**
          * What this client believes each status means, as data.
          *

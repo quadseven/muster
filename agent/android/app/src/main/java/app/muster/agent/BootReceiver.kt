@@ -48,6 +48,13 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
+        // The receiver is exported so the system can deliver boot broadcasts,
+        // which also lets any app send it an explicit intent. Only the three
+        // actions the manifest registers run the plan (muster#229).
+        if (action !in ACTIONS) {
+            Log.w(TAG, "boot: ignoring unexpected action $action")
+            return
+        }
         // ONE RECONCILE AT A TIME, AND THIS IS NOT HOUSEKEEPING. This receiver
         // is registered for BOTH LOCKED_BOOT_COMPLETED and BOOT_COMPLETED, so
         // it fires twice on a phone with a lock screen. While the plan ran on
@@ -112,6 +119,13 @@ class BootReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "muster"
+
+        /** The actions registered in AndroidManifest.xml for this receiver. */
+        private val ACTIONS = setOf(
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_LOCKED_BOOT_COMPLETED,
+            Intent.ACTION_MY_PACKAGE_REPLACED,
+        )
 
         /**
          * Whether a reconcile is in flight, across every instance of this
