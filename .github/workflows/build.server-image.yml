@@ -106,10 +106,19 @@ jobs:
         id: apk
         env:
           GH_TOKEN: ${{ github.token }}
-        # Always the newest SUCCESSFUL build on main, whatever triggered this.
-        # On a workflow_run that is the build which just finished; on a
-        # server-only push it is whatever the agent last published, which is
-        # correct - the agent did not change, so re-serving it is the answer.
+        # Always the newest SUCCESSFUL PUSH build on main, whatever triggered
+        # this. On a workflow_run after a push that is the build which just
+        # finished; on a server-only push it is whatever the agent last
+        # published, which is correct - the agent did not change, so re-serving
+        # it is the answer.
+        #
+        # event=push, BECAUSE A DISPATCH ON MAIN BUILDS DEBUG-SIGNED. Only a
+        # push to main is given the signing key (check.agent-android.yml), so
+        # without this filter a manual run on main, started to test something,
+        # becomes the newest successful run and is served fleet-wide as the
+        # update. A dispatch still triggers this workflow through workflow_run;
+        # it then re-bakes the last push build, which is harmless. See
+        # DECISIONS.md D33.
         #
         # curl and python3 rather than `gh`: a self-hosted runner is not
         # guaranteed to have the gh CLI, and discovering that here would be a
@@ -119,10 +128,10 @@ jobs:
           runs="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/check.agent-android.yml/runs"
           run_id="$(curl -fsSL --max-time 30 --connect-timeout 10 -H "Authorization: Bearer $GH_TOKEN" \
                       -H "Accept: application/vnd.github+json" \
-                      "$runs?branch=main&status=success&per_page=1" \
+                      "$runs?branch=main&event=push&status=success&per_page=1" \
                     | python3 -c 'import json,sys; r=json.load(sys.stdin)["workflow_runs"]; print(r[0]["id"] if r else "")')"
           if [ -z "$run_id" ]; then
-            echo "::error::no successful agent build on main - there is no APK to serve, and an image without one publishes a server whose provisioning QR points at a 404"
+            echo "::error::no successful agent build from a push to main - there is no APK to serve, and an image without one publishes a server whose provisioning QR points at a 404"
             exit 1
           fi
           artifacts="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts"
@@ -183,7 +192,7 @@ jobs:
                          -H "Accept: application/vnd.github+json" "$release" \
                        | python3 -c 'import json,sys; d=json.load(sys.stdin); a=[x for x in d.get("assets", []) if x["name"] == "muster-agent.tar"]; print(a[0]["url"] if a else "")')"
           if [ -z "$asset_url" ]; then
-            echo "::error::agent APK artifact is missing or expired for run $RUN_ID, and there is no stored muster-agent.tar on the agent-apk release to fall back to. Run the agent workflow on main (a push to agent/android/** signs; a manual run builds DEBUG-signed) to produce a fresh one."
+            echo "::error::agent APK artifact is missing or expired for run $RUN_ID, and there is no stored muster-agent.tar on the agent-apk release to fall back to. Push a change under agent/android/** to main to produce a fresh one; a manual run builds DEBUG-signed and is never baked."
             exit 1
           fi
           mkdir -p server/agent
@@ -231,7 +240,10 @@ jobs:
 
       - name: Log in to GHCR
         if: steps.meta.outputs.publish == 'true'
-        run: echo "${{ github.token }}" | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$REGISTRY_USER" --password-stdin
 
       - name: Build
         working-directory: server
@@ -244,19 +256,38 @@ jobs:
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           TAG: ${{ steps.meta.outputs.tag }}
+          # The first words of the RuntimeError app_from_env raises when
+          # MUSTER_OIDC_* is unset. server/tests/test_agent_android_workflow.py
+          # checks this text against the real exception, so a reworded message
+          # fails the tests rather than this gate.
+          REFUSAL: "RuntimeError: There is no way to administer this muster"
         # THE property worth testing on the built artifact rather than in a unit
-        # test: app_from_env raises when no OIDC provider is configured, and the
-        # container must therefore exit non-zero. If a future change made that a
-        # warning, the pod would come up serving an OPEN admin console and
-        # nothing would be red. This is the check that notices.
+        # test: app_from_env raises when administrator sign-in (MUSTER_OIDC_*)
+        # is not configured, and the container must therefore exit non-zero. If
+        # a future change made that a warning, the pod would come up serving an
+        # OPEN admin console and nothing would be red. This is the check that
+        # notices.
+        #
+        # THE EXIT CODE ALONE PROVES NOTHING. An ImportError, a SyntaxError or a
+        # missing dependency in muster.api also exits non-zero, and the steps
+        # below import other modules, so a broken api.py would read as a refusal
+        # and be published. The output must carry the refusal itself.
         run: |
           set -euo pipefail
-          if docker run --rm "$IMAGE:$TAG" \
-               python -c "from muster.api import app_from_env; app_from_env()" 2>/dev/null; then
+          status=0
+          output="$(docker run --rm "$IMAGE:$TAG" \
+                      python -c "from muster.api import app_from_env; app_from_env()" 2>&1)" || status=$?
+          if [ "$status" -eq 0 ]; then
+            printf '%s\n' "$output"
             echo "::error::the image started with no administrator sign-in configured - it would serve an open admin console"
             exit 1
           fi
-          echo "::notice::the image refuses to start without an admin token"
+          if ! printf '%s\n' "$output" | grep -qF -- "$REFUSAL"; then
+            printf '%s\n' "$output"
+            echo "::error::the image exited $status without the administrator sign-in refusal - muster.api is broken, not refusing"
+            exit 1
+          fi
+          echo "::notice::the image refuses to start without administrator sign-in (MUSTER_OIDC_*)"
 
       - name: The kith store's driver must actually load inside the image
         env:

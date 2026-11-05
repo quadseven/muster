@@ -27,7 +27,7 @@ describe are the code and comments in this tree.
 - [Getting onto a handset](#getting-onto-a-handset) - D11 to D14
 - [Telling a device what to be](#telling-a-device-what-to-be) - D15 to D19
 - [Not destroying things](#not-destroying-things) - D20 to D22
-- [Who is allowed in](#who-is-allowed-in) - D23 to D26
+- [Who is allowed in](#who-is-allowed-in) - D23 to D26 and D33
 - [Letting a device know it was revoked](#letting-a-device-know-it-was-revoked) - D27
 - [Answering for a certificate outside muster](#answering-for-a-certificate-outside-muster) - D28
 - [Erasing a device without losing the way to reach it](#erasing-a-device-without-losing-the-way-to-reach-it) - D29
@@ -1758,3 +1758,28 @@ reruns the same job immediately on top of the periodic one, the shape the
 existing comment in `CheckInJob` already warns against. Agent-side renewal
 backoff alone: it bounds a well-behaved agent and nothing else, and the server
 is the side that pays for each certificate.
+
+### D33. Only a push build on main becomes the served agent
+
+**2026-11-05.** Evidence: muster#226, `.github/workflows/build.server-image.yml`
+(the agent run lookup), `.github/workflows/check.agent-android.yml` (signing),
+`server/tests/test_agent_android_workflow.py`.
+
+**Context.** D26 gives the signing key to a push to main and nothing else, so a
+manual dispatch of the agent workflow on main builds debug-signed. The image
+build baked the newest successful agent run on main whatever started it, and
+runs whenever that workflow completes on main. A dispatch on main, started to
+test something, therefore became the served agent: baked into the next image
+and offered at `/agent.apk` as the fleet's update, which no release-signed
+handset can install and which binds every newly provisioned one to a throwaway
+key.
+
+**Chosen. The lookup asks for `event=push`.** A dispatch still triggers the
+image build, which then re-bakes the last push build, so it changes nothing. The
+choice fails safe: an estate with no push build on main yet gets a red image
+build instead of a debug agent.
+
+**Rejected.** Serving only the stored release: the same push builds write it,
+so it gains nothing over the filter and loses the artifact path. Keeping
+dispatch as a deliberate way to publish: the person dispatching to test a
+change has not chosen to publish it, and a push is the reviewed way to do that.
