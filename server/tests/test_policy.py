@@ -939,7 +939,6 @@ def test_a_malformed_wifi_log_event_never_carries_the_passphrase(root, monkeypat
 def test_an_omitted_wifi_security_defaults_to_wpa():
     network = policy.WifiNetwork.parse("ssid relay-net\npassphrase pw-x\n")
     assert network.security == "WPA"
-    assert network.qr_fields()["wifi_security"] == "WPA"
 
 
 @pytest.mark.parametrize(
@@ -956,3 +955,143 @@ def test_a_malformed_wifi_file_is_refused_by_the_parser(text):
 def test_an_open_network_needs_no_passphrase():
     network = policy.WifiNetwork.parse("ssid guest\nsecurity NONE\n")
     assert (network.ssid, network.security, network.passphrase) == ("guest", "NONE", "")
+
+
+# ---- muster#230: the policy source audit ---------------------------------
+
+
+def test_a_package_named_twice_in_one_scope_reaches_the_agent_twice(tmp_path):
+    """Item 1. The agent refuses a file naming one package twice, because two
+    lines for one package is an unfinished edit. A server that picked the
+    first line before the agent saw the file would install software nobody
+    chose, so a duplicate within the winning scope passes through untouched."""
+    twice = KITH_APPS + ROLE_APPS
+    _shared(tmp_path, "install-apps").write_text(twice)
+
+    served = policy.Policies(root=tmp_path).for_device(A).files["install-apps"]
+
+    assert served == twice
+    assert served.count("install app.muster.agent") == 2
+
+
+def test_a_duplicate_in_a_shadowed_scope_is_still_replaced_by_the_winner(tmp_path):
+    """Item 1, the other half: duplicates the device file replaces are not the
+    device's file, so only the winning scope's lines for a package travel."""
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS + ROLE_APPS)
+    _own(tmp_path, A, "install-apps").write_text(DEVICE_APPS)
+
+    served = policy.Policies(root=tmp_path).for_device(A).files["install-apps"]
+
+    assert served.count("install app.muster.agent") == 1
+    assert "agent-78.apk" in served
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["old.restrictions", "kith-old.restrictions", "role-.restrictions",
+     "role-UPPER.visible-apps", "abc.wallpaper", "A" * 64 + ".restrictions"],
+)
+def test_a_file_outside_every_scope_is_not_a_live_source(tmp_path, name):
+    """Item 2. An operator who renames `kith.restrictions` to disable it has
+    not written an instruction to withdraw every restriction; counting the
+    renamed file as a source would serve every device an authoritative `{}`."""
+    (tmp_path / name).write_text("DISALLOW_SAFE_BOOT\n")
+    policies = policy.Policies(root=tmp_path)
+
+    assert policies.files_held() == 0
+    with pytest.raises(policy.NoSource):
+        policies.for_device(A)
+
+
+def test_every_real_scope_still_counts_as_a_source(tmp_path):
+    _shared(tmp_path, "restrictions").write_text("")
+    _role(tmp_path, "zippie", "visible-apps").write_text("")
+    _own(tmp_path, A, "app-config").write_text("")
+
+    assert policy.Policies(root=tmp_path).files_held() == 3
+
+
+@pytest.mark.parametrize("scope", ["device", "role", "kith"])
+def test_a_dangling_symlink_is_unreadable_not_absent(tmp_path, scope):
+    """Item 3. `is_file()` is False for a link to nowhere, so a corrupted
+    per-device override silently became the broader scope's policy. On a
+    Secret volume every file is a link through `..data`, and a half-swapped
+    mount must refuse rather than serve something smaller."""
+    _shared(tmp_path, "telephony").write_text("block-outgoing\n")
+    _shared(tmp_path, "visible-apps").write_text("app.muster.agent\n")
+    link = {
+        "device": _own(tmp_path, A, "visible-apps"),
+        "role": _role(tmp_path, "zippie", "visible-apps"),
+        "kith": _shared(tmp_path, "restrictions"),
+    }[scope]
+    link.symlink_to(tmp_path / "..data" / link.name)
+
+    with pytest.raises(policy.Unreadable):
+        policy.Policies(root=tmp_path).for_device(A, role="zippie")
+
+
+def test_a_looping_symlink_is_unreadable_not_absent(tmp_path):
+    _shared(tmp_path, "visible-apps").write_text("app.muster.agent\n")
+    link = _own(tmp_path, A, "visible-apps")
+    link.symlink_to(link)
+
+    with pytest.raises(policy.Unreadable):
+        policy.Policies(root=tmp_path).for_device(A)
+
+
+def test_a_dangling_install_apps_link_is_unreadable_not_absent(tmp_path):
+    _shared(tmp_path, "install-apps").write_text(KITH_APPS)
+    _own(tmp_path, A, "install-apps").symlink_to(tmp_path / "gone")
+
+    with pytest.raises(policy.Unreadable):
+        policy.Policies(root=tmp_path).for_device(A)
+
+
+def test_a_working_symlink_is_still_served(tmp_path):
+    """The Secret volume's ordinary shape must keep working."""
+    (tmp_path / "..data").mkdir()
+    target = tmp_path / "..data" / "kith.restrictions"
+    target.write_text("DISALLOW_SAFE_BOOT\n")
+    _shared(tmp_path, "restrictions").symlink_to(target)
+
+    served = policy.Policies(root=tmp_path).for_device(A)
+
+    assert served.files["restrictions"] == "DISALLOW_SAFE_BOOT\n"
+
+
+def test_a_policy_file_past_the_size_cap_is_unreadable(tmp_path):
+    """Item 4. `/v1/device/config` must not be unbounded, and the roll re-reads
+    every device's policy, so an oversized file refuses like a bad byte."""
+    _shared(tmp_path, "restrictions").write_text("x" * (policy.MAX_BYTES + 1))
+
+    with pytest.raises(policy.Unreadable):
+        policy.Policies(root=tmp_path).for_device(A)
+
+
+def test_a_policy_file_at_the_size_cap_is_served(tmp_path):
+    _shared(tmp_path, "restrictions").write_text("x" * policy.MAX_BYTES)
+
+    served = policy.Policies(root=tmp_path).for_device(A)
+
+    assert len(served.files["restrictions"]) == policy.MAX_BYTES
+
+
+def test_a_stored_role_that_no_longer_matches_is_unreadable(tmp_path):
+    """Item 5. A hand-edited kith row or a tightened role pattern reached
+    `/v1/device/config`, `_drift` and `_policy_concerns` as a ValueError, which
+    none of them catch: a 500. As Unreadable it is the 503 and the
+    `known: false` every other unreadable policy already answers."""
+    _shared(tmp_path, "restrictions").write_text("kith\n")
+    policies = policy.Policies(root=tmp_path)
+
+    with pytest.raises(policy.Unreadable):
+        policies.for_device(A, role="Not.A.Role")
+    with pytest.raises(policy.Unreadable):
+        policies.install_apps_shadowed(A, role="Not.A.Role")
+
+
+def test_wifi_network_has_no_unused_qr_projection():
+    """Item 6. `provision_qr` builds its payload from its own arguments, so a
+    method claiming the QR and the policy file share one description was a
+    promise nothing kept."""
+    assert not hasattr(policy.WifiNetwork, "qr_fields")

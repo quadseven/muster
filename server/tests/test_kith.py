@@ -2006,3 +2006,25 @@ def test_the_store_reads_latest_issued_as_one_max_per_key():
     assert "issued_at <= %s" in sql
     assert params == (key, START)
     assert answer == START
+
+
+def test_awaiting_collection_answers_the_newest_match_like_postgres():
+    """muster#230 item 12. Postgres orders by `issued_at DESC LIMIT 1`; the
+    in-memory store returned whichever match was inserted first. Request ids
+    are unique per enrollment so it does not matter today, and the two stores
+    must not disagree the day it does."""
+    records = MemoryRecords()
+    records.record_issuance(
+        a_device(b"device-one"), a_certificate("AAAA", request_id="req-1")
+    )
+    records.record_issuance(
+        a_device(b"device-two"),
+        a_certificate(
+            "BBBB", request_id="req-1", at=START + dt.timedelta(hours=1)
+        ),
+    )
+
+    held = records.awaiting_collection("req-1")
+
+    assert held is not None
+    assert held.serial == "BBBB"

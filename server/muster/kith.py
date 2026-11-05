@@ -651,11 +651,16 @@ class MemoryRecords:
         return sorted(statuses, key=lambda status: status.certificate.serial)
 
     def awaiting_collection(self, request_id: str) -> Certificate | None:
-        for held in self._certificates.values():
-            for certificate in held:
-                if certificate.request_id == request_id and certificate.collected_at is None:
-                    return certificate
-        return None
+        # The NEWEST match, as Postgres answers with `ORDER BY issued_at DESC
+        # LIMIT 1` (muster#230). First-inserted was a second answer to the
+        # same question; the two stores must not disagree about it.
+        matches = [
+            certificate
+            for held in self._certificates.values()
+            for certificate in held
+            if certificate.request_id == request_id and certificate.collected_at is None
+        ]
+        return max(matches, key=lambda c: c.issued_at, default=None)
 
 
 def _close_quietly(connection) -> None:

@@ -148,15 +148,20 @@ ALTER TABLE kith_device
 ALTER TABLE kith_device
     ADD COLUMN IF NOT EXISTS revoked_before_wipe_at timestamptz;
 
--- The roll is read most often to answer "what is still ours". Without this it
--- is a sequential scan over every device that has ever enrolled, including the
--- revoked ones the query exists to exclude.
+-- The CRL's query (`unexpired_revocations`, `WHERE d.revoked_at IS NOT NULL`)
+-- may use this. The roll does NOT filter on `revoked_at`: it lists every
+-- device, revoked ones included, so an older comment here describing a roll
+-- filter was wrong (muster#230). Kept rather than dropped, because this file
+-- runs from the server and a DROP is the line drawn at the top.
 CREATE INDEX IF NOT EXISTS kith_device_revoked_at_idx
     ON kith_device (revoked_at);
 
--- A console listing devices during a wipe request needs this for the same
--- reason: without it, "what is still waiting to erase itself" is a sequential
--- scan behind the same question for revocation.
+-- NO QUERY NEEDS THIS TODAY (muster#230). It was added for a console listing
+-- of devices waiting to erase themselves, and the one statement that names
+-- `wipe_pending_at` in a WHERE also matches `key_id`, the primary key. It is
+-- kept, not dropped, for the same reason as the index above:
+-- the cost is one small index, and a DROP from the server is the change this
+-- file says needs a real migration tool.
 CREATE INDEX IF NOT EXISTS kith_device_wipe_pending_at_idx
     ON kith_device (wipe_pending_at);
 
