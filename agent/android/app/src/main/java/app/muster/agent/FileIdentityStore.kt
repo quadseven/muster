@@ -26,12 +26,16 @@ class FileIdentityStore(context: Context) : EnrollmentFlow.IdentityStore {
         notAfter: String,
         renewAfter: String,
     ) {
-        File(dir, "device.crt").writeText(certificatePem)
-        File(dir, "ca.crt").writeText(caPem)
+        // Staged and renamed, each one (muster#229). Renewal runs inside a
+        // boot broadcast that may run out of time, and a device.crt cut off
+        // part way is an identity the server refuses with no way back on the
+        // device. A failed write throws and leaves the previous file whole.
+        StagedWrite.replace(File(dir, "device.crt"), certificatePem)
+        StagedWrite.replace(File(dir, "ca.crt"), caPem)
         // One line each, so a human reading it over adb gets an answer rather
         // than a parsing exercise.
-        File(dir, "not-after").writeText(notAfter)
-        File(dir, "renew-after").writeText(renewAfter)
+        StagedWrite.replace(File(dir, "not-after"), notAfter)
+        StagedWrite.replace(File(dir, "renew-after"), renewAfter)
     }
 
     override fun hasIdentity(): Boolean = File(dir, "device.crt").isFile

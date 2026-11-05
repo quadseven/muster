@@ -57,6 +57,9 @@ class AppInstallSteward(
         override fun concerns(): List<String> = buildList {
             substituted.forEach { add("SUBSTITUTED $it") }
             weldedShut.forEach { add("WELDED $it") }
+            // Removed and installed again: the app's data went with the old
+            // copy, so it is not a plain "installed" (muster#229).
+            replaced.forEach { add("REPLACED $it") }
             couldNotFetch.forEach { add("COULD_NOT_FETCH $it") }
             didNotTake.forEach { add("DID_NOT_TAKE $it") }
             backingOff.forEach { add("BACKING_OFF $it") }
@@ -68,6 +71,7 @@ class AppInstallSteward(
             inert != null -> "nothing done: $inert"
             else -> buildString {
                 append("installed=$installed current=${current.size}")
+                if (replaced.isNotEmpty()) append(" REPLACED=$replaced")
                 if (substituted.isNotEmpty()) append(" SUBSTITUTED=$substituted")
                 if (couldNotFetch.isNotEmpty()) append(" COULD_NOT_FETCH=$couldNotFetch")
                 if (didNotTake.isNotEmpty()) append(" DID_NOT_TAKE=$didNotTake")

@@ -1,5 +1,7 @@
 package app.muster.agent
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -37,6 +39,35 @@ class CheckInRunTest {
             ),
         )
         assertEquals(listOf("a: one", "a: two", "b: three"), report.view.concerns)
+    }
+
+    @Test
+    fun concurrentRunsNeverOverlapTheirSteps() {
+        // Boot, the scheduled job and the status screen each call run from
+        // their own thread (muster#229). Two plans at once race the same
+        // staged files and install the same package twice.
+        val inside = AtomicInteger(0)
+        val widest = AtomicInteger(0)
+        val start = CountDownLatch(1)
+        val runners = (1..4).map { n ->
+            Thread {
+                start.await()
+                CheckInRun.run(
+                    (1..3).map { i ->
+                        CheckInRun.NamedStep("r$n-s$i") {
+                            widest.accumulateAndGet(inside.incrementAndGet(), ::maxOf)
+                            Thread.sleep(20)
+                            inside.decrementAndGet()
+                            Fake()
+                        }
+                    },
+                )
+            }.apply { start() }
+        }
+        start.countDown()
+        runners.forEach { it.join(10_000) }
+        assertTrue(runners.none { it.isAlive })
+        assertEquals(1, widest.get())
     }
 
     @Test

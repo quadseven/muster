@@ -14,10 +14,27 @@ object CheckInRun {
         val needsCatchUp: Boolean,
     )
 
+    /**
+     * One plan at a time, across the whole process (muster#229).
+     *
+     * BootReceiver, CheckInJob and StatusActivity each call run from their own
+     * worker thread, and the job can fire at boot beside the receiver. Two
+     * plans at once stage the same `<name>.incoming` files and race the
+     * rename, and download and commit the same package twice. A later caller
+     * waits rather than being dropped: its trigger may carry work the first
+     * run did not see, and every caller is already off the main thread.
+     */
+    private val serial = Any()
+
     /** Runs each named step once, retaining order and isolating failures. */
     fun run(
         steps: List<NamedStep>,
         onThrow: (String, Exception) -> Unit = { _, _ -> },
+    ): Report = synchronized(serial) { runSteps(steps, onThrow) }
+
+    private fun runSteps(
+        steps: List<NamedStep>,
+        onThrow: (String, Exception) -> Unit,
     ): Report {
         val outcomes = steps.map { step ->
             val outcome = try {
