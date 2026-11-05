@@ -72,6 +72,10 @@ class ProvisioningManifestTest {
                 "android.permission.SET_WALLPAPER",
                 "android.permission.INTERNET",
                 "android.permission.ACCESS_NETWORK_STATE",
+                // muster#195: the wifi steward adds the device's network as
+                // Device Owner. Both are normal permissions, granted at install.
+                "android.permission.ACCESS_WIFI_STATE",
+                "android.permission.CHANGE_WIFI_STATE",
             ),
             names,
         )

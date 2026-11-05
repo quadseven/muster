@@ -235,13 +235,13 @@ unreadable file is treated as unparsable rather than failing the whole config
 with a 503 (every other managed file keeps that rule). Neither the log nor
 a metric ever carries the passphrase.
 
-**Status: server side only.** muster serves the file, but the agent has no wifi
-steward yet, so `ConfigurationPolicy.MANAGED` does not list `wifi` and a device
-refuses the name. The agent half (a steward that adds or updates the network as
-Device Owner) needs a handset to define its behaviour and is tracked on the
-issue.
-`tools/check_managed_files.py` names `wifi` in `SERVER_AHEAD` for this reason,
-and fails once the agent holds the name so the exception goes with the gap.
+**On the device.** `WifiSteward` adds or updates the network as Device Owner
+when the file is served, and changes nothing when the file is identical to the
+one last applied and the device still holds the network. A device that forgot
+the network gets it back at its next check-in. An absent file leaves every
+network alone; muster never removes one. The configuration report names the
+SSID and security type and never the passphrase. Whether a handset rejoins is
+the live check on the issue.
 
 ## The telephony file
 
