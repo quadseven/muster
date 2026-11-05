@@ -377,4 +377,81 @@ class ConfigurationClientTest {
         val fetched = client.fetch() as ConfigurationClient.Fetched.Refused
         assertEquals(ConfigurationClient.REFUSAL_DETAIL_CHARS, fetched.detail.length)
     }
+
+    // ---- characterization of the proven exchange (muster#219) -------------
+    //
+    // Pinned before the exchange moved into ProvenExchange, and kept after,
+    // so the move is proved not to change what a fetch answers.
+
+    @Test
+    fun anUnreadableChallengeIsARefusalWithTheChallengeStatus() {
+        val client = ConfigurationClient(
+            FakeTransport(challenge = Reply(201, "<html>not a nonce</html>")),
+            FakeIdentity(),
+        )
+
+        val fetched = client.fetch() as ConfigurationClient.Fetched.Refused
+        assertEquals(201, fetched.status)
+        assertTrue(fetched.detail, fetched.detail.startsWith("unreadable challenge"))
+    }
+
+    @Test
+    fun aChallengeAnsweredWith401IsARefusalAndNotUnrecognized() {
+        // Only the proven leg can say who this device is; a 401 before any
+        // proof was sent says nothing about the certificate.
+        val fetched = ConfigurationClient(
+            FakeTransport(challenge = Reply(401, "no")),
+            FakeIdentity(),
+        ).fetch()
+
+        assertEquals(ConfigurationClient.Fetched.Refused(401, "no"), fetched)
+    }
+
+    @Test
+    fun aChallengeAnsweredWith403IsARefusalAndNotARevocation() {
+        val fetched = ConfigurationClient(
+            FakeTransport(challenge = Reply(403, "a proxy said no")),
+            FakeIdentity(),
+        ).fetch()
+
+        assertEquals(ConfigurationClient.Fetched.Refused(403, "a proxy said no"), fetched)
+    }
+
+    @Test
+    fun theFetchCarriesExactlyTheProofAndTheInterval() {
+        // The wire format, whole: nothing added, nothing dropped.
+        val transport = FakeTransport(config = Reply(200, served(emptyMap())))
+        ConfigurationClient(transport, FakeIdentity()).fetch()
+
+        val sent = JSONObject(transport.bodies.last())
+        assertEquals(
+            setOf("nonce", "signature_b64", "certificate_pem", "check_in_interval_s"),
+            sent.keySet(),
+        )
+        assertEquals("{}", transport.bodies.first())
+    }
+
+    @Test
+    fun aSuccessStatusOtherThan200IsARefusal() {
+        val fetched = ConfigurationClient(
+            FakeTransport(config = Reply(202, served(emptyMap()))),
+            FakeIdentity(),
+        ).fetch()
+
+        assertTrue(fetched.toString(), fetched is ConfigurationClient.Fetched.Refused)
+        assertEquals(202, (fetched as ConfigurationClient.Fetched.Refused).status)
+    }
+
+    @Test
+    fun anUnreachableFetchNamesTheExceptionClassOnly() {
+        val fetched = ConfigurationClient(
+            FakeTransport(
+                throwing = java.net.SocketTimeoutException("read timed out at example.com"),
+                throwingOn = ConfigurationClient.CONFIG_PATH,
+            ),
+            FakeIdentity(),
+        ).fetch()
+
+        assertEquals(ConfigurationClient.Fetched.Unreachable("SocketTimeoutException"), fetched)
+    }
 }

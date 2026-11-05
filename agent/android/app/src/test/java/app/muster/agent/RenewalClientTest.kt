@@ -167,4 +167,93 @@ class RenewalClientTest {
 
         assertTrue(result is RenewalClient.Renewed.Refused)
     }
+
+    // ---- characterization of the proven exchange (muster#219) -------------
+    //
+    // Pinned before the exchange moved into ProvenExchange, and kept after.
+    // A 403 on renewal stays a refusal carrying muster's text: Renewed has no
+    // Revoked outcome, and adding one is a behavior change, not this move.
+
+    @Test
+    fun aRevokedDeviceRenewingIsARefusalWithMustersText() {
+        val transport = FakeTransport(
+            renewal = EnrollmentClient.Transport.Reply(403, "this device has been revoked"),
+        )
+
+        val result = RenewalClient(transport, FakeIdentity()).renew("a csr")
+
+        assertEquals(RenewalClient.Renewed.Refused(403, "this device has been revoked"), result)
+    }
+
+    @Test
+    fun anUnrecognizedCertificateIsNotARefusal() {
+        val transport = FakeTransport(
+            renewal = EnrollmentClient.Transport.Reply(401, "cert-not-ours"),
+        )
+
+        val result = RenewalClient(transport, FakeIdentity()).renew("a csr")
+
+        assertTrue(result.toString(), result is RenewalClient.Renewed.Unrecognized)
+    }
+
+    @Test
+    fun aSuccessStatusOtherThan201IsARefusal() {
+        val transport = FakeTransport(
+            renewal = EnrollmentClient.Transport.Reply(200, issued().body),
+        )
+
+        val result = RenewalClient(transport, FakeIdentity()).renew("a csr")
+
+        assertTrue(result.toString(), result is RenewalClient.Renewed.Refused)
+        assertEquals(200, (result as RenewalClient.Renewed.Refused).status)
+    }
+
+    @Test
+    fun aRefusalBodyIsBounded() {
+        val transport = FakeTransport(
+            renewal = EnrollmentClient.Transport.Reply(502, "x".repeat(10_000)),
+        )
+
+        val result = RenewalClient(transport, FakeIdentity()).renew("a csr")
+
+        assertEquals(
+            RenewalClient.REFUSAL_DETAIL_CHARS,
+            (result as RenewalClient.Renewed.Refused).detail.length,
+        )
+    }
+
+    @Test
+    fun anUnreadableChallengeIsARefusalWithTheChallengeStatus() {
+        val transport = FakeTransport(
+            challenge = EnrollmentClient.Transport.Reply(201, "not json"),
+        )
+
+        val result = RenewalClient(transport, FakeIdentity()).renew("a csr")
+
+        result as RenewalClient.Renewed.Refused
+        assertEquals(201, result.status)
+        assertTrue(result.detail, result.detail.startsWith("unreadable challenge"))
+    }
+
+    @Test
+    fun anUnreachableChallengeNamesTheExceptionClassOnly() {
+        val transport = FakeTransport(throwingOn = RenewalClient.CHALLENGE_PATH)
+
+        val result = RenewalClient(transport, FakeIdentity()).renew("a csr")
+
+        assertEquals(RenewalClient.Renewed.Unreachable("SocketTimeoutException"), result)
+    }
+
+    @Test
+    fun theRenewalCarriesTheProofAndTheCsrAndNoInterval() {
+        // check_in_interval_s belongs to the configuration fetch only.
+        val transport = FakeTransport(renewal = issued())
+
+        RenewalClient(transport, FakeIdentity(), trigger = RenewalTrigger.SYNC).renew("a csr")
+
+        assertEquals(
+            setOf("nonce", "signature_b64", "certificate_pem", "csr_pem", "trigger"),
+            JSONObject(transport.bodies.last()).keySet(),
+        )
+    }
 }

@@ -4,7 +4,6 @@ import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.util.Log
 import java.io.File
-import org.json.JSONObject
 
 /**
  * Act on a wipe file that ConfigurationSteward wrote, after WipePolicy said yes.
@@ -22,7 +21,9 @@ import org.json.JSONObject
  * it proved the wipe is the exact shape this repository has been burned by with
  * `setApplicationRestrictions`; docs/state-of-play.md says the same thing.
  *
- * ORDER OF OPERATIONS. The acknowledgement is deliberately sent BEFORE
+ * ORDER OF OPERATIONS, OWNED BY AcknowledgedAction (muster#219) and tested
+ * there with a recorder in place of the platform call. The acknowledgement is
+ * deliberately sent BEFORE
  * `wipeData()`, because after the wipe starts this process has no guaranteed
  * chance to say anything. If the acknowledgement succeeds and the platform call
  * then fails or returns, the device is revoked but not erased; an administrator
@@ -83,22 +84,37 @@ class WipeSteward(private val context: Context) {
             return Outcome(plan = plan, kept = "no muster server configured on this device")
         }
 
-        val acknowledgement = acknowledge(baseUrl)
-        if (acknowledgement != null) {
-            return Outcome(plan = plan, kept = acknowledgement)
+        val flow = try {
+            AcknowledgedAction(
+                ProvenExchange(
+                    HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000),
+                    KeystoreIdentity(context),
+                ),
+                WIPE_ACK_PATH,
+                "wipe",
+            )
+        } catch (e: Exception) {
+            return Outcome(plan = plan, kept = "could not acknowledge the wipe: ${e.javaClass.simpleName}")
         }
 
-        // THE CALL ITSELF. It is deliberately not abstracted behind an
-        // interface so a unit test can fake it: a fake wipeData proves only
-        // that the code reached a line, and a test that proves a plan and
-        // reads as if it proved the wipe is the failure mode documented in
-        // WipePolicy and docs/state-of-play.md.
-        return try {
-            dpm.wipeData(0)
-            Outcome(plan = plan, acknowledged = true, wipeRequested = true)
-        } catch (e: Exception) {
-            Log.e(TAG, "wipeData failed; the device remains enrolled", e)
-            Outcome(plan = plan, acknowledged = true, kept = "wipeData failed: ${e.javaClass.simpleName}")
+        // THE CALL ITSELF, passed in unfaked. AcknowledgedAction owns the
+        // order (acknowledge, then act) and its test proves that order with a
+        // recorder; nothing here fakes wipeData, because a fake wipeData
+        // proves only that the code reached a line, and a test that proves a
+        // plan and reads as if it proved the wipe is the failure mode
+        // documented in WipePolicy and docs/state-of-play.md.
+        return when (val acted = flow.run { dpm.wipeData(0) }) {
+            AcknowledgedAction.Acted.Done ->
+                Outcome(plan = plan, acknowledged = true, wipeRequested = true)
+            is AcknowledgedAction.Acted.NotAcknowledged -> Outcome(plan = plan, kept = acted.reason)
+            is AcknowledgedAction.Acted.ActionFailed -> {
+                Log.e(TAG, "wipeData failed; the device remains enrolled", acted.error)
+                Outcome(
+                    plan = plan,
+                    acknowledged = true,
+                    kept = "wipeData failed: ${acted.error.javaClass.simpleName}",
+                )
+            }
         }
     }
 
@@ -107,43 +123,6 @@ class WipeSteward(private val context: Context) {
     } catch (e: Exception) {
         Log.w(TAG, "could not read ${file.name}; treating it as no wipe instruction", e)
         null
-    }
-
-    /**
-     * Tell muster to move this key from wipe-pending to revoked.
-     *
-     * Returns null when the acknowledgement landed; otherwise a reason to keep
-     * the device and not call wipeData. The proof is the same challenge,
-     * signature and certificate as ConfigurationClient: one authentication
-     * scheme, one channel.
-     */
-    private fun acknowledge(baseUrl: String): String? {
-        try {
-            val transport = HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000)
-            val challenge = transport.post(ConfigurationClient.CHALLENGE_PATH, "{}")
-            if (challenge.status != 201) {
-                return "muster refused the wipe challenge: ${challenge.status}"
-            }
-            val nonce = JSONObject(challenge.body).getString("nonce")
-            val identity = KeystoreIdentity(context)
-            val certificate = identity.certificatePem()
-                ?: return "no identity certificate; cannot acknowledge the wipe"
-            val body = JSONObject()
-                .put("nonce", nonce)
-                .put("signature_b64", identity.signBase64(nonce))
-                .put("certificate_pem", certificate)
-                .toString()
-            val reply = transport.post(WIPE_ACK_PATH, body)
-            if (reply.status != 200) {
-                return "muster refused the wipe acknowledgement: ${reply.status}"
-            }
-            return null
-        } catch (e: Exception) {
-            // The class name is the log's diagnostic, not the message. A wipe
-            // acknowledgement carries the same proof fields as any device
-            // request and none of them are the network layer's business.
-            return "could not acknowledge the wipe: ${e.javaClass.simpleName}"
-        }
     }
 
     companion object {
