@@ -264,7 +264,6 @@ def _report_bytes(steps: tuple[kith_store.StepReport, ...]) -> int:
 _PROOF_STATUS = {
     Verdict.NO_SUCH_NONCE: 400,
     Verdict.NONCE_EXPIRED: 408,
-    Verdict.NONCE_USED: 409,
     Verdict.BAD_SIGNATURE: 401,
     Verdict.CERT_EXPIRED: 409,
     Verdict.CERT_NOT_OURS: 401,

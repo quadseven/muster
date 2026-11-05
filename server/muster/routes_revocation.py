@@ -31,10 +31,15 @@ def _cache_headers(artifact: revocation.Artifact) -> dict[str, str]:
     party can see and verify. Making max-age shorter would multiply store reads
     without improving the signed answer. Unsuccessful OCSP responses have no
     nextUpdate and are never cached.
+
+    MEASURED FROM WHEN IT WAS SIGNED, NOT FROM thisUpdate (muster#230).
+    thisUpdate is backdated for relying-party clock skew, so a max-age from it
+    would let a cache keep the artifact past its signed nextUpdate by exactly
+    the backdate.
     """
-    if artifact.next_update is None or artifact.this_update is None:
+    if artifact.next_update is None or artifact.produced_at is None:
         return {"Cache-Control": "no-store"}
-    max_age = int((artifact.next_update - artifact.this_update).total_seconds())
+    max_age = int((artifact.next_update - artifact.produced_at).total_seconds())
     return {
         "Cache-Control": f"public, max-age={max_age}, must-revalidate",
         "Expires": format_datetime(artifact.next_update, usegmt=True),

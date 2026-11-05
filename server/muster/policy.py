@@ -82,6 +82,7 @@ import json
 import os
 import pathlib
 import re
+import stat
 from dataclasses import dataclass, field
 
 from . import telemetry
@@ -185,9 +186,12 @@ SHARED_FILES: tuple[str, ...] = (
 # So `install-apps` merges BY PACKAGE NAME, most specific scope winning per
 # package: the kith says "everyone runs agent N" and a role pins its own apps,
 # and the per-file rule stands everywhere else. The merge emits one line per
-# package because the agent REFUSES a file that names a package twice
-# (AppInstallPolicy.read): two lines for one package is an unfinished edit,
-# and silently picking one installs software nobody chose.
+# package ACROSS scopes, and passes every line through WITHIN the winning
+# scope (muster#230). The agent REFUSES a file that names a package twice
+# (AppInstallPolicy.read): two lines for one package in one file is an
+# unfinished edit, and silently picking one installs software nobody chose. So
+# a duplicate inside the scope that wins a package reaches the agent as
+# written, and the agent's refusal is what the operator sees.
 INSTALL_APPS_FILE = "install-apps"
 
 
@@ -273,9 +277,28 @@ _ROLE = re.compile(r"^[a-z]([a-z0-9-]{0,29}[a-z0-9])?\Z")
 # not a property to leave resting on a function two files away.
 _KEY_ID = re.compile(r"^[0-9a-f]{64}\Z")
 
+# The most one policy file may hold (muster#230). Policy is short text, and
+# `/v1/device/config` answers every device while the roll re-reads every
+# device's policy, so an unbounded read is unbounded memory per request. Past
+# this a file is Unreadable, the same refusal a bad byte gets, which is what
+# `assets.MAX_BYTES` does for the bytes that travel on their own route.
+MAX_BYTES = 1024 * 1024
+
 
 class Unreadable(Exception):
     """A configured file exists and could not be read. NOT "there is none"."""
+
+
+class UnusableScope(Unreadable, ValueError):
+    """A key_id or role that cannot become half of a file name (muster#230).
+
+    AN UNREADABLE, so every caller that already refuses an unreadable policy
+    refuses this too: `/v1/device/config` answers its uncached 503 through
+    `refusing`, and the roll's `drift` and `concerns` say `known: false`. A
+    role reaches here from a kith row, and a hand-edited row or a tightened
+    pattern after rows exist was a ValueError nothing caught, which is a 500.
+    Still a ValueError, because it is also a bad argument.
+    """
 
 
 class NoSource(Exception):
@@ -349,11 +372,48 @@ def _read(path: pathlib.Path) -> str:
     default.
     """
     try:
-        return path.read_text(encoding="utf-8")
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_BYTES + 1)
+        if len(raw) > MAX_BYTES:
+            raise Unreadable(
+                f"{path.name} is configured for this device and is larger than "
+                f"the {MAX_BYTES} bytes muster serves from one policy file"
+            )
+        return raw.decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise Unreadable(
             f"{path.name} is configured for this device and could not be read: {exc}"
         ) from exc
+
+
+def _present(path: pathlib.Path) -> bool:
+    """Whether a scope holds this file, or Unreadable when it cannot say.
+
+    NOT `is_file()`, which answers False for a link to nowhere and for a link
+    loop (muster#230). Absent means "fall back to the broader scope", so a
+    corrupted per-device override read as absent silently became the role's
+    or the kith's policy. On a Secret volume every file is a link through
+    `..data`, and a half-swapped mount is exactly a dangling link. A name that
+    exists and cannot be followed is therefore a refusal, not an absence.
+    """
+    if not os.path.lexists(path):
+        return False
+    try:
+        mode = path.stat().st_mode
+    except OSError as exc:
+        raise Unreadable(
+            f"{path.name} is configured for this device and could not be "
+            f"followed: {exc.strerror or exc}"
+        ) from exc
+    return stat.S_ISREG(mode)
+
+
+def _is_scope(scope: str) -> bool:
+    """Whether the part of a file name before the first dot names a scope."""
+    if scope == KITH_SCOPE or _KEY_ID.match(scope):
+        return True
+    role = scope.removeprefix(ROLE_SCOPE_PREFIX)
+    return role != scope and bool(_ROLE.match(role))
 
 
 def _refuse_unusable_scope(key_id: str, role: str) -> None:
@@ -370,11 +430,11 @@ def _refuse_unusable_scope(key_id: str, role: str) -> None:
     buried in it.
     """
     if not _KEY_ID.match(key_id):
-        raise ValueError(
+        raise UnusableScope(
             "a key_id is 64 lowercase hex characters; this is not one"
         )
     if role and not _ROLE.match(role):
-        raise ValueError(
+        raise UnusableScope(
             f"'{role}' is not a role: lowercase letters, digits and dashes, "
             "starting with a letter. A role becomes half of a file name here."
         )
@@ -401,8 +461,11 @@ def _merge_install_apps(scoped: list[str]) -> str:
     Lines whose first word is `install` and that have a second word are keyed
     by package name (that word, exactly as the agent reads it - the keyword is
     case-insensitive there, the package is not), whether or not the rest of the
-    line parses: the most specific scope naming a package wins it, and every
-    other line for that package is dropped. So a malformed `install <package>`
+    line parses: the most specific scope naming a package wins it, every line
+    that scope has for the package is kept, and every other scope's lines for
+    it are dropped. Keeping ALL of the winner's lines is deliberate
+    (muster#230): a file naming one package twice is one the agent refuses,
+    and deduplicating it here would hide that. So a malformed `install <package>`
     from the winning scope reaches the device, which refuses it loudly instead
     of quietly falling back to a broader scope; a malformed one in a broader
     scope that a more specific line shadows is dropped with the rest.
@@ -415,26 +478,25 @@ def _merge_install_apps(scoped: list[str]) -> str:
     vocabulary nobody asked for.
     """
 
-    # Most specific first: the first scope naming a package wins it.
-    winners: dict[str, str] = {}
-    for text in reversed(scoped):
+    # The most specific scope naming a package wins it. Later scopes are more
+    # specific, so the last index seen is the winner.
+    winners: dict[str, int] = {}
+    for index, text in enumerate(scoped):
         for line in text.splitlines():
             package = _install_package(line)
-            if package is not None and package not in winners:
-                winners[package] = line
+            if package is not None:
+                winners[package] = index
 
     # Least specific first, so the served file still reads kith, then role,
-    # then device. A package is emitted once: the identical-line case (kith
-    # and role carrying the same line) must not reach the device twice.
-    emitted: set[str] = set()
+    # then device. Only the winning scope's lines for a package are emitted,
+    # so the identical-line case (kith and role carrying the same line) still
+    # reaches the device once, and a duplicate within one file reaches it
+    # twice, which the agent refuses.
     out: list[str] = []
-    for text in scoped:
+    for index, text in enumerate(scoped):
         for line in text.splitlines():
             package = _install_package(line)
-            if package is None:
-                out.append(line)
-            elif package not in emitted and winners[package] == line:
-                emitted.add(package)
+            if package is None or winners[package] == index:
                 out.append(line)
     return "\n".join(out) + ("\n" if out else "")
 
@@ -509,15 +571,6 @@ class WifiNetwork:
     def __str__(self) -> str:
         return f"WifiNetwork(ssid={self.ssid!r}, security={self.security})"
 
-    def qr_fields(self) -> dict:
-        """The keyword arguments `provisioning.payload` takes for this network,
-        so the QR and the policy file are built from one description."""
-        return {
-            "wifi_ssid": self.ssid,
-            "wifi_security": self.security,
-            "wifi_password": self.passphrase,
-        }
-
     @classmethod
     def parse(cls, text: str) -> "WifiNetwork":
         values: dict[str, str] = {}
@@ -587,6 +640,13 @@ class Policies:
                 # secret.
                 if (
                     entry.is_file()
+                    # Only a file some scope can serve (muster#230). A renamed
+                    # `old.restrictions` is not policy: counting it made a
+                    # directory whose only real file an operator renamed away
+                    # read as a live source, and every device was served an
+                    # authoritative empty answer, the withdrawal NoSource
+                    # exists to stop.
+                    and _is_scope(entry.name.split(".", 1)[0])
                     and entry.name.split(".", 1)[-1] in MANAGED_FILES
                     # Wipe and reboot are synthesized from the kith, never read
                     # from here. Counting a stray `kith.wipe` or `kith.reboot`
@@ -634,14 +694,14 @@ class Policies:
         """
         scoped: list[tuple[str, str]] = []
         theirs = self.root / f"{KITH_SCOPE}.{INSTALL_APPS_FILE}"
-        if INSTALL_APPS_FILE in SHARED_FILES and theirs.is_file():
+        if INSTALL_APPS_FILE in SHARED_FILES and _present(theirs):
             scoped.append((KITH_SCOPE, _read(theirs)))
         if role and INSTALL_APPS_FILE in ROLE_FILES:
             ours = self.root / f"{ROLE_SCOPE_PREFIX}{role}.{INSTALL_APPS_FILE}"
-            if ours.is_file():
+            if _present(ours):
                 scoped.append(("role", _read(ours)))
         mine = self.root / f"{key_id}.{INSTALL_APPS_FILE}"
-        if mine.is_file():
+        if _present(mine):
             scoped.append(("device", _read(mine)))
         return scoped
 
@@ -778,19 +838,21 @@ class Policies:
             return _merge_install_apps(scoped) if scoped else None
         if name == WIFI_FILE:
             return self._wifi_text(key_id, role)
+        # `_present`, not `is_file()`: a link that cannot be followed is a
+        # refusal, never a fall-through to a broader scope (muster#230).
         mine = self.root / f"{key_id}.{name}"
-        if mine.is_file():
+        if _present(mine):
             return _read(mine)
         # Then the role, if this device has one. Role files include
         # `app-config` where the kith's does not - see ROLE_FILES.
         if role and name in ROLE_FILES:
             ours = self.root / f"{ROLE_SCOPE_PREFIX}{role}.{name}"
-            if ours.is_file():
+            if _present(ours):
                 return _read(ours)
         # Falling through to the shared scope is what makes one edit reach a
         # fleet. `app-config` never gets here - see SHARED_FILES.
         theirs = self.root / f"{KITH_SCOPE}.{name}"
-        if name in SHARED_FILES and theirs.is_file():
+        if name in SHARED_FILES and _present(theirs):
             return _read(theirs)
         return None
 

@@ -50,7 +50,8 @@ class Verdict(str, Enum):
     OK = "ok"
     NO_SUCH_NONCE = "no-such-nonce"
     NONCE_EXPIRED = "nonce-expired"
-    NONCE_USED = "nonce-used"
+    # No NONCE_USED (muster#230). `verify` pops the nonce before reading it,
+    # so a replay is NO_SUCH_NONCE and a "used" verdict was unreachable.
     BAD_SIGNATURE = "bad-signature"
     CERT_EXPIRED = "cert-expired"
     CERT_NOT_OURS = "cert-not-ours"
@@ -61,7 +62,6 @@ class Challenge:
     nonce: str
     issued_at: float
     ttl_s: float
-    used: bool = False
 
     def expired_at(self, now: float) -> bool:
         return now - self.issued_at >= self.ttl_s
@@ -108,8 +108,6 @@ class Proofs:
         entry = self.challenges.pop(nonce, None)
         if entry is None:
             return Verdict.NO_SUCH_NONCE
-        if entry.used:
-            return Verdict.NONCE_USED
         if entry.expired_at(self._now()):
             return Verdict.NONCE_EXPIRED
 

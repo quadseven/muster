@@ -30,12 +30,24 @@ from muster.kith import Kith
 # the same number.
 FRESHNESS = dt.timedelta(minutes=5)
 
+# How far thisUpdate is backdated, for the same reason issuance backdates
+# `not_before` (muster#230): a relying party whose clock runs behind would
+# otherwise read a freshly signed artifact as one from its future. nextUpdate
+# stays `now + FRESHNESS`, so the revocation window does not grow. Kept short:
+# a revocation newer than the backdate carries a revocationDate after
+# thisUpdate, which RFC 5280 allows and which a longer backdate makes more
+# common. DECISIONS.md records the choice.
+CLOCK_SKEW = dt.timedelta(minutes=5)
+
 
 @dataclass(frozen=True)
 class Artifact:
     content: bytes
     this_update: dt.datetime | None
     next_update: dt.datetime | None
+    # When the artifact was signed, which is NOT thisUpdate once thisUpdate is
+    # backdated. HTTP freshness is measured from here (routes_revocation).
+    produced_at: dt.datetime | None = None
 
 
 class Responder:
@@ -56,6 +68,7 @@ class Responder:
 
     def crl(self) -> Artifact:
         now = self._clock()
+        this_update = now - CLOCK_SKEW
         next_update = now + self._freshness
         statuses = self._kith.unexpired_revocations(now)
         content = self._authority.crl(
@@ -64,10 +77,15 @@ class Responder:
                 for status in statuses
                 if status.revoked_at is not None
             ],
-            this_update=now,
+            this_update=this_update,
             next_update=next_update,
         )
-        return Artifact(content=content, this_update=now, next_update=next_update)
+        return Artifact(
+            content=content,
+            this_update=this_update,
+            next_update=next_update,
+            produced_at=now,
+        )
 
     def ocsp(self, request_der: bytes) -> Artifact:
         try:
@@ -94,15 +112,21 @@ class Responder:
             revoked_at = None
 
         now = self._clock()
+        this_update = now - CLOCK_SKEW
         next_update = now + self._freshness
         content = self._authority.ocsp_response(
             request,
             verdict,
-            this_update=now,
+            this_update=this_update,
             next_update=next_update,
             revoked_at=revoked_at,
         )
-        return Artifact(content=content, this_update=now, next_update=next_update)
+        return Artifact(
+            content=content,
+            this_update=this_update,
+            next_update=next_update,
+            produced_at=now,
+        )
 
 
 def try_later() -> Artifact:

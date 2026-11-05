@@ -74,8 +74,8 @@ enroll" is not an answerable question without them:
 - `too-many-attempts` is somebody guessing at codes.
 - `fingerprint-mismatch` is somebody enrolling against your code **while you
   watch** - and it must never be averaged into a total with the other two.
-- `nonce-used` on a proof is a replay; `cert-expired` is a device that stopped
-  renewing. Opposite responses, and a single total hides both.
+- `no-such-nonce` on a proof includes a replay, because a nonce is consumed on
+  first use; `cert-expired` is a device that stopped renewing. Opposite responses, and a single total hides both.
 
 **`device.config.refused{reason:no-source}` is the one to alert on.** It means
 muster could not say what a device should be - an empty or absent policy
@@ -287,4 +287,5 @@ answer to that is `agent.apk.served` staying flat.
   matters today; traces become worth it when there is more than one hop.
 - **No monitors.** Nothing alerts on any of this yet. The metrics that deserve
   one first are `enroll.vouch.refused{reason:fingerprint-mismatch}` (any
-  occurrence) and `proof.refused{verdict:nonce-used}` (a replay).
+  occurrence) and `proof.refused{verdict:no-such-nonce}` (a replay among
+  them).

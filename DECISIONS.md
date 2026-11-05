@@ -25,11 +25,11 @@ describe are the code and comments in this tree.
 - [The trust decision](#the-trust-decision) - D2 to D7 and D31
 - [Staying up](#staying-up) - D8 to D10 and D32
 - [Getting onto a handset](#getting-onto-a-handset) - D11 to D14
-- [Telling a device what to be](#telling-a-device-what-to-be) - D15 to D19
+- [Telling a device what to be](#telling-a-device-what-to-be) - D15 to D19 and D34
 - [Not destroying things](#not-destroying-things) - D20 to D22
 - [Who is allowed in](#who-is-allowed-in) - D23 to D26 and D33
 - [Letting a device know it was revoked](#letting-a-device-know-it-was-revoked) - D27
-- [Answering for a certificate outside muster](#answering-for-a-certificate-outside-muster) - D28
+- [Answering for a certificate outside muster](#answering-for-a-certificate-outside-muster) - D28 and D35
 - [Erasing a device without losing the way to reach it](#erasing-a-device-without-losing-the-way-to-reach-it) - D29
 
 ---
@@ -1783,3 +1783,49 @@ build instead of a debug agent.
 so it gains nothing over the filter and loses the artifact path. Keeping
 dispatch as a deliberate way to publish: the person dispatching to test a
 change has not chosen to publish it, and a push is the reviewed way to do that.
+
+### D34. A duplicate package within one scope reaches the agent, which refuses it
+
+**2026-11-05.** Evidence: muster#230, `server/muster/policy.py`
+(`_merge_install_apps`, `INSTALL_APPS_FILE`), `server/tests/test_policy.py`
+(`test_a_package_named_twice_in_one_scope_reaches_the_agent_twice`).
+
+**Context.** `install-apps` merges by package across scopes (muster#109), most
+specific scope winning per package. The merge also ran inside one scope, so a
+file naming one package twice reached the device with only its first line. The
+agent refuses such a file because two lines for one package is an unfinished
+edit, and the server had made that choice before the agent could refuse it.
+
+**Chosen. The server keys a package by scope, not by line.** Every line the
+winning scope has for a package is served, and every other scope's lines for it
+are dropped. A duplicate in the winning file therefore reaches the agent as
+written and is refused there, which is the loud answer. Kith and role carrying
+the same line still serve it once, because only the role's line wins.
+
+**Rejected.** Recording the server-side pick as the rule: it installs a version
+nobody chose and hides the edit that is not finished.
+
+### D35. thisUpdate is backdated five minutes, and max-age runs from signing
+
+**2026-11-05.** Evidence: muster#230, `server/muster/revocation.py`
+(`CLOCK_SKEW`), `server/muster/routes_revocation.py` (`_cache_headers`),
+`server/tests/test_revocation.py`.
+
+**Context.** Issuance backdates `not_before` so a slow device clock does not
+reject a new certificate. The CRL and OCSP answers carried the signing instant
+as thisUpdate, so a relying party whose clock runs behind read a fresh artifact
+as one from its future.
+
+**Chosen. thisUpdate is the signing time minus five minutes; nextUpdate stays
+the signing time plus `FRESHNESS`.** D28's revocation delay is unchanged. The
+cache header measures max-age from the signing time, because a max-age from a
+backdated thisUpdate lets a cache serve past the signed nextUpdate. Five minutes
+and not issuance's twelve hours: the relying parties here are servers with
+synchronized clocks, and a revocation younger than the backdate carries a
+revocationDate after thisUpdate, which RFC 5280 permits and a longer backdate
+makes common.
+
+**Still open.** The CRL carries no CRLNumber, and issued certificates carry no
+AuthorityKeyIdentifier or SubjectKeyIdentifier (muster#230 items 7 and 9). Both
+change every artifact a relying party sees and wait on a handset check or a
+recorded non-conformance.

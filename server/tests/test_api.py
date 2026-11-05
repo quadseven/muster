@@ -40,7 +40,7 @@ from muster.enroll import (
     fingerprint,
 )
 from muster.proof import Proofs
-from muster.revocation import FRESHNESS
+from muster.revocation import CLOCK_SKEW, FRESHNESS
 from tests.conftest import FakeProvider
 
 # One shared fake identity provider for every test in this file that needs "an
@@ -4920,7 +4920,10 @@ def test_revocation_answers_are_cacheable_until_their_signed_next_update():
 
     crl_response = _fetch_crl(client, state)
     crl = x509.load_der_x509_crl(crl_response.content)
-    assert crl.next_update_utc - crl.last_update_utc == FRESHNESS
+    # thisUpdate is backdated for relying-party clock skew (muster#230), so
+    # the signed window is FRESHNESS plus the backdate while max-age, measured
+    # from signing, stays FRESHNESS.
+    assert crl.next_update_utc - crl.last_update_utc == FRESHNESS + CLOCK_SKEW
     assert crl_response.headers["cache-control"] == (
         f"public, max-age={int(FRESHNESS.total_seconds())}, must-revalidate"
     )
@@ -4930,7 +4933,7 @@ def test_revocation_answers_are_cacheable_until_their_signed_next_update():
 
     ocsp_response = _ask_ocsp(client, state, _ocsp_request_der(state, pem))
     parsed = ocsp.load_der_ocsp_response(ocsp_response.content)
-    assert parsed.next_update_utc - parsed.this_update_utc == FRESHNESS
+    assert parsed.next_update_utc - parsed.this_update_utc == FRESHNESS + CLOCK_SKEW
     assert ocsp_response.headers["cache-control"] == (
         f"public, max-age={int(FRESHNESS.total_seconds())}, must-revalidate"
     )
@@ -5390,14 +5393,20 @@ def test_the_wifi_file_agrees_with_what_the_qr_encodes(state, tmp_path):
     network = policy.WifiNetwork.parse(_wifi_file(ssid="relay-net", security="WEP"))
     client, _apk = _published(state, tmp_path)
 
-    described = client.post(
-        "/v1/provision/qr", json=network.qr_fields(), cookies=ADMIN
-    ).json()
+    # The QR's own field names, filled from the parsed file. The old
+    # `WifiNetwork.qr_fields` helper had no caller outside the tests and is
+    # gone (muster#230); the agreement it stood for is what this asserts.
+    fields = {
+        "wifi_ssid": network.ssid,
+        "wifi_security": network.security,
+        "wifi_password": network.passphrase,
+    }
+    described = client.post("/v1/provision/qr", json=fields, cookies=ADMIN).json()
 
     assert described["wifi"]["ssid"] == network.ssid == "relay-net"
     assert described["wifi"]["security"] == network.security == "WEP"
     extras = provisioning.payload(
-        component="c", download_url="https://x", checksum="k", **network.qr_fields()
+        component="c", download_url="https://x", checksum="k", **fields
     )
     assert extras[provisioning.WIFI_SSID] == network.ssid
     assert extras[provisioning.WIFI_SECURITY] == network.security
@@ -5768,3 +5777,40 @@ def test_the_roll_offers_the_verbs_standing_allows(state, tmp_path):
         f"/v1/kith/{key_id}/wipe", json={"wipe": True}, cookies=ADMIN
     ).status_code == 200
     assert offered() == ["reboot", "call_off_wipe"]
+
+
+def test_a_stored_role_that_is_not_a_role_is_a_503_not_a_500(state, tmp_path, monkeypatch):
+    """muster#230 item 5. A role reaches policy from a kith row, so a
+    hand-edited row or a pattern tightened after rows exist is a role policy
+    refuses. That refusal was a ValueError nothing caught: an unhandled 500
+    on the device's own config route. It is the same uncached 503 an
+    unreadable policy file answers."""
+    import dataclasses
+
+    state.policies = _policy_root(tmp_path)
+    (tmp_path / "kith.restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    client = _proof_client(state)
+    key, identity, _ = _enrolled(state, record=True)
+    real_member = state.kith.member
+
+    def member_with_a_bad_role(key_id):
+        held = real_member(key_id)
+        assert held is not None
+        return dataclasses.replace(
+            held, device=dataclasses.replace(held.device, role="Not.A.Role")
+        )
+
+    monkeypatch.setattr(state.kith, "member", member_with_a_bad_role)
+
+    nonce = client.post("/v1/auth/challenge", json={}).json()["nonce"]
+    response = client.post("/v1/device/config", json={
+        "nonce": nonce,
+        "signature_b64": base64.b64encode(
+            key.sign(nonce.encode(), ec.ECDSA(hashes.SHA256()))
+        ).decode(),
+        "certificate_pem": identity.certificate_pem.decode(),
+    })
+
+    assert response.status_code == 503
+    assert "DISALLOW_SAFE_BOOT" not in response.text
+    assert response.headers["Cache-Control"] == "no-store"

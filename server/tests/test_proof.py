@@ -212,3 +212,18 @@ def test_sweep_drops_expired_challenges_only(proofs):
     assert proofs.sweep() == 1
     assert old.nonce not in proofs.challenges
     assert fresh.nonce in proofs.challenges
+
+
+def test_every_verdict_is_one_verify_can_return():
+    """muster#230 item 11. The nonce is popped before anything else is read,
+    so a replay answers no-such-nonce and a `nonce-used` verdict could never
+    be produced. A verdict nothing returns is a status map entry, a 409, and
+    a metric tag describing a path that does not exist."""
+    assert {verdict.value for verdict in Verdict} == {
+        "ok",
+        "no-such-nonce",
+        "nonce-expired",
+        "bad-signature",
+        "cert-expired",
+        "cert-not-ours",
+    }
