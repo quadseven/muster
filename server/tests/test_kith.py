@@ -102,6 +102,10 @@ class Breakable(MemoryRecords):
         self._check()
         return super().history(key_id_)
 
+    def latest_issued(self, key_id_, at):
+        self._check()
+        return super().latest_issued(key_id_, at)
+
     def awaiting_collection(self, request_id):
         self._check()
         return super().awaiting_collection(request_id)
@@ -1953,3 +1957,52 @@ def test_recording_one_certificate_twice_is_one_row_in_a_real_store():
     finally:
         with psycopg.connect(_LIVE_DSN) as connection:
             connection.execute("DELETE FROM kith_device WHERE key_id = %s", (device.key_id,))
+
+
+# ---- renewal spacing (muster#228) ---------------------------------------
+
+
+def test_latest_issued_is_the_newest_certificate_for_the_key(kith):
+    later = START + dt.timedelta(hours=3)
+    kith.issued(a_device(), a_certificate("AAAA"))
+    kith.issued(a_device(at=later), a_certificate("BBBB", at=later))
+    kith.issued(a_device(b"device-two"), a_certificate("CCCC", at=later + dt.timedelta(hours=1)))
+
+    assert kith.latest_issued(a_device().key_id, later) == later
+    assert kith.latest_issued(key_id(b"nobody"), later) is None
+
+
+def test_latest_issued_ignores_a_record_dated_after_the_question(kith):
+    """A row dated ahead of muster's clock is a clock fault, not a storm, and
+    must not hold a device off renewal until the clock catches up."""
+    later = START + dt.timedelta(days=30)
+    kith.issued(a_device(), a_certificate("AAAA"))
+    kith.issued(a_device(at=later), a_certificate("BBBB", at=later))
+
+    assert kith.latest_issued(a_device().key_id, START + dt.timedelta(hours=1)) == START
+
+
+def test_latest_issued_raises_when_the_store_cannot_answer(kith, records):
+    kith.issued(a_device(), a_certificate("AAAA"))
+    records.up = False
+
+    with pytest.raises(Unreachable):
+        kith.latest_issued(a_device().key_id, START)
+
+
+def test_the_store_reads_latest_issued_as_one_max_per_key():
+    """Statement text only, for the reason FakeConnection gives."""
+    connection = FakeConnection(rows=[(START,)])
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    key = a_device().key_id
+
+    answer = records.latest_issued(key, START)
+
+    sql, params = connection.log[-1]
+    assert "max(issued_at)" in sql.lower()
+    assert "key_id = %s" in sql
+    assert "issued_at <= %s" in sql
+    assert params == (key, START)
+    assert answer == START

@@ -20,7 +20,7 @@ class RenewalSteward(private val context: Context) {
             renewAfter = epochOf(store.renewAfter()),
             now = System.currentTimeMillis() / 1000,
         )
-        if (stance !is IdentityLifecycle.Stance.ShouldRenew) {
+        if (!RenewalFlow.asks(stance)) {
             return RenewalFlow.Move.NotDue
         }
         val baseUrl = KeystoreIdentity.serverBaseUrl(context)

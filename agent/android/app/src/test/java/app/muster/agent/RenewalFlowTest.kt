@@ -7,6 +7,7 @@ import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.util.io.pem.PemReader
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -126,5 +127,31 @@ class RenewalFlowTest {
         assertTrue(move is RenewalFlow.Move.NotDue)
         assertEquals(0, transport.calls)
         assertEquals(null, store.saved)
+    }
+
+    @Test
+    fun aDeviceWhoseOwnClockSaysLapsedStillAsksAndLetsMusterDecide() {
+        // muster#228, DECISIONS.md D32. A clock far ahead reads a current
+        // certificate as expired. Staying silent left that device with no way
+        // back but a re-enrollment `present` refuses. muster checks expiry
+        // against its own clock, so asking costs one refused request when the
+        // certificate really has lapsed and recovers the device when it has not.
+        val transport = Transport()
+        val store = Store()
+        val flow = RenewalFlow(Keys(), RenewalClient(transport, Identity()), store)
+
+        val move = flow.advance(IdentityLifecycle.Stance.Lapsed(secondsSinceExpiry = 86_400))
+
+        assertTrue(move is RenewalFlow.Move.Renewed)
+        assertEquals("new certificate", store.saved?.first())
+    }
+
+    @Test
+    fun onlyADueOrLapsedIdentityAsks() {
+        assertTrue(RenewalFlow.asks(IdentityLifecycle.Stance.ShouldRenew(60)))
+        assertTrue(RenewalFlow.asks(IdentityLifecycle.Stance.Lapsed(1)))
+        assertFalse(RenewalFlow.asks(IdentityLifecycle.Stance.Current))
+        assertFalse(RenewalFlow.asks(IdentityLifecycle.Stance.ClockBehind(1)))
+        assertFalse(RenewalFlow.asks(IdentityLifecycle.Stance.Unenrolled))
     }
 }

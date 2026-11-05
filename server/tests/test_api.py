@@ -5680,3 +5680,66 @@ def test_a_renewal_logs_scheduled_check_in_evidence(state, monkeypatch, caplog):
     assert fields["short_lived_hours"] == 36
     assert untrusted_word.status_code == 409
     assert refused[-1].fields["trigger"] == "other"
+
+
+# ---- renewal spacing (muster#228) ---------------------------------------
+#
+# The too-early check reads the certificate the device PRESENTED. A device that
+# renewed and then failed to keep the result presents the old one again, so
+# that check passes every time and each check-in mints another certificate.
+# The spacing check reads what muster itself last recorded for the key.
+
+
+def test_two_renewals_inside_the_spacing_bound_mint_one_certificate(state, monkeypatch):
+    """THE STORM IN muster#228: a renewal whose answer never landed on the
+    device. The second request presents the same old certificate, and is
+    refused without a second certificate being signed."""
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    when = _past_renew_after(state, monkeypatch, identity)
+    before = len(state.kith.history(key_id_))
+
+    first = _renew(client, key, identity)
+    _at(state, monkeypatch, when + dt.timedelta(minutes=15))
+    second = _renew(client, key, identity)
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 409, second.text
+    assert "recently" in second.json()["detail"]
+    assert len(state.kith.history(key_id_)) == before + 1
+    assert (
+        "custom.muster.device.renew.refused:1|c|#reason:recently-issued"
+        in state.telemetry.sent
+    ), state.telemetry.sent
+
+
+def test_a_renewal_past_the_spacing_bound_is_signed(state, monkeypatch):
+    """The bound spaces renewals out; it does not end them. A device whose
+    write failed gets another chance once the bound has passed."""
+    from muster.api import RENEWAL_SPACING
+
+    client = _proof_client(state)
+    key, identity, key_id_ = _enrolled(state, record=True)
+    when = _past_renew_after(state, monkeypatch, identity)
+
+    first = _renew(client, key, identity)
+    _at(state, monkeypatch, when + RENEWAL_SPACING + dt.timedelta(minutes=1))
+    second = _renew(client, key, identity)
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+
+
+def test_the_spacing_bound_fails_closed_when_the_kith_cannot_answer(state, monkeypatch):
+    """Reads raise, never lie: an unreadable history is a 503, not a pass."""
+    client = _proof_client(state)
+    key, identity, _key_id = _enrolled(state, record=True)
+    _past_renew_after(state, monkeypatch, identity)
+
+    def unreachable(_key_id, _at):
+        raise kith_store.Unreachable("down")
+
+    monkeypatch.setattr(state.kith, "latest_issued", unreachable)
+    response = _renew(client, key, identity)
+
+    assert response.status_code == 503, response.text

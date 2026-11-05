@@ -357,6 +357,8 @@ class Records(Protocol):
 
     def history(self, key_id: str) -> list[Certificate]: ...
 
+    def latest_issued(self, key_id: str, at: dt.datetime) -> dt.datetime | None: ...
+
     def certificate_status(self, serial: str) -> CertificateStatus | None: ...
 
     def unexpired_revocations(self, at: dt.datetime) -> list[CertificateStatus]: ...
@@ -633,6 +635,13 @@ class MemoryRecords:
         return sorted(
             self._certificates.get(key_id, []), key=lambda c: (c.issued_at, c.serial)
         )
+
+    def latest_issued(self, key_id: str, at: dt.datetime) -> dt.datetime | None:
+        # Not after `at`, matching the SQL: see `Kith.latest_issued`.
+        issued = [
+            c.issued_at for c in self._certificates.get(key_id, []) if c.issued_at <= at
+        ]
+        return max(issued, default=None)
 
     def certificate_status(self, serial: str) -> CertificateStatus | None:
         for key_id, held in self._certificates.items():
@@ -1220,6 +1229,18 @@ class PostgresRecords:
 
         return [_certificate_from_row(row) for row in self._run(work)]
 
+    def latest_issued(self, key_id: str, at: dt.datetime) -> dt.datetime | None:
+        def work(cursor):
+            cursor.execute(
+                "SELECT max(issued_at) FROM kith_certificate"
+                " WHERE key_id = %s AND issued_at <= %s",
+                (key_id, at),
+            )
+            return cursor.fetchone()
+
+        row = self._run(work)
+        return row[0] if row is not None else None
+
     def certificate_status(self, serial: str) -> CertificateStatus | None:
         def work(cursor):
             cursor.execute(
@@ -1767,6 +1788,16 @@ class Kith:
 
     def history(self, key_id: str) -> list[Certificate]:
         return self._read(lambda records: records.history(key_id))
+
+    def latest_issued(self, key_id: str, at: dt.datetime) -> dt.datetime | None:
+        """When muster last signed a certificate for this key, as of `at`.
+
+        ONE READ OF max(issued_at), for the renewal spacing check (muster#228).
+        A row dated after `at` is left out: it means muster's clock went back,
+        and counting it would hold the device off renewal for as long as the
+        clock is wrong rather than for the spacing bound.
+        """
+        return self._read(lambda records: records.latest_issued(key_id, at))
 
     def certificate_status(self, serial: str) -> CertificateStatus | None:
         return self._read(lambda records: records.certificate_status(serial))

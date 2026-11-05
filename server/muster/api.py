@@ -2070,6 +2070,44 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
                        f"{earliest.isoformat()}",
             )
 
+        # NOT AGAIN SO SOON (muster#228). The check above reads the certificate
+        # the device PRESENTED, and a device whose last renewal never landed
+        # (an unparseable answer, a full disk) presents the old one again, so
+        # that check passes on every check-in and each pass would sign another
+        # certificate. This reads what muster ITSELF last recorded for the key.
+        #
+        # AN ARMED SHORT RENEWAL SKIPS IT: one administrator action, one
+        # certificate, and refusing after `take` would spend the request.
+        #
+        # NOT ATOMIC with the issuance below, so two renewals racing inside one
+        # request's time can both pass. The storm this bounds is sequential,
+        # one per check-in; the race is bounded by the device's own concurrency.
+        if armed is None:
+            try:
+                last = state.kith.latest_issued(proven, state.kith.now())
+            except kith_store.Unreachable as unreachable:
+                raise HTTPException(
+                    status_code=503,
+                    detail="the kith store is unreachable, so muster cannot tell "
+                           "when this device last renewed. Retry.",
+                    headers={"Cache-Control": "no-store"},
+                ) from unreachable
+            if last is not None and state.kith.now() - last < RENEWAL_SPACING:
+                again = last + RENEWAL_SPACING
+                state.telemetry.count(
+                    "device.renew.refused", tags=["reason:recently-issued"]
+                )
+                telemetry.event(
+                    "renewal refused as recently issued",
+                    key_id=proven, old_serial=f"{current.serial_number:X}",
+                    last_issued=last.isoformat(), trigger=said,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"a certificate was issued to this device recently; "
+                           f"renew again from {again.isoformat()}",
+                )
+
         identity = _issue_renewal(
             state, proven, csr.public_bytes(serialization.Encoding.DER),
             device_name, armed,
@@ -2143,6 +2181,15 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
 # Asking the store anyway is what let a NUL byte in this open route's path
 # become a refused statement, which the breaker then counted as an outage.
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")
+
+
+# The least time between two certificates signed for one key by renewal
+# (muster#228). Without it a device whose renewal never landed asked again at
+# every check-in, up to 96 certificates a day, each one a kith_certificate row
+# and a CRL serial. Well under the shortest lifetime an administrator may arm
+# (`short_renewal.MIN_HOURS`), so the renewal after a short one is never held
+# past that certificate's expiry.
+RENEWAL_SPACING = dt.timedelta(hours=1)
 
 
 # What a device may say started its renewal. Anything else is logged as

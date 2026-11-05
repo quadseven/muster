@@ -89,9 +89,13 @@ object CheckInSchedulePolicy {
      * backs off by.
      *
      * SHORT, BECAUSE THE POINT IS RECOVERY SPEED. A leg whose router just came
-     * back should reconcile in seconds, not at the next quarter hour. Backed
-     * off rather than fixed, because a device whose network never returns must
-     * not spin - JobScheduler doubles this on each failure.
+     * back should reconcile in seconds, not at the next quarter hour.
+     *
+     * JOBSCHEDULER DOES NOT DOUBLE THIS. Its backoff applies only to a job that
+     * asks to be rescheduled through `jobFinished(params, true)` or
+     * `onStopJob`, and a check-in always finishes with `false`. What stops a
+     * device whose network never returns from spinning is [scheduleCatchUp]:
+     * a catch-up never queues another (muster#228).
      */
     const val CATCH_UP_BACKOFF_MS: Long = 30_000L
 
@@ -111,4 +115,19 @@ object CheckInSchedulePolicy {
      * interval forever for nothing.
      */
     fun needsCatchUp(fetchReachedMuster: Boolean): Boolean = !fetchReachedMuster
+
+
+    /**
+     * Should this run, now finished, queue a catch-up?
+     *
+     * ONLY A PERIODIC RUN QUEUES ONE (muster#228). The catch-up goes through the
+     * same `onStartJob`, and a catch-up that failed used to queue a fresh
+     * catch-up. Each was a new `schedule()` rather than a retry of the same job,
+     * so the platform backoff never applied, and a 503 or 401 outage had the
+     * whole fleet running a full check-in every 30 seconds until it ended (for
+     * a 401, forever). One catch-up per failed periodic run is the recovery;
+     * after that the periodic interval carries the retry.
+     */
+    fun scheduleCatchUp(needsCatchUp: Boolean, isCatchUpRun: Boolean): Boolean =
+        needsCatchUp && !isCatchUpRun
 }
