@@ -81,6 +81,11 @@ object BootPlan {
         // runs first and ends the process before this step is reached, so no
         // separate precedence guard is needed.
         "reboot" to { context: Context -> RebootSteward(context).reconcile() },
+        // AFTER WIPE AND REBOOT, which end the process anyway, and BEFORE THE
+        // RESTRICTIONS (muster#195). A relay phone that forgot its network is
+        // the one most in need of it back, and the file arrived in the fetch
+        // above, so this check-in both collects and applies it.
+        "wifi" to { context: Context -> WifiSteward(context).reconcile() },
         "restrictions" to { context: Context -> RestrictionSteward(context).reconcile() },
         // Set automatic OS update policy so the device does not wait for manual
         // taps in Settings (muster#191).

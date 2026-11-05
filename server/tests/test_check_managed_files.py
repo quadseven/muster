@@ -27,13 +27,19 @@ def _run(tmp_path: pathlib.Path, agent: set[str]) -> int:
 
 
 def _agent_today() -> set[str]:
-    return set(policy.MANAGED_FILES) - {policy.WIFI_FILE}
+    return set(policy.MANAGED_FILES)
 
 
-def test_wifi_alone_may_be_served_ahead_of_the_agent(tmp_path, capsys):
-    """docs/policy.md: the agent has no wifi steward, so it does not hold it."""
+def test_the_agent_and_the_server_agree_exactly(tmp_path, capsys):
+    """muster#195 shipped the agent's wifi steward, so nothing is served ahead."""
+    assert tool.SERVER_AHEAD == frozenset()
     assert _run(tmp_path, _agent_today()) == 0
-    assert "wifi" in capsys.readouterr().out
+    assert "served ahead of the agent: []" in capsys.readouterr().out
+
+
+def test_an_agent_that_refuses_wifi_now_fails(tmp_path, capsys):
+    assert _run(tmp_path, _agent_today() - {policy.WIFI_FILE}) == 1
+    assert "the server serves 'wifi'" in capsys.readouterr().err
 
 
 def test_another_name_the_agent_lacks_still_fails(tmp_path, capsys):
@@ -47,9 +53,10 @@ def test_a_name_the_server_does_not_serve_still_fails(tmp_path, capsys):
     assert "the agent expects 'ringtone'" in capsys.readouterr().err
 
 
-def test_the_exception_dies_once_the_agent_holds_the_name(tmp_path, capsys):
-    """The exception must not outlive the gap it describes."""
-    assert _run(tmp_path, set(policy.MANAGED_FILES)) == 1
+def test_an_exception_dies_once_the_agent_holds_the_name(tmp_path, capsys, monkeypatch):
+    """A future SERVER_AHEAD entry must not outlive the gap it describes."""
+    monkeypatch.setattr(tool, "SERVER_AHEAD", frozenset({policy.WIFI_FILE}))
+    assert _run(tmp_path, _agent_today()) == 1
     err = capsys.readouterr().err
     assert "SERVER_AHEAD" in err and "'wifi'" in err
 

@@ -17,7 +17,7 @@ MANIFEST = (
 )
 
 
-def test_the_permission_profile_is_exactly_four():
+def test_the_permission_profile_is_exactly_six():
     """The Play Protect bet, expressed as a test.
 
     A QR-provisioned Pixel 6a cleared Google's approved-DPC heuristic on
@@ -69,6 +69,30 @@ def test_the_permission_profile_is_exactly_four():
         # nobody can prove which permission tips it - and the next
         # QR provisioning run is where it gets tested.
         "android.permission.ACCESS_NETWORK_STATE",
+        # ARGUED FOR ON 2026-11-05 (muster#195), the fifth and sixth.
+        #
+        # WHY THEY ARE NEEDED. A relay phone that forgets its network has no
+        # way back without a person holding the enrollment QR. WifiSteward puts
+        # the network back as Device Owner, and `WifiManager.addNetwork` needs
+        # CHANGE_WIFI_STATE; Device Owner exempts the caller from the Android 10
+        # deprecation, not from the permission. ACCESS_WIFI_STATE is what
+        # `getCallerConfiguredNetworks` needs to ask whether the device still
+        # holds the network.
+        #
+        # WHY NOT AVOID THEM. DevicePolicyManager has no call that adds a wifi
+        # network, and a network suggestion needs CHANGE_WIFI_STATE too.
+        # ACCESS_WIFI_STATE alone could be dropped by re-adding the network on
+        # every check-in, which trades a read for a platform write every
+        # quarter-hour.
+        #
+        # WHY THEY ARE THOUGHT SAFE FOR THE PLAY PROTECT BET. Both are
+        # protectionLevel="normal", granted at install and never prompted, and
+        # among the most commonly declared permissions on the platform. Neither
+        # reveals location or scan results; that needs a location permission,
+        # which stays out. A judgement, not a proof, as above: the next QR
+        # provisioning run is where it gets tested.
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_WIFI_STATE",
     }, f"the agent's permission profile changed: {sorted(declared)}"
 
     # The fourth is on the receiver rather than the application, and it is what

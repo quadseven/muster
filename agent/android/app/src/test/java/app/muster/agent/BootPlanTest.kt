@@ -136,6 +136,18 @@ class BootPlanTest {
     }
 
     @Test
+    fun theWifiNetworkIsReconciledAfterConfigurationAndBeforeRestrictions() {
+        // muster#195. The wifi file arrives in the configuration step, so the
+        // steward runs after it. Before the restrictions, because a relay phone
+        // that has lost its network is the one most in need of getting it back,
+        // and after wipe and reboot, which end the process anyway.
+        assertTrue("wifi must be run at boot, not merely implemented", names.contains("wifi"))
+        assertTrue(names.indexOf("configuration") < names.indexOf("wifi"))
+        assertTrue(names.indexOf("reboot") < names.indexOf("wifi"))
+        assertTrue(names.indexOf("wifi") < names.indexOf("restrictions"))
+    }
+
+    @Test
     fun appConfigurationIsReconciledAtBoot() {
         // The whole point of managed app configuration is that nobody has to
         // touch the phone. A steward that is written and never run leaves the
@@ -243,6 +255,7 @@ class BootPlanTest {
             "AppInstallSteward.kt" to "AppInstallPolicy.FILE_NAME",
             "WipeSteward.kt" to "WipePolicy.FILE_NAME",
             "RebootSteward.kt" to "RebootPolicy.FILE_NAME",
+            "WifiSteward.kt" to "WifiPolicy.FILE_NAME",
         )
         for ((steward, constant) in readers) {
             val code = readCode(steward)

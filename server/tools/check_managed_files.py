@@ -31,13 +31,10 @@ import json
 import pathlib
 import sys
 
-from muster.policy import MANAGED_FILES, WIFI_FILE
+from muster.policy import MANAGED_FILES
 
-# Served, and refused by the agent on purpose. `wifi` carries a passphrase and
-# the agent has no steward for it yet (muster#195), so adding it to
-# ConfigurationPolicy.MANAGED would leave a credential on the device that
-# nothing reads. The device reports the refusal, so this drift is not silent.
-SERVER_AHEAD = frozenset({WIFI_FILE})
+# Empty: `wifi` was here until the agent's WifiSteward shipped (muster#195).
+SERVER_AHEAD: frozenset[str] = frozenset()
 
 
 def main(argv: list[str]) -> int:

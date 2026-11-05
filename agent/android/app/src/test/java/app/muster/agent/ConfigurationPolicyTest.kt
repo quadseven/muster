@@ -221,6 +221,7 @@ class ConfigurationPolicyTest {
             //                 install-apps and install-self steps (muster#81)
             // wipe         -> WipeSteward.configFile()
             // reboot       -> RebootSteward.configFile() (muster#58)
+            // wifi         -> WifiSteward.configFile() (muster#195)
             setOf(
                 "restrictions",
                 "visible-apps",
@@ -230,6 +231,7 @@ class ConfigurationPolicyTest {
                 "install-apps",
                 "wipe",
                 "reboot",
+                "wifi",
             ),
             ConfigurationPolicy.MANAGED,
         )
@@ -254,6 +256,7 @@ class ConfigurationPolicyTest {
                 AppInstallPolicy.FILE_NAME,
                 WipePolicy.FILE_NAME,
                 RebootPolicy.FILE_NAME,
+                WifiPolicy.FILE_NAME,
             ),
             ConfigurationPolicy.MANAGED,
         )

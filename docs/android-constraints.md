@@ -124,10 +124,11 @@ allowlisted again.
 **A domain, a certificate, an mTLS handshake and a beautiful console change none
 of this.** The one variable we do control is the permission profile, and it is
 the bet that it helps - a hypothesis, not a measurement, because no run has
-shown the gate's answer. The agent declares four permissions:
+shown the gate's answer. The agent declares six permissions:
 `RECEIVE_BOOT_COMPLETED`, `SET_WALLPAPER`, `INTERNET`, `ACCESS_NETWORK_STATE`,
+and, for the wifi policy (muster#195), `ACCESS_WIFI_STATE` and `CHANGE_WIFI_STATE`,
 and guards its components with `BIND_DEVICE_ADMIN`, which only the system holds. No SMS, no notification listener, no accessibility. Adding a
-fifth is no longer a free decision - it changes the only input to that heuristic
+seventh is no longer a free decision - it changes the only input to that heuristic
 we have any influence over, and the way to find out what it did is another wipe.
 
 ## Route 3: our own DPC by adb - open, and still needed

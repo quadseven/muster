@@ -1369,6 +1369,11 @@ an objection to a job's shape, this runs on a scheduler worker, and an uncaught
 exception there kills the process and reschedules the job. A recovery path that
 can take the process down makes every ordinary failure fatal.
 
+**Two more on 2026-11-05 (muster#195).** The wifi policy needs
+`CHANGE_WIFI_STATE` to add a network and `ACCESS_WIFI_STATE` to ask whether the
+device still holds it. Both are normal permissions, granted at install; the
+argument is in the test, and the profile is pinned at six.
+
 ---
 
 ### D26. Sign only on a reviewed push, and never let the pin be circular

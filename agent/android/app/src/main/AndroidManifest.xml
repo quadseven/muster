@@ -16,6 +16,12 @@
          nothing noticed: the only path that needed this permission is the one
          that runs after a fetch has ALREADY failed. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- WifiSteward (muster#195) adds the device's own network as Device Owner,
+         so a relay phone that forgot it rejoins with no person and no QR.
+         addNetwork needs CHANGE_WIFI_STATE; listing the networks this app
+         configured needs ACCESS_WIFI_STATE. Both are normal permissions. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
     <!--
       HOW THE AGENT SEES OTHER APPLICATIONS, AND WHY THIS IS NOT A PERMISSION.

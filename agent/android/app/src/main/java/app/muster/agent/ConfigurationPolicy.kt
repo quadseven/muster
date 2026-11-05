@@ -83,6 +83,10 @@ object ConfigurationPolicy {
         // The instruction to reboot this device (muster#58). Same shape as
         // wipe, one severity down, and read by RebootSteward.
         "reboot",
+        // The network this device must be able to join (muster#195), read by
+        // WifiSteward. It holds a passphrase, so the server serves it at device
+        // scope only, and nothing on this side prints it.
+        "wifi",
     )
 
     /** How much of a name muster does not manage is worth putting in logcat. */
