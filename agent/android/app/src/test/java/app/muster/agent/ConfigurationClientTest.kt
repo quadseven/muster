@@ -426,7 +426,7 @@ class ConfigurationClientTest {
         val sent = JSONObject(transport.bodies.last())
         assertEquals(
             setOf("nonce", "signature_b64", "certificate_pem", "check_in_interval_s"),
-            sent.keySet(),
+            sent.keys().asSequence().toSet(),
         )
         assertEquals("{}", transport.bodies.first())
     }
@@ -446,7 +446,7 @@ class ConfigurationClientTest {
     fun anUnreachableFetchNamesTheExceptionClassOnly() {
         val fetched = ConfigurationClient(
             FakeTransport(
-                throwing = java.net.SocketTimeoutException("read timed out at example.com"),
+                throwing = java.net.SocketTimeoutException("read timed out"),
                 throwingOn = ConfigurationClient.CONFIG_PATH,
             ),
             FakeIdentity(),

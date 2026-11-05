@@ -30,7 +30,7 @@ class AcknowledgedActionTest {
         override fun post(path: String, body: String): EnrollmentClient.Transport.Reply {
             events += "post $path"
             bodies += body
-            if (path == throwingOn) throw java.net.SocketTimeoutException("muster.example.com")
+            if (path == throwingOn) throw java.net.SocketTimeoutException("enroll.muster.example")
             return if (path == ProvenExchange.CHALLENGE_PATH) challenge else acknowledgement
         }
 
@@ -83,7 +83,7 @@ class AcknowledgedActionTest {
 
         assertEquals(
             setOf("nonce", "signature_b64", "certificate_pem"),
-            JSONObject(transport.bodies.last()).keySet(),
+            JSONObject(transport.bodies.last()).keys().asSequence().toSet(),
         )
     }
 
@@ -161,6 +161,31 @@ class AcknowledgedActionTest {
             listOf("post ${ProvenExchange.CHALLENGE_PATH}", "post $path"),
             transport.events,
         )
+    }
+
+    @Test
+    fun theWipeAndRebootRoutesActOnlyAfterTheirAcknowledgement() {
+        // The two routes WipeSteward and RebootSteward build this flow with.
+        // Written out here because the Stewards import android.* and cannot be
+        // loaded on the JVM; the strings are the server's route table.
+        for ((route, what) in listOf("/v1/device/wipe" to "wipe", "/v1/device/reboot" to "reboot")) {
+            val events = mutableListOf<String>()
+            val acked = FakeTransport(events = events)
+            val acted = AcknowledgedAction(ProvenExchange(acked, FakeIdentity()), route, what)
+                .run { events += "ACT" }
+            assertEquals(AcknowledgedAction.Acted.Done, acted)
+            assertEquals(listOf("post ${ProvenExchange.CHALLENGE_PATH}", "post $route", "ACT"), events)
+
+            val refusedEvents = mutableListOf<String>()
+            val refused = FakeTransport(acknowledgement = reply(409), events = refusedEvents)
+            val kept = AcknowledgedAction(ProvenExchange(refused, FakeIdentity()), route, what)
+                .run { refusedEvents += "ACT" }
+            assertEquals(
+                AcknowledgedAction.Acted.NotAcknowledged("muster refused the $what acknowledgement: 409"),
+                kept,
+            )
+            assertTrue("ACT" !in refusedEvents)
+        }
     }
 
     @Test

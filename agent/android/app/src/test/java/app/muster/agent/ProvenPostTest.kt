@@ -29,7 +29,7 @@ class ProvenPostTest {
         override fun post(path: String, body: String): EnrollmentClient.Transport.Reply {
             paths += path
             bodies += body
-            if (path == throwingOn) throw java.net.UnknownHostException("muster.example.com")
+            if (path == throwingOn) throw java.net.UnknownHostException("enroll.muster.example")
             return if (path == ProvenExchange.CHALLENGE_PATH) challenge else answer
         }
 
@@ -74,7 +74,7 @@ class ProvenPostTest {
         val sent = JSONObject(transport.bodies.last())
         assertEquals(
             setOf("name", "nonce", "signature_b64", "certificate_pem"),
-            sent.keySet(),
+            sent.keys().asSequence().toSet(),
         )
         assertEquals("n0nce", sent.getString("nonce"))
         assertEquals("c2lnbmF0dXJl", sent.getString("signature_b64"))

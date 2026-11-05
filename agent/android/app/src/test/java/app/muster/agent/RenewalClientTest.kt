@@ -253,7 +253,7 @@ class RenewalClientTest {
 
         assertEquals(
             setOf("nonce", "signature_b64", "certificate_pem", "csr_pem", "trigger"),
-            JSONObject(transport.bodies.last()).keySet(),
+            JSONObject(transport.bodies.last()).keys().asSequence().toSet(),
         )
     }
 }
