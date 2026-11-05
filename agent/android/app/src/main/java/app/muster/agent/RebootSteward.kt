@@ -4,7 +4,6 @@ import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.util.Log
 import java.io.File
-import org.json.JSONObject
 
 /**
  * Act on a reboot file that ConfigurationSteward wrote, after RebootPolicy said yes.
@@ -22,7 +21,8 @@ import org.json.JSONObject
  * and reads as if it proved the reboot is the exact shape this repository has
  * been burned by before.
  *
- * ORDER OF OPERATIONS, IDENTICAL TO WIPE'S ARGUMENT. The acknowledgement is
+ * ORDER OF OPERATIONS, IDENTICAL TO WIPE'S ARGUMENT, and owned by
+ * AcknowledgedAction (muster#219), where it is tested. The acknowledgement is
  * sent BEFORE `reboot()`, because that call is not guaranteed to return
  * control to this process. If the acknowledgement succeeds and the platform
  * call then fails, the device stays reboot-requested only in the sense that
@@ -83,24 +83,38 @@ class RebootSteward(private val context: Context) {
             return Outcome(plan = plan, kept = "no muster server configured on this device")
         }
 
-        val acknowledgement = acknowledge(baseUrl)
-        if (acknowledgement != null) {
-            return Outcome(plan = plan, kept = acknowledgement)
+        val flow = try {
+            AcknowledgedAction(
+                ProvenExchange(
+                    HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000),
+                    KeystoreIdentity(context),
+                ),
+                REBOOT_ACK_PATH,
+                AcknowledgedAction.REBOOT,
+            )
+        } catch (e: Exception) {
+            return Outcome(plan = plan, kept = "could not acknowledge the reboot: ${e.javaClass.simpleName}")
         }
 
-        // THE CALL ITSELF. Deliberately not abstracted behind an interface, for
-        // the same reason WipeSteward's wipeData() call is not: a fake reboot()
-        // proves only that the code reached a line.
-        return try {
-            dpm.reboot(MusterDeviceAdminReceiver.component(context))
-            Outcome(plan = plan, acknowledged = true, rebootRequested = true)
-        } catch (e: Exception) {
-            // IllegalStateException is the documented case (an ongoing call),
-            // and it is exactly the shape this catch exists for: the class
-            // name is the log's diagnostic, and the device stays running and
-            // reachable rather than half-acted-on.
-            Log.e(TAG, "reboot failed; the device remains running", e)
-            Outcome(plan = plan, acknowledged = true, kept = "reboot failed: ${e.javaClass.simpleName}")
+        // THE CALL ITSELF, passed in unfaked, for the same reason WipeSteward's
+        // wipeData() call is: AcknowledgedAction's test proves the order with
+        // a recorder, and a fake reboot() would prove only that the code
+        // reached a line.
+        return when (val acted = flow.run { dpm.reboot(MusterDeviceAdminReceiver.component(context)) }) {
+            AcknowledgedAction.Acted.Done ->
+                Outcome(plan = plan, acknowledged = true, rebootRequested = true)
+            is AcknowledgedAction.Acted.NotAcknowledged -> Outcome(plan = plan, kept = acted.reason)
+            is AcknowledgedAction.Acted.ActionFailed -> {
+                // IllegalStateException is the documented case (an ongoing
+                // call): the class name is the log's diagnostic, and the device
+                // stays running and reachable rather than half-acted-on.
+                Log.e(TAG, "reboot failed; the device remains running", acted.error)
+                Outcome(
+                    plan = plan,
+                    acknowledged = true,
+                    kept = "reboot failed: ${acted.error.javaClass.simpleName}",
+                )
+            }
         }
     }
 
@@ -109,41 +123,6 @@ class RebootSteward(private val context: Context) {
     } catch (e: Exception) {
         Log.w(TAG, "could not read ${file.name}; treating it as no reboot instruction", e)
         null
-    }
-
-    /**
-     * Tell muster this device received the reboot instruction and is acting on it.
-     *
-     * Returns null when the acknowledgement landed; otherwise a reason to keep
-     * the device running and not call reboot(). Same proof shape as
-     * WipeSteward.acknowledge: one authentication scheme, one channel.
-     */
-    private fun acknowledge(baseUrl: String): String? {
-        try {
-            val transport = HttpTransport(baseUrl, connectTimeoutMs = 5_000, readTimeoutMs = 8_000)
-            val challenge = transport.post(ConfigurationClient.CHALLENGE_PATH, "{}")
-            if (challenge.status != 201) {
-                return "muster refused the reboot challenge: ${challenge.status}"
-            }
-            val nonce = JSONObject(challenge.body).getString("nonce")
-            val identity = KeystoreIdentity(context)
-            val certificate = identity.certificatePem()
-                ?: return "no identity certificate; cannot acknowledge the reboot"
-            val body = JSONObject()
-                .put("nonce", nonce)
-                .put("signature_b64", identity.signBase64(nonce))
-                .put("certificate_pem", certificate)
-                .toString()
-            val reply = transport.post(REBOOT_ACK_PATH, body)
-            if (reply.status != 200) {
-                return "muster refused the reboot acknowledgement: ${reply.status}"
-            }
-            return null
-        } catch (e: Exception) {
-            // The class name is the log's diagnostic, not the message, same
-            // reasoning as WipeSteward.acknowledge.
-            return "could not acknowledge the reboot: ${e.javaClass.simpleName}"
-        }
     }
 
     companion object {

@@ -29,8 +29,9 @@ import org.json.JSONObject
  */
 class AssetClient(
     private val transport: Transport,
-    private val identity: ConfigurationClient.Identity,
+    identity: ConfigurationClient.Identity,
 ) {
+    private val exchange = ProvenExchange(transport, identity)
 
     /**
      * An answer that is not text.
@@ -95,33 +96,23 @@ class AssetClient(
      * @param expectedDigest lowercase hex sha256 the bytes must have
      */
     fun fetch(name: String, expectedDigest: String): Fetched {
-        val certificate = identity.certificatePem() ?: return Fetched.NotEnrolled
-
-        val nonce = when (val challenged = challenge()) {
-            is Challenged.Nonce -> challenged.value
-            is Challenged.Failed -> return challenged.why
+        val outcome = exchange.exchange(ASSET_PATH, JSONObject().put("name", name)) { path, body ->
+            val reply = transport.postForBytes(path, body)
+            ProvenExchange.Raw(reply.status, reply, reply.detail)
+        }
+        val reply = when (outcome) {
+            is ProvenExchange.Outcome.Answered -> outcome.body
+            ProvenExchange.Outcome.NotEnrolled -> return Fetched.NotEnrolled
+            ProvenExchange.Outcome.Unrecognized -> return Fetched.Unrecognized
+            // Fetched has no revoked outcome; a revoked device's asset fetch
+            // stays the refusal it has always been.
+            is ProvenExchange.Outcome.Revoked -> return Fetched.Refused(403, outcome.detail)
+            is ProvenExchange.Outcome.Unreachable -> return Fetched.Unreachable(outcome.detail)
+            is ProvenExchange.Outcome.Refused ->
+                return Fetched.Refused(outcome.status, outcome.detail)
+            is ProvenExchange.Outcome.CannotSign -> return Fetched.DeviceCannotAsk(outcome.detail)
         }
 
-        val signature = try {
-            identity.signBase64(nonce)
-        } catch (e: Exception) {
-            return Fetched.DeviceCannotAsk("could not sign muster's nonce: ${detail(e)}")
-        }
-
-        val body = JSONObject()
-            .put("nonce", nonce)
-            .put("signature_b64", signature)
-            .put("certificate_pem", certificate)
-            .put("name", name)
-            .toString()
-
-        val reply = try {
-            transport.postForBytes(ASSET_PATH, body)
-        } catch (e: Exception) {
-            return Fetched.Unreachable(detail(e))
-        }
-
-        if (reply.status == 401) return Fetched.Unrecognized
         if (reply.status != 200) {
             return Fetched.Refused(reply.status, reply.detail.take(REFUSAL_DETAIL_CHARS))
         }
@@ -136,43 +127,10 @@ class AssetClient(
         return Fetched.Asset(reply.bytes)
     }
 
-    private sealed interface Challenged {
-        data class Nonce(val value: String) : Challenged
-        data class Failed(val why: Fetched) : Challenged
-    }
-
-    private fun challenge(): Challenged {
-        val reply = try {
-            transport.post(CHALLENGE_PATH, "{}")
-        } catch (e: Exception) {
-            return Challenged.Failed(Fetched.Unreachable(detail(e)))
-        }
-        if (reply.status != 201) {
-            return Challenged.Failed(
-                Fetched.Refused(reply.status, reply.body.take(REFUSAL_DETAIL_CHARS))
-            )
-        }
-        return try {
-            Challenged.Nonce(JSONObject(reply.body).getString("nonce"))
-        } catch (e: Exception) {
-            Challenged.Failed(
-                Fetched.Refused(reply.status, "unreadable challenge: ${detail(e)}")
-            )
-        }
-    }
-
-    /**
-     * An exception as one word: its class name, and nothing else.
-     *
-     * The same rule as ConfigurationClient. A message can carry the URL it
-     * failed on, and a URL here is one a device signed a nonce for.
-     */
-    private fun detail(e: Exception): String = e.javaClass.simpleName
-
     companion object {
-        const val CHALLENGE_PATH = "/v1/auth/challenge"
+        const val CHALLENGE_PATH = ProvenExchange.CHALLENGE_PATH
         const val ASSET_PATH = "/v1/device/asset"
-        private const val REFUSAL_DETAIL_CHARS = 200
+        private const val REFUSAL_DETAIL_CHARS = ProvenExchange.REFUSAL_DETAIL_CHARS
 
         fun sha256(bytes: ByteArray): String =
             MessageDigest.getInstance("SHA-256").digest(bytes)
