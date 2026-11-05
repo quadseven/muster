@@ -33,7 +33,8 @@ class CheckInJob : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         // THE CATCH-UP RUN IS THIS SERVICE TOO, under its own job id. Both are
         // scheduled and neither is a tap; muster logs which (muster#22).
-        val trigger = if (params?.jobId == CheckInSchedulePolicy.CATCH_UP_JOB_ID) {
+        val isCatchUpRun = params?.jobId == CheckInSchedulePolicy.CATCH_UP_JOB_ID
+        val trigger = if (isCatchUpRun) {
             RenewalTrigger.CATCH_UP
         } else {
             RenewalTrigger.CHECK_IN
@@ -62,8 +63,12 @@ class CheckInJob : JobService() {
             // local steps must run on a device sitting on a dead router - so
             // without this a failed fetch waits the whole interval. For a bond
             // leg whose router just came back, that is seconds versus fifteen
-            // minutes.
-            if (run.needsCatchUp) scheduleCatchUp(this)
+            // minutes. A CATCH-UP THAT FAILED QUEUES NOTHING: re-queuing from
+            // here was a 30 s fleet-wide poll for as long as an outage lasted
+            // (muster#228).
+            if (CheckInSchedulePolicy.scheduleCatchUp(run.needsCatchUp, isCatchUpRun)) {
+                scheduleCatchUp(this)
+            }
             // `false`: never reschedule THIS run. The job is periodic, so the
             // next one is already coming; asking for a retry on top of that is
             // how one failing step becomes a device reconciling continuously.

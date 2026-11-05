@@ -32,12 +32,28 @@ class RenewalFlow(
         }
     }
 
-    fun advance(stance: IdentityLifecycle.Stance): Move = when (stance) {
-        is IdentityLifecycle.Stance.ShouldRenew -> renew()
-        IdentityLifecycle.Stance.Current,
-        is IdentityLifecycle.Stance.Lapsed,
-        is IdentityLifecycle.Stance.ClockBehind,
-        IdentityLifecycle.Stance.Unenrolled -> Move.NotDue
+    fun advance(stance: IdentityLifecycle.Stance): Move =
+        if (asks(stance)) renew() else Move.NotDue
+
+    companion object {
+        /**
+         * Does this stance send a renewal to muster? The one rule, shared with
+         * `RenewalSteward`, so the gate in front of the flow cannot disagree
+         * with the flow.
+         *
+         * LAPSED ASKS (muster#228, DECISIONS.md D32). Lapsed is this device's
+         * clock talking, and a clock far ahead says it of a current
+         * certificate. muster checks expiry on its own clock and refuses a
+         * truly expired one before signing anything, so asking costs one
+         * refused request and staying silent costs the device.
+         */
+        fun asks(stance: IdentityLifecycle.Stance): Boolean = when (stance) {
+            is IdentityLifecycle.Stance.ShouldRenew,
+            is IdentityLifecycle.Stance.Lapsed -> true
+            IdentityLifecycle.Stance.Current,
+            is IdentityLifecycle.Stance.ClockBehind,
+            IdentityLifecycle.Stance.Unenrolled -> false
+        }
     }
 
     private fun renew(): Move {

@@ -106,6 +106,34 @@ class CheckInSchedulePolicyTest {
     }
 
     @Test
+    fun aFailedPeriodicCheckInSchedulesOneCatchUp() {
+        assertTrue(
+            CheckInSchedulePolicy.scheduleCatchUp(needsCatchUp = true, isCatchUpRun = false)
+        )
+    }
+
+    @Test
+    fun aFailedCatchUpDoesNotScheduleAnother() {
+        // muster#228. The catch-up ran through the same onStartJob and queued a
+        // fresh one-shot on every failure, so a 503 or 401 outage had the whole
+        // fleet polling every 30 s. One catch-up per failed periodic run; after
+        // that the periodic interval carries the retry.
+        assertFalse(
+            CheckInSchedulePolicy.scheduleCatchUp(needsCatchUp = true, isCatchUpRun = true)
+        )
+    }
+
+    @Test
+    fun aHealthyRunSchedulesNoCatchUpWhicheverJobItWas() {
+        assertFalse(
+            CheckInSchedulePolicy.scheduleCatchUp(needsCatchUp = false, isCatchUpRun = false)
+        )
+        assertFalse(
+            CheckInSchedulePolicy.scheduleCatchUp(needsCatchUp = false, isCatchUpRun = true)
+        )
+    }
+
+    @Test
     fun theCatchUpIsADIFFERENTJobFromThePeriodicOne() {
         // Sharing an id would make scheduling the catch-up REPLACE the periodic
         // job - the device would recover once and then never reconcile again,

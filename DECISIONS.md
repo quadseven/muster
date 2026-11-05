@@ -23,7 +23,7 @@ describe are the code and comments in this tree.
 
 - [Why this exists at all](#why-this-exists-at-all) - D1
 - [The trust decision](#the-trust-decision) - D2 to D7 and D31
-- [Staying up](#staying-up) - D8 to D10
+- [Staying up](#staying-up) - D8 to D10 and D32
 - [Getting onto a handset](#getting-onto-a-handset) - D11 to D14
 - [Telling a device what to be](#telling-a-device-what-to-be) - D15 to D19
 - [Not destroying things](#not-destroying-things) - D20 to D22
@@ -1693,3 +1693,63 @@ ceremony, change a deployment, or re-enroll a device.
 Revoking the intermediate requires an offline-root procedure and is a separate
 operational decision. Do not assume the leaf revocation process revokes the
 intermediate.
+
+### D32. Retries are bounded by the side that can count them
+
+**2026-11-05.** Evidence: muster#228, `CheckInSchedulePolicy.scheduleCatchUp`,
+`RenewalFlow.asks`, `RENEWAL_SPACING` in `server/muster/api.py`,
+`Kith.latest_issued` in `server/muster/kith.py`, and `server/muster/proof.py`.
+
+**Context.** An audit of the check-in and renewal paths found four ways a
+failure became a loop. During a kith outage every device got 503 from
+`/v1/device/config` (the fail-closed answer D8 and AGENTS.md require), and the
+catch-up job re-queued itself every 30 seconds, so the fleet ran six requests
+per device every half minute until the outage ended. A device the server
+answered 401 to did that forever. A renewal whose answer never landed on the
+device was re-sent at every check-in and signed every time, because the
+too-early check reads the certificate the device presents, which was still the
+old one. A device clock far ahead read a current certificate as lapsed and
+never asked. And the open challenge route has no per-source cap.
+
+**Chosen.**
+
+- **One catch-up per failed periodic run.** A catch-up that fails queues
+  nothing; the periodic interval carries the next attempt. JobScheduler's
+  exponential backoff never applied here, because each catch-up was a new
+  `schedule()` rather than a retry of the same job, and the comment that said
+  it doubled was wrong. An outage now costs a device one extra check-in per
+  fifteen minutes, not thirty.
+- **The server spaces renewals per key.** A renewal is refused with 409,
+  counted as `device.renew.refused` with `reason:recently-issued`, while the
+  newest certificate muster recorded for the key is younger than one hour. The
+  count reads muster's own record, not the device's word, so it holds however
+  the device fails. An armed short renewal skips it: that is one administrator
+  action and one certificate. One hour sits well under the six-hour floor on an
+  armed lifetime, so the standard renewal after a short certificate is never
+  held past its expiry. A store that cannot answer is a 503, as everywhere
+  else. A device stuck in this loop now mints at most one certificate an hour
+  instead of one per check-in, and its record shows the loop.
+- **A device whose own clock says lapsed still asks, and muster decides.**
+  `Lapsed` is the device's clock talking. The server checks expiry against its
+  own clock and refuses an expired certificate inside `_proven_device`, before
+  anything is signed, so asking costs one refused request for a device that has
+  truly lapsed and recovers one whose clock is merely ahead. Staying silent
+  left that device with no way back except a re-enrollment that `present`
+  refuses because an identity file exists. A device whose clock stays far ahead
+  may read its new certificate as lapsed too and keep asking; the too-early
+  check and the spacing bound above both refuse that without signing.
+- **The challenge bound is the 120 second nonce sweep in process, and
+  per-source rate limiting at the edge.** `POST /v1/auth/challenge` sweeps
+  expired nonces on every call, so the table holds at most what was issued in
+  the last `NONCE_TTL_S` (120 s). Nothing in process caps that per source, on
+  purpose: behind the tunnel the peer the process sees is the tunnel, so a cap
+  keyed on it would cap the whole fleet. A per-source limit on that route belongs to
+  the edge in front of the deployment, which this repository does not
+  configure. A deployment exposed without one accepts that a single caller can
+  hold memory for 120 seconds at a time.
+
+**Rejected.** `jobFinished(params, true)` so the platform backoff applies: it
+reruns the same job immediately on top of the periodic one, the shape the
+existing comment in `CheckInJob` already warns against. Agent-side renewal
+backoff alone: it bounds a well-behaved agent and nothing else, and the server
+is the side that pays for each certificate.
