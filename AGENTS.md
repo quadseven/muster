@@ -224,7 +224,7 @@ Instead the device signs a server-issued nonce and presents the signature with i
 
 **2. There is one place a device is authenticated, and it stays one place.**
 
-`_proven_device` in `server/muster/api.py`. Its docstring says why: a second scheme invented for the second route would be a second chance to get it wrong, and the one that got it wrong would be the one nobody tested against a handset. A new route a device will reach calls it. Do not write a variant.
+`_proven_device` in `server/muster/device_channel.py`. Its docstring says why: a second scheme invented for the second route would be a second chance to get it wrong, and the one that got it wrong would be the one nobody tested against a handset. A new route a device will reach calls it. Do not write a variant. Register it in `device_channel.py` through `_post`, which makes it an `UncachedRoute` (no-store on the answer and on every refusal), and refuse a store or policy outage through `refusing`, which answers an uncached 503 with its telemetry.
 
 It returns `key_id`, not a certificate serial. A serial changes every ninety days; the key does not, so identity survives renewal.
 

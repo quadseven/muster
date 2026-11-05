@@ -748,9 +748,10 @@ what the key in the Android Keystore cannot be.
 
 **Diagnostics use the same channel.** After a check-in, the agent sends its
 bounded step report to `POST /v1/device/diagnostics` with the same three proof
-fields. `api._proven_device` authenticates it and returns the `key_id` used to
-file the report. The server removes credential-shaped values in one telemetry
-sanitizer before writing the report as a structured log for Datadog. The report
+fields. `device_channel._proven_device` authenticates it and returns the
+`key_id` used to file the report. The server removes credential-shaped values
+in one telemetry sanitizer before writing the report as a structured log for
+Datadog. The report
 is limited to 16 lines and 4 KiB, and each proven device may send once per
 minute. This is the check-in report, not raw logcat: raw logs can contain
 configuration values and are not uploaded.
@@ -785,9 +786,9 @@ existed. The *protocol* never assumed one, and it is worth saying so out loud
 before somebody adds an assumption to a path that is now shared.
 
 `POST /v1/auth/challenge` and `POST /v1/device/config` take and return plain
-JSON. `api._proven_device` is the one place a device is authenticated and it
-knows nothing about platforms - it verifies an ECDSA-P256 signature against a
-certificate this CA issued. The Android Keystore is where *that* agent keeps its
+JSON. `device_channel._proven_device` is the one place a device is
+authenticated and it knows nothing about platforms - it verifies an ECDSA-P256
+signature against a certificate this CA issued. The Android Keystore is where *that* agent keeps its
 key; it is not where the scheme lives.
 
 The three things a second client actually needs, none of which is a code change
