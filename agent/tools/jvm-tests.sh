@@ -23,10 +23,91 @@ SRC="$ROOT/agent/android/app/src/main/java/app/muster/agent"
 TST="$ROOT/agent/android/app/src/test/java/app/muster/agent"
 OUT="${TMPDIR:-/tmp}/muster-jvm-tests"
 
+# WHERE THE CACHE AND THE JDK COME FROM (muster#208). A Loom lane runs this with
+# HOME set to an empty directory, so neither may be found through $HOME alone.
+#   Gradle cache: the first of $GRADLE_USER_HOME/caches, $HOME/.gradle/caches
+#     and the account's passwd home/.gradle/caches that holds files-2.1.
+#   JDK: the first of $MUSTER_JDK, `java_home -F -v N` for N 21..17, Homebrew
+#     openjdk@21..17 and /usr/lib/jvm/*-21..17* whose `bin/java -version` runs.
+#     Running it is what rejects an x86_64 JDK on an arm64 Mac ("bad CPU type").
+# `--locate` prints both and exits, which is what the server tests drive.
+TRIED=()
+gradle_cache() {
+  local acct base
+  acct="$(id -un 2>/dev/null || true)"
+  local pw=""
+  if [ -n "$acct" ]; then
+    if command -v getent >/dev/null 2>&1; then
+      pw="$(getent passwd "$acct" | cut -d: -f6)"
+    elif command -v dscl >/dev/null 2>&1; then
+      pw="$(dscl . -read "/Users/$acct" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+    fi
+  fi
+  for base in ${GRADLE_USER_HOME:+"$GRADLE_USER_HOME"} ${HOME:+"$HOME/.gradle"} \
+              ${pw:+"$pw/.gradle"}; do
+    TRIED+=("$base/caches/modules-2/files-2.1")
+    if [ -d "$base/caches/modules-2/files-2.1" ]; then
+      echo "$base/caches/modules-2/files-2.1"
+      return 0
+    fi
+  done
+  return 1
+}
+runs() { [ -x "$1/bin/java" ] && "$1/bin/java" -version >/dev/null 2>&1; }
+find_jdk() {
+  local n jh
+  local cands=()
+  [ -n "${MUSTER_JDK:-}" ] && cands+=("$MUSTER_JDK")
+  if [ -x /usr/libexec/java_home ]; then
+    for n in 21 20 19 18 17; do
+      jh="$(/usr/libexec/java_home -F -v "$n" 2>/dev/null)" && cands+=("$jh")
+    done
+  fi
+  for n in 21 20 19 18 17; do
+    cands+=("/opt/homebrew/opt/openjdk@$n/libexec/openjdk.jdk/Contents/Home")
+  done
+  for n in 21 20 19 18 17; do
+    for jh in /usr/lib/jvm/*-"$n"*; do
+      [ -d "$jh" ] && cands+=("$jh")
+    done
+  done
+  local seen
+  for jh in "${cands[@]}"; do
+    for seen in ${TRIED[@]+"${TRIED[@]}"}; do
+      [ "$seen" = "$jh" ] && continue 2
+    done
+    TRIED+=("$jh")
+    if runs "$jh"; then echo "$jh"; return 0; fi
+    [ "$jh" = "${MUSTER_JDK:-}" ] && echo "MUSTER_JDK=$jh does not run; looking further" >&2
+  done
+  return 1
+}
+tried() { printf '  tried: %s\n' "${TRIED[@]}" >&2; }
+
 # Found rather than pinned: the cache path carries a content hash that changes
 # with every dependency bump, and a stale pin here fails as "file not found" on
 # a machine where the jar is present, which reads as a broken workstation.
-G="$HOME/.gradle/caches/modules-2/files-2.1"
+# Called directly, not through $(...), so TRIED survives for the message.
+gradle_cache >/dev/null || {
+  echo "no Gradle module cache (files-2.1) found - run agent/android/gradlew once" >&2
+  tried; exit 1; }
+G="${TRIED[${#TRIED[@]}-1]}"
+
+# Kotlin 2.x's bundled IntelliJ JavaVersion.parse throws on "26.0.2", so the
+# default JDK cannot run the compiler. Searched explicitly rather than left to
+# JAVA_HOME, because the failure is an IllegalArgumentException with a version
+# string and no other context.
+TRIED=()
+find_jdk >/dev/null || {
+  echo "need a JDK 17-21 for this CPU (set MUSTER_JDK)" >&2
+  tried; exit 1; }
+JH="${TRIED[${#TRIED[@]}-1]}"
+
+if [ "${1:-}" = "--locate" ]; then
+  echo "gradle cache: $G"
+  echo "jdk: $JH"
+  exit 0
+fi
 # `return`, NOT `exit`. An `exit` here would end the command substitution's
 # subshell outright, so a `|| fallback` written on the calling line would never
 # run and the variable would be assigned an empty string - a missing jar would
@@ -84,13 +165,6 @@ for a in "org.bouncycastle bcpkix-jdk18on" "org.bouncycastle bcprov-jdk18on" \
   found="$(need $a)" || exit 1
   BC="$BC:$found"
 done
-
-# Kotlin 2.x's bundled IntelliJ JavaVersion.parse throws on "26.0.2", so the
-# default JDK cannot run the compiler. Named explicitly rather than left to
-# JAVA_HOME, because the failure is an IllegalArgumentException with a version
-# string and no other context.
-JH="${MUSTER_JDK:-/Library/Java/JavaVirtualMachines/jdk-20.jdk/Contents/Home}"
-[ -x "$JH/bin/java" ] || { echo "need a JDK 17-21 at $JH (set MUSTER_JDK)" >&2; exit 1; }
 
 rm -rf "$OUT"; mkdir -p "$OUT"
 
