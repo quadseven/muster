@@ -36,6 +36,7 @@ from __future__ import annotations
 import html
 import pathlib
 import secrets
+import urllib.parse
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -57,9 +58,10 @@ SESSION_COOKIE = "muster_session"
 RENEWAL_COOKIE = "muster_renewal"
 
 # The sign-in in progress, which is how muster knows the browser that came back
-# is the browser that left. The flow store on the server is one dict for the
-# whole process: matching a returned `state` against it proves only that SOME
-# sign-in started here. An attacker can start one, take the state, and hand the
+# is the browser that left. It holds the sealed flow (state, PKCE verifier,
+# nonce) from administrator.SignIn.start, and the server keeps nothing per flow
+# (muster#227). Matching a returned `state` alone would prove only that SOME
+# sign-in started here: an attacker can start one, take the state, and hand the
 # operator a link to /auth/callback carrying an authorization code for their own
 # account - and the operator would be signed in as them without noticing.
 #
@@ -69,11 +71,14 @@ RENEWAL_COOKIE = "muster_renewal"
 # not having started in this browser.
 FLOW_COOKIE = "muster_flow"
 
-# NEITHER SESSION COOKIE CARRIES A Max-Age, so both die when the browser does.
-# The token inside the first one expires on its own `exp` claim within the hour
-# anyway; giving the second one a lifetime in days would be saying that a closed
-# browser is still signed in to the service that holds the CA. Renewal exists to
-# get an operator through a long afternoon, not through a weekend.
+# NEITHER SESSION COOKIE CARRIES A Max-Age, so a browser that does not restore
+# its session on relaunch drops both when it closes. One that does restore keeps
+# them, so this is not a sign-out (muster#227). The token inside the first one
+# expires on its own `exp` claim within the hour anyway; giving the second one a
+# lifetime in days would be saying that a closed browser is still signed in to
+# the service that holds the CA. Renewal exists to get an operator through a
+# long afternoon, not through a weekend. Sign-out is local by decision: see
+# docs/administrator-sign-in.md.
 
 
 @dataclass(frozen=True)
@@ -116,16 +121,56 @@ _WORTH_RETRYING = frozenset(
 )
 
 
+# Browsers say where a request came from. `none` is the operator typing the
+# URL or using a bookmark; `same-origin` is this console's own page.
+_SAME_ORIGIN_FETCH_SITES = frozenset({"same-origin", "none"})
+
+
+def _origin_of(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}".lower() if parts.scheme else ""
+
+
+def cross_origin_refusal(request: Request, base_url: str) -> str:
+    """Why a state-changing request is refused as cross-origin, or "" to allow.
+
+    THE CSRF CONTROL (muster#227), on top of SameSite=Lax. Lax is per SITE, not
+    per origin: any sibling host under the same registrable domain can POST
+    here with the operator's cookies attached, and the identity provider pool
+    is shared with other services. So a POST, PUT, PATCH or DELETE is refused
+    when the browser says it came from anywhere but this origin:
+    `Sec-Fetch-Site` other than same-origin or none, or, from a browser too old
+    to send that, an `Origin` that is not MUSTER_BASE_URL's. A request with
+    neither header is not a browser acting for someone - the device agent and
+    the command-line tools send neither and carry no cookies - so it passes.
+    """
+    if request.method not in _METHODS_THAT_CHANGE_SOMETHING:
+        return ""
+    fetch_site = request.headers.get("sec-fetch-site", "").lower()
+    if fetch_site:
+        if fetch_site in _SAME_ORIGIN_FETCH_SITES:
+            return ""
+        return f"sec-fetch-site:{fetch_site}"
+    origin = request.headers.get("origin", "").lower()
+    if not origin:
+        return ""
+    expected = _origin_of(base_url) if base_url else _origin_of(str(request.base_url))
+    if origin != expected:
+        return "origin-mismatch"
+    return ""
+
+
 def set_session_cookies(
     response: Response, tokens: admin_module.Tokens, *, secure: bool
 ) -> None:
-    """Attach the session. SameSite=Lax, which is also the CSRF control.
+    """Attach the session. SameSite=Lax, plus the origin check above.
 
-    Lax means the browser does not attach these cookies to a cross-site POST, so
-    a page on another origin cannot make the operator mint a code or vouch for a
-    device. That holds only while every state-changing route stays a POST - a
-    GET that changes something would be reachable cross-site with the cookie
-    attached, because Lax does send cookies on top-level GET navigation.
+    Lax means the browser does not attach these cookies to a cross-site POST.
+    It does attach them to a same-site one from a sibling host, which is what
+    `cross_origin_refusal` closes. Both hold only while every state-changing
+    route stays a POST - a GET that changes something would be reachable
+    cross-site with the cookie attached, because Lax does send cookies on
+    top-level GET navigation.
     """
     response.set_cookie(
         SESSION_COOKIE,
@@ -161,7 +206,11 @@ def clear_session_cookies(response: Response, *, secure: bool) -> None:
 
 
 class AdministratorMiddleware(BaseHTTPMiddleware):
-    """Work out who is acting, and stamp it on the request. Never refuses.
+    """Work out who is acting, and stamp it on the request.
+
+    Refuses one thing only: a state-changing request a browser says came from
+    another origin (`cross_origin_refusal`). Everything else is let through as
+    whoever it turns out to be.
 
     One way in: a session cookie, a person signed in at the estate's identity
     provider. A request with none is anonymous, which is the normal state of
@@ -173,6 +222,16 @@ class AdministratorMiddleware(BaseHTTPMiddleware):
         self.state = state
 
     async def dispatch(self, request: Request, call_next):
+        why = cross_origin_refusal(request, self.state.base_url)
+        if why:
+            self.state.telemetry.count(
+                "auth.cross_origin.refused",
+                tags=[f"reason:{why.split(':', 1)[0]}"],
+            )
+            return JSONResponse(
+                {"detail": "Refused: this request came from another origin."},
+                status_code=403,
+            )
         actor = ANONYMOUS
         renewed: admin_module.Tokens | None = None
         clear = False
@@ -431,7 +490,7 @@ def _register_sign_in_routes(app: FastAPI, state: "State") -> None:
         response = RedirectResponse(started.url, status_code=303)
         response.set_cookie(
             FLOW_COOKIE,
-            started.state,
+            started.flow,
             httponly=True,
             secure=state.cookie_secure,
             samesite="lax",
@@ -452,9 +511,13 @@ def _register_sign_in_routes(app: FastAPI, state: "State") -> None:
         """Where the provider sends the browser back to."""
         if state.sign_in is None:
             raise _not_configured()
-        if not flow or request.cookies.get(FLOW_COOKIE) != flow:
-            # Not the browser that started it. Refused before the code is
-            # exchanged, so a code somebody else obtained is never spent.
+        sealed = request.cookies.get(FLOW_COOKIE, "")
+        try:
+            state.sign_in.open_flow(sealed, flow)
+        except admin_module.Refused:
+            # Not the browser that started it, or it took too long. Refused
+            # before the code is exchanged, so a code somebody else obtained is
+            # never spent.
             return _refusal(
                 state,
                 admin_module.Outcome.NO_SUCH_FLOW,
@@ -466,7 +529,7 @@ def _register_sign_in_routes(app: FastAPI, state: "State") -> None:
             # sign-in, or a client that is not allowed this redirect URL.
             return _refusal(state, admin_module.Outcome.PROVIDER_REFUSED, error)
         try:
-            person, tokens = await state.sign_in.finish(code, flow)
+            person, tokens = await state.sign_in.finish(code, flow, sealed)
         except admin_module.Refused as refused:
             return _refusal(state, refused.outcome, str(refused))
 

@@ -83,9 +83,10 @@ def test_the_challenge_is_a_hash_of_something_that_never_leaves(provider):
     - intercepting the code would be enough.
     """
     sign_in = provider.sign_in()
-    query = query_of(sign_in.start().url)
+    started = sign_in.start()
+    query = query_of(started.url)
     code, state = provider.redeem(AUTHORIZE_URL + "?" + urllib.parse.urlencode(query))
-    run(sign_in.finish(code, state))
+    run(sign_in.finish(code, state, started.flow))
 
     verifier = provider.token_requests[0]["form"]["code_verifier"]
     digest = hashlib.sha256(verifier.encode()).digest()
@@ -104,33 +105,70 @@ def test_a_callback_that_did_not_start_here_is_refused(sign_in):
     authorization code signs them into somebody else's account, on the console
     that vouches for devices.
     """
+    started = sign_in.start()
     with pytest.raises(Refused) as refused:
-        run(sign_in.finish("a-code", "a-state-nobody-here-issued"))
+        run(sign_in.finish("a-code", "a-state-nobody-here-issued", started.flow))
     assert refused.value.outcome is Outcome.NO_SUCH_FLOW
+
+
+def test_a_flow_sealed_by_another_process_is_refused(provider):
+    """Only the process that started a sign-in can open its cookie."""
+    elsewhere = provider.sign_in().start()
+    with pytest.raises(Refused) as refused:
+        run(provider.sign_in().finish("a-code", elsewhere.state, elsewhere.flow))
+    assert refused.value.outcome is Outcome.NO_SUCH_FLOW
+
+
+def test_an_altered_or_missing_flow_cookie_is_refused(sign_in):
+    started = sign_in.start()
+    tail = "BBBB" if started.flow.endswith("AAAA") else "AAAA"
+    tampered = started.flow[:-4] + tail
+    for sealed in ("", "not-a-sealed-flow", tampered):
+        with pytest.raises(Refused) as refused:
+            run(sign_in.finish("a-code", started.state, sealed))
+        assert refused.value.outcome is Outcome.NO_SUCH_FLOW
+
+
+def test_the_flow_cookie_does_not_show_the_verifier(provider):
+    """Sealed, not just signed: the browser carrying it cannot read it."""
+    sign_in = provider.sign_in()
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
+    run(sign_in.finish(code, state, started.flow))
+    verifier = provider.token_requests[0]["form"]["code_verifier"]
+    assert verifier not in started.flow
+    assert verifier.encode() not in base64.urlsafe_b64decode(started.flow + "==")
 
 
 def test_a_sign_in_left_half_finished_expires(provider):
     clock = Clock()
     sign_in = provider.sign_in(clock=clock)
-    code, state = provider.redeem(sign_in.start().url)
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
 
     clock.advance(administrator.FLOW_TTL_S + 1)
-    sign_in.start()  # any later sign-in sweeps the expired one
 
     with pytest.raises(Refused) as refused:
-        run(sign_in.finish(code, state))
+        run(sign_in.finish(code, state, started.flow))
     assert refused.value.outcome is Outcome.NO_SUCH_FLOW
 
 
-def test_abandoned_sign_ins_cannot_grow_without_bound(sign_in):
-    """/auth/signin is reachable by anyone - it has to be, it is the way in.
+def test_strangers_starting_sign_ins_cannot_evict_the_operators(provider):
+    """muster#227: /auth/signin is open by necessity, so a stranger can loop it.
 
-    Without a cap, a stranger looping it grows a dict inside the process that
-    holds the CA until the pod is killed for memory.
+    With a capped server-side store, 32 such requests while the operator was at
+    the provider evicted the operator's sign-in. The flow now lives in the
+    operator's own cookie, so no number of other sign-ins touches it, and the
+    server holds nothing per flow that could grow.
     """
-    for _ in range(administrator.MAX_PENDING_FLOWS * 3):
+    sign_in = provider.sign_in()
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
+    for _ in range(100):
         sign_in.start()
-    assert len(sign_in._flows) <= administrator.MAX_PENDING_FLOWS
+    person, _ = run(sign_in.finish(code, state, started.flow))
+    assert person.subject == ADMIN_SUBJECT
+    assert not hasattr(sign_in, "_flows")
 
 
 # ---- finishing one --------------------------------------------------------
@@ -138,9 +176,10 @@ def test_abandoned_sign_ins_cannot_grow_without_bound(sign_in):
 
 def test_an_administrator_comes_back_with_a_session(provider):
     sign_in = provider.sign_in()
-    code, state = provider.redeem(sign_in.start().url)
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
 
-    person, tokens = run(sign_in.finish(code, state))
+    person, tokens = run(sign_in.finish(code, state, started.flow))
 
     assert person.subject == ADMIN_SUBJECT
     assert person.email == "administrator@example.test"
@@ -161,8 +200,9 @@ def test_a_confidential_client_authenticates_the_exchange(provider):
             client_secret="a-client-secret",  # noqa: S106
         )
     )
-    code, state = provider.redeem(sign_in.start().url)
-    run(sign_in.finish(code, state))
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
+    run(sign_in.finish(code, state, started.flow))
 
     # In the header, never in the form: a secret in a body is a secret in an
     # access log the moment anything decides to record request bodies.
@@ -173,11 +213,12 @@ def test_a_confidential_client_authenticates_the_exchange(provider):
 def test_a_token_minted_for_another_sign_in_is_refused(provider):
     """The nonce check, which is what makes a replayed code useless."""
     sign_in = provider.sign_in()
-    code, state = provider.redeem(sign_in.start().url)
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
     provider.nonce_to_return = "a-nonce-from-somebody-elses-sign-in"
 
     with pytest.raises(Refused) as refused:
-        run(sign_in.finish(code, state))
+        run(sign_in.finish(code, state, started.flow))
     assert refused.value.outcome is Outcome.WRONG_NONCE
 
 
@@ -189,10 +230,11 @@ def test_a_stranger_in_the_same_pool_is_not_an_administrator(provider):
     """
     provider.subject = STRANGER_SUBJECT
     sign_in = provider.sign_in()
-    code, state = provider.redeem(sign_in.start().url)
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
 
     with pytest.raises(Refused) as refused:
-        run(sign_in.finish(code, state))
+        run(sign_in.finish(code, state, started.flow))
     assert refused.value.outcome is Outcome.NOT_AN_ADMINISTRATOR
     # The subject is in the message so one refused sign-in tells the operator
     # exactly what to put in MUSTER_ADMIN_SUBJECTS.
@@ -206,10 +248,11 @@ def test_a_provider_that_refuses_the_exchange_keeps_its_body_to_itself(provider)
         "error_description": "code was for client secret sh-hhh",
     }
     sign_in = provider.sign_in()
-    code, state = provider.redeem(sign_in.start().url)
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
 
     with pytest.raises(Refused) as refused:
-        run(sign_in.finish(code, state))
+        run(sign_in.finish(code, state, started.flow))
     assert refused.value.outcome is Outcome.PROVIDER_REFUSED
     # The standard error code comes out; the description does not, because a
     # provider is free to echo the request into it.
@@ -222,10 +265,11 @@ def test_a_provider_that_cannot_be_reached_is_its_own_refusal(provider):
         raise httpx.ConnectError("no route to host")
 
     sign_in = provider.sign_in(transport=httpx.MockTransport(refuse))
-    code, state = provider.redeem(sign_in.start().url)
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
 
     with pytest.raises(Refused) as refused:
-        run(sign_in.finish(code, state))
+        run(sign_in.finish(code, state, started.flow))
     # Distinct from every other no, because it is the one the operator cannot
     # fix by signing in again.
     assert refused.value.outcome is Outcome.PROVIDER_UNREACHABLE
@@ -234,10 +278,11 @@ def test_a_provider_that_cannot_be_reached_is_its_own_refusal(provider):
 def test_a_grant_with_no_id_token_is_refused(provider):
     provider.token_body = {"access_token": "not-a-sign-in", "token_type": "Bearer"}
     sign_in = provider.sign_in()
-    code, state = provider.redeem(sign_in.start().url)
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
 
     with pytest.raises(Refused) as refused:
-        run(sign_in.finish(code, state))
+        run(sign_in.finish(code, state, started.flow))
     assert refused.value.outcome is Outcome.MALFORMED
 
 
@@ -458,10 +503,11 @@ def test_a_refusal_whose_body_is_not_an_object_is_still_a_refusal(provider):
     provider.token_status = 400
     provider.token_body = ["invalid_grant"]
     sign_in = provider.sign_in()
-    code, state = provider.redeem(sign_in.start().url)
+    started = sign_in.start()
+    code, state = provider.redeem(started.url)
 
     with pytest.raises(Refused) as refused:
-        run(sign_in.finish(code, state))
+        run(sign_in.finish(code, state, started.flow))
     assert refused.value.outcome is Outcome.PROVIDER_REFUSED
     assert "400" in str(refused.value)
 
