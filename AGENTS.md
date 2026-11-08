@@ -178,7 +178,11 @@ Read in this order. `CONTEXT.md` first, always: five nouns mean exactly one thin
 
     server/muster/    the control plane; enroll.py holds the trust decision
     server/tests/     pytest suite
-    server/tools/     operator scripts, such as bootstrap_ca.py
+    server/tools/     operator scripts: bootstrap_ca.py, accept_csr.py, the two
+                      checkers CI runs, add_tunnel_route.py (route one hostname on
+                      a shared Cloudflare tunnel; SSM names come from env) and
+                      find_adb_port.py (a phone's wireless-debugging port, run
+                      on a host on the phone's LAN)
     agent/android/    the Android agent (Kotlin, Gradle)
     agent/tools/      jvm-tests.sh, Kotlin unit tests with no Android SDK
     site/             static splash page, no build step

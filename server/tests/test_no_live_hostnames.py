@@ -117,7 +117,6 @@ LITERAL_ADDRESS = re.compile(
     r"^(?:"
     r"127\.[0-9.]+|0\.0\.0\.0|\[?::1\]?"
     r"|10\.[0-9.]+"
-    r"|192\.168\.[0-9.]+"
     r"|172\.(?:1[6-9]|2[0-9]|3[01])\.[0-9.]+"
     r"|192\.0\.2\.[0-9]+|198\.51\.100\.[0-9]+|203\.0\.113\.[0-9]+"
     r"|224\.0\.0\.[0-9]+"
@@ -133,9 +132,18 @@ TOKEN = re.compile(
 SKIP_SUFFIX = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".jar", ".keystore"}
 
 
+# A home LAN address (muster#225). Examples use RFC 5737 space or a labelled
+# 10.0.0.X, per AGENTS.md, so a 192.168/16 address in the tree is either real or
+# indistinguishable from real. Checked before the TLD rule, because a dotted
+# quad ends in a number and would otherwise read as "not hostname-shaped".
+HOME_LAN_ADDRESS = re.compile(r"^192\.168\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?$")
+
+
 def is_allowed(token: str) -> bool:
     """True if `token` is safe to name in a public repo."""
     host = token.lower().rstrip(".")
+    if HOME_LAN_ADDRESS.match(host):
+        return False
     labels = host.split(".")
     if len(labels) < 2:
         return True
@@ -202,6 +210,19 @@ def test_a_live_looking_host_is_refused(host: str) -> None:
 )
 def test_a_safe_token_is_permitted(token: str) -> None:
     assert is_allowed(token), f"{token} must be permitted"
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["192.168.1.11", "192.168.0.1"],  # leak-guard-allow: synthetic, the guard must refuse it
+)
+def test_a_home_lan_address_is_refused(address: str) -> None:
+    """muster#225: examples use 192.0.2.x, so a 192.168 address is not one."""
+    assert not is_allowed(address), f"{address} must be refused"
+
+
+def test_a_documentation_address_is_permitted() -> None:
+    assert is_allowed("192.0.2.11")
 
 
 def test_reserved_tld_is_anchored_to_a_label() -> None:

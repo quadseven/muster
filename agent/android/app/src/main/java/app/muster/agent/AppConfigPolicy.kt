@@ -147,7 +147,7 @@ object AppConfigPolicy {
      * Verb first, then the package, then the key, then the value:
      *
      *     # a LAN-local relay leg
-     *     set       app.zippie.companion homeHost       192.168.1.10
+     *     set       app.zippie.companion homeHost       192.0.2.10
      *     set-bool  app.zippie.companion autoStartRelay true
      *     grant     app.zippie.companion android.permission.POST_NOTIFICATIONS
      *

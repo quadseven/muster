@@ -10,7 +10,7 @@ and what the next person should not rediscover the hard way.
 
 Re-read 2026-09-01 22:45Z off `main` at 6c9ea94 (docs-only after a97d796) and the live pod, which since
 22:32Z runs image `sha-a97d79629acb` (= a97d796, muster#34; digest
-`c5b098cc...`). Deployment revision 43, deployed by hand under muster#24 with a
+`<digest>`). Deployment revision 43, deployed by hand under muster#24 with a
 timed rollback armed that stood down on its own. The buckets are this repo's
 standard: PROVEN means measured on the real target with the measurement
 quoted; a green suite never gets a thing past the second bucket.
@@ -19,11 +19,11 @@ quoted; a green suite never gets a thing past the second bucket.
       an administrator revokes one enrolled device and that device is
       refused on its next check-in
       -> 22:11:56Z the operator clicked Revoke on `travel-router` in the
-         live console. Pod log: `device revoked` for key 5d6780f4...,
+         live console. Pod log: `device revoked` for key <router-key>...,
          with the administrator action logged beside it.
-      -> 22:23:03Z the router's hourly refresh (`/etc/zippie/muster-refresh.sh`,
-         cron at :23) was refused on BOTH sides of the boundary. Pod log:
-         `{"key_id":"5d6780f4e55b...","message":"revoked device refused"}`.
+      -> 22:23:03Z the router's hourly refresh script
+         (cron at :23) was refused on BOTH sides of the boundary. Pod log:
+         `{"key_id":"<router-key>...","message":"revoked device refused"}`.
          Router log: `REFUSED: muster refuses this device ({"detail":"this
          device has been revoked"}). An administrator has revoked it.
          Nothing on this router has been changed - the cached datapath key`
@@ -44,9 +44,9 @@ quoted; a green suite never gets a thing past the second bucket.
          row `revoked_at` back to NULL.
       -> 22:41:40Z the router's check-in (the same hourly script, run by
          hand rather than waiting for the :23 cron) was served again. Router
-         log: `unchanged (revision 1bcfc463785c7035dcaf85f0a73f2ce9, current
-         4a7b33d01b5d)`, exit 0. Pod log: `device configuration served` for
-         key 5d6780f4.... Row: `revoked_at NULL`, `last_seen 22:41:40Z`.
+         log: `unchanged (revision <revision-a>, current
+         <revision-b>)`, exit 0. Pod log: `device configuration served` for
+         key <router-key>.... Row: `revoked_at NULL`, `last_seen 22:41:40Z`.
          Eighteen minutes earlier the same script and the same key were
          refused, so this is the round trip revoke -> refused -> readmit ->
          served, on one device, with nothing touched on the device.
@@ -58,7 +58,7 @@ quoted; a green suite never gets a thing past the second bucket.
       CRL at http://crl.<zone>/ and OCSP at http://ocsp.<zone>/     (#23, #33)
       -> no wipe has ever been issued against this control plane; all
          four live rows have wipe_pending_at NULL. The operator revoked the
-         stale Pixel `91d5feae...` at 22:27:56Z (pod log `device revoked`);
+         stale Pixel `<stale-pixel-key>...` at 22:27:56Z (pod log `device revoked`);
          it has not checked in since 2026-08-23, so that refusal is not
          measurable until it does, and Queue erase is disabled on a revoked
          row by design (the wipe instruction travels on the channel
@@ -82,7 +82,7 @@ quoted; a green suite never gets a thing past the second bucket.
          `versionCode=84`. They are not stranded; they are exactly where they
          were told to be. Bringing them to a newer build is publishing the APK
          into the asset store and editing that one line - not a
-         re-provisioning. (The stale Pixel `91d5feae` carries a device-scoped
+         re-provisioning. (The stale Pixel `<stale-pixel-key>` carries a device-scoped
          `install-apps` pinning it to 76.)
 
          The served `/agent.json` says `version_code 29804718`, and a
@@ -110,7 +110,7 @@ quoted; a green suite never gets a thing past the second bucket.
          #24 was still open for. openssl, over http, against the real
          hostnames, not a test client:
            . the CRL parses and carries EXACTLY the two unexpired
-             certificates of the one revoked device (91d5feae, revoked
+             certificates of the one revoked device (<stale-pixel-key>, revoked
              2026-09-01 22:27:56Z) and nothing else - compared as a set
              against `kith_certificate` joined to `kith_device`, not
              eyeballed by count. The three live devices' certificates are
@@ -145,7 +145,7 @@ quoted; a green suite never gets a thing past the second bucket.
 
     NOT BUILT
       forgetting a device. Three enrolled handsets share the name
-      `Pixel 6a` (#29); one of them (`91d5feae...`) last checked in
+      `Pixel 6a` (#29); one of them (`<stale-pixel-key>...`) last checked in
       2026-08-23 and holds a certificate valid to mid-November. Muster has
       no delete or forget: the only lever is Revoke, which keeps the row
       and refuses the key. That is the right lever for a lost handset and
