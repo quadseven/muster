@@ -46,12 +46,19 @@ ACCT  = ssm(os.environ["MUSTER_CF_ACCOUNT_PARAM"])
 TUN   = ssm(os.environ["MUSTER_CF_TUNNEL_PARAM"])
 BASE  = f"https://api.cloudflare.com/client/v4/accounts/{ACCT}/cfd_tunnel/{TUN}/configurations"
 
+API = "https://api.cloudflare.com/"
+
 def call(method, url, body=None):
+    # Only ever the Cloudflare API over https. The account and tunnel ids come
+    # from SSM, so refuse anything that would make urlopen reach another
+    # scheme or host.
+    if not url.startswith(API):
+        raise SystemExit(f"refusing to call a URL outside {API}")
     req = urllib.request.Request(url, method=method,
         data=json.dumps(body).encode() if body else None,
         headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req) as r:
+        with urllib.request.urlopen(req) as r:  # noqa: S310 - https Cloudflare API only, checked above
             return json.load(r)
     except urllib.error.HTTPError as error:
         # Status only. The body can echo request details, and a traceback
