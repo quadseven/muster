@@ -389,7 +389,7 @@ This is what turns an installed app into a contributing one: it pushes the
 credential a person would otherwise have to type into the phone, and grants the
 runtime permissions the app needs.
 
-    set       app.zippie.companion homeHost       192.168.1.11
+    set       app.zippie.companion homeHost       192.0.2.11
     set       app.zippie.companion announceToken  <the write token>
     set-bool  app.zippie.companion autoStartRelay true
     grant     app.zippie.companion android.permission.POST_NOTIFICATIONS

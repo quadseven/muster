@@ -12,34 +12,52 @@ catch-all (Cloudflare matches in order and the catch-all matches everything, so
 anything after it is unreachable), and then reads back and asserts that every
 rule which existed still does.
 
-    uv run --with boto3 python tools/add_tunnel_route.py <hostname> <service-url>
+    MUSTER_CF_TOKEN_PARAM=<ssm name> MUSTER_CF_ACCOUNT_PARAM=<ssm name> \
+    MUSTER_CF_TUNNEL_PARAM=<ssm name> \
+    uv run python tools/add_tunnel_route.py <hostname> <service-url>
 
-Needs SSM parameters /infra/cloudflare/api_token, /infra/cloudflare/account_id,
-and /infra/cloudflare/tunnel_id for this deployment's tunnel.
+The three variables name the SSM parameters (in your own account) that hold
+the Cloudflare API token, the account id and the tunnel id. The parameter
+names are configuration, not code: they are your deployment's, not this
+repo's (muster#225).
 """
-import json, subprocess, sys, urllib.request
+import json, os, subprocess, sys, urllib.error, urllib.request
+
+PARAMS = ("MUSTER_CF_TOKEN_PARAM", "MUSTER_CF_ACCOUNT_PARAM", "MUSTER_CF_TUNNEL_PARAM")
+
+# Arguments and configuration are checked BEFORE any secret is fetched, so a
+# typo never leaves a decrypted token in this process for nothing.
+if len(sys.argv) != 3:
+    print(f"usage: {sys.argv[0]} <hostname> <service-url>", file=sys.stderr)
+    raise SystemExit(2)
+missing = [name for name in PARAMS if not os.environ.get(name)]
+if missing:
+    print("set " + ", ".join(missing) + " to the SSM parameter names", file=sys.stderr)
+    raise SystemExit(2)
+HOSTNAME, SERVICE = sys.argv[1], sys.argv[2]
 
 def ssm(name, decrypt=False):
     cmd = ["aws","ssm","get-parameter","--name",name,"--query","Parameter.Value","--output","text"]
     if decrypt: cmd.insert(3,"--with-decryption")
     return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
 
-TOKEN = ssm("/infra/cloudflare/api_token", decrypt=True)
-ACCT  = ssm("/infra/cloudflare/account_id")
-TUN   = ssm("/infra/cloudflare/tunnel_id")
+TOKEN = ssm(os.environ["MUSTER_CF_TOKEN_PARAM"], decrypt=True)
+ACCT  = ssm(os.environ["MUSTER_CF_ACCOUNT_PARAM"])
+TUN   = ssm(os.environ["MUSTER_CF_TUNNEL_PARAM"])
 BASE  = f"https://api.cloudflare.com/client/v4/accounts/{ACCT}/cfd_tunnel/{TUN}/configurations"
-
-if len(sys.argv) != 3:
-    print(f"usage: {sys.argv[0]} <hostname> <service-url>", file=sys.stderr)
-    raise SystemExit(2)
-HOSTNAME, SERVICE = sys.argv[1], sys.argv[2]
 
 def call(method, url, body=None):
     req = urllib.request.Request(url, method=method,
         data=json.dumps(body).encode() if body else None,
         headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
-    with urllib.request.urlopen(req) as r:
-        return json.load(r)
+    try:
+        with urllib.request.urlopen(req) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as error:
+        # Status only. The body can echo request details, and a traceback
+        # would print it.
+        print(f"{method} failed: HTTP {error.code}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 current = call("GET", BASE)["result"]["config"]
 before = list(current.get("ingress", []))

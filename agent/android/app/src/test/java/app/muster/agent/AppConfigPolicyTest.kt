@@ -58,9 +58,9 @@ class AppConfigPolicyTest {
         val configured = app(
             """
             set app.zippie.companion announceToken   $token
-            set app.zippie.companion consoleLanHost  192.168.1.10:8080
+            set app.zippie.companion consoleLanHost  192.0.2.10:8080
             set app.zippie.companion consoleUrl      https://console.example
-            set app.zippie.companion homeHost        192.168.1.11
+            set app.zippie.companion homeHost        192.0.2.11
             set app.zippie.companion homePort        51999
             set app.zippie.companion listenPort      51998
             set app.zippie.companion ddClientToken   pub_deadbeef
@@ -110,10 +110,10 @@ class AppConfigPolicyTest {
             """
             # a LAN-local relay leg
 
-              set app.zippie.companion homeHost 192.168.1.11
+              set app.zippie.companion homeHost 192.0.2.11
             """.trimIndent()
         )
-        assertEquals(mapOf("homeHost" to "192.168.1.11"), configured.values)
+        assertEquals(mapOf("homeHost" to "192.0.2.11"), configured.values)
     }
 
     @Test
@@ -127,7 +127,7 @@ class AppConfigPolicyTest {
     fun eachAppAppearsOnceWithEverythingItWasGiven() {
         val desired = read(
             """
-            set app.zippie.companion homeHost 192.168.1.11
+            set app.zippie.companion homeHost 192.0.2.11
             grant app.zippie.companion android.permission.POST_NOTIFICATIONS
             set app.other.thing theme dark
             set app.zippie.companion homePort 51999
@@ -189,11 +189,11 @@ class AppConfigPolicyTest {
         // sure they changed the token.
         val desired = read(
             """
-            set app.zippie.companion homeHost 192.168.1.11
-            set app.zippie.companion homeHost 192.168.1.12
+            set app.zippie.companion homeHost 192.0.2.11
+            set app.zippie.companion homeHost 192.0.2.12
             """.trimIndent()
         )
-        assertEquals(mapOf("homeHost" to "192.168.1.11"), desired.apps.single().values)
+        assertEquals(mapOf("homeHost" to "192.0.2.11"), desired.apps.single().values)
         assertTrue(desired.refused.single().why.contains("already set"))
     }
 
@@ -286,8 +286,8 @@ class AppConfigPolicyTest {
         // That is the whole rule: position is provable or it is not.
         val named = read(
             """
-            set app.zippie.companion homeHost 192.168.1.11
-            set app.zippie.companion homeHost 192.168.1.12
+            set app.zippie.companion homeHost 192.0.2.11
+            set app.zippie.companion homeHost 192.0.2.12
             """.trimIndent()
         ).refused.single()
         assertEquals(
@@ -316,7 +316,7 @@ class AppConfigPolicyTest {
     fun anUnconfiguredAppIsGivenEverything() {
         val desired = read(
             """
-            set app.zippie.companion homeHost 192.168.1.11
+            set app.zippie.companion homeHost 192.0.2.11
             set-bool app.zippie.companion autoStartRelay true
             """.trimIndent()
         )
@@ -324,14 +324,14 @@ class AppConfigPolicyTest {
         val write = plan.writes.single()
         assertEquals("app.zippie.companion", write.packageName)
         assertEquals(listOf("homeHost", "autoStartRelay"), write.setKeys)
-        assertEquals(mapOf("homeHost" to "192.168.1.11", "autoStartRelay" to true), write.values)
+        assertEquals(mapOf("homeHost" to "192.0.2.11", "autoStartRelay" to true), write.values)
     }
 
     @Test
     fun reconcilingTwiceChangesNothingTheSecondTime() {
         val desired = read(
             """
-            set app.zippie.companion homeHost 192.168.1.11
+            set app.zippie.companion homeHost 192.0.2.11
             set-bool app.zippie.companion autoStartRelay true
             """.trimIndent()
         )
@@ -339,7 +339,7 @@ class AppConfigPolicyTest {
             desired,
             mapOf(
                 "app.zippie.companion" to mapOf(
-                    "homeHost" to "192.168.1.11",
+                    "homeHost" to "192.0.2.11",
                     "autoStartRelay" to true,
                 )
             ),
@@ -354,7 +354,7 @@ class AppConfigPolicyTest {
         // that carried only the changed key would silently drop the rest.
         val desired = read(
             """
-            set app.zippie.companion homeHost 192.168.1.12
+            set app.zippie.companion homeHost 192.0.2.12
             set app.zippie.companion homePort 51999
             """.trimIndent()
         )
@@ -362,7 +362,7 @@ class AppConfigPolicyTest {
             desired,
             mapOf(
                 "app.zippie.companion" to mapOf(
-                    "homeHost" to "192.168.1.11",
+                    "homeHost" to "192.0.2.11",
                     "homePort" to "51999",
                 )
             ),
@@ -371,7 +371,7 @@ class AppConfigPolicyTest {
         val write = plan.writes.single()
         assertEquals(listOf("homeHost"), write.setKeys)
         assertEquals(
-            mapOf("homeHost" to "192.168.1.12", "homePort" to "51999"),
+            mapOf("homeHost" to "192.0.2.12", "homePort" to "51999"),
             write.values,
         )
     }
@@ -382,12 +382,12 @@ class AppConfigPolicyTest {
         // the app then does about it is the app's business: under the
         // receiving contract an absent key means "keep what you have stored",
         // so muster stops pushing a value rather than blanking one.
-        val desired = read("set app.zippie.companion homeHost 192.168.1.11")
+        val desired = read("set app.zippie.companion homeHost 192.0.2.11")
         val plan = AppConfigPolicy.plan(
             desired,
             mapOf(
                 "app.zippie.companion" to mapOf(
-                    "homeHost" to "192.168.1.11",
+                    "homeHost" to "192.0.2.11",
                     "announceToken" to token,
                 )
             ),
@@ -395,7 +395,7 @@ class AppConfigPolicyTest {
         )
         val write = plan.writes.single()
         assertEquals(listOf("announceToken"), write.droppedKeys)
-        assertEquals(mapOf("homeHost" to "192.168.1.11"), write.values)
+        assertEquals(mapOf("homeHost" to "192.0.2.11"), write.values)
     }
 
     @Test
@@ -425,11 +425,11 @@ class AppConfigPolicyTest {
         // so an app kept in the file for a permission must keep its bundle too.
         // Anything else makes deleting one line more destructive than deleting
         // two.
-        val desired = read("set app.zippie.companion homeHost 192.168.1.11")
+        val desired = read("set app.zippie.companion homeHost 192.0.2.11")
         val plan = AppConfigPolicy.plan(
             desired,
             mapOf(
-                "app.zippie.companion" to mapOf("homeHost" to "192.168.1.11"),
+                "app.zippie.companion" to mapOf("homeHost" to "192.0.2.11"),
                 "app.other.thing" to mapOf("theme" to "dark"),
             ),
             emptySet(),
@@ -457,7 +457,7 @@ class AppConfigPolicyTest {
         // Every boot re-asserts rather than remembers having asserted. A
         // bundle the platform quietly dropped otherwise reads as applied
         // forever, which is how a phone stays absent from a bond for a week.
-        val desired = read("set app.zippie.companion homeHost 192.168.1.11")
+        val desired = read("set app.zippie.companion homeHost 192.0.2.11")
         val plan = AppConfigPolicy.plan(desired, mapOf("app.zippie.companion" to emptyMap()), emptySet())
         assertEquals(listOf("homeHost"), plan.writes.single().setKeys)
     }

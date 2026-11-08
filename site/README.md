@@ -1,7 +1,11 @@
 # site
 
-The muster splash page. One screen, no build step, no JavaScript, no
-dependencies: `index.html` is the whole page and its stylesheet.
+The muster splash page. One screen, no build step, no dependencies:
+`index.html` is the whole page and its stylesheet. Its only script is the
+Google Analytics tag (muster#64), which loads a Google script and
+carries the operator's measurement ID. A deployment of your own should replace
+that ID with yours or delete the tag (the two `<script>` elements under the
+`Google tag` comment); the page works the same without it.
 
 ## What ships
 

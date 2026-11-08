@@ -590,7 +590,7 @@ A second plain text file beside the first:
 Verb first, then the package, then the key, then the value:
 
     # a LAN-local relay leg
-    set       app.zippie.companion homeHost       192.168.1.11
+    set       app.zippie.companion homeHost       192.0.2.11
     set       app.zippie.companion announceToken  <the write token>
     set-bool  app.zippie.companion autoStartRelay true
     grant     app.zippie.companion android.permission.POST_NOTIFICATIONS
