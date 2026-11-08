@@ -54,7 +54,7 @@ def call(method, url, body=None):
     # scheme or host.
     if not url.startswith(API):
         raise SystemExit(f"refusing to call a URL outside {API}")
-    req = urllib.request.Request(url, method=method,
+    req = urllib.request.Request(url, method=method,  # noqa: S310 - checked above
         data=json.dumps(body).encode() if body else None,
         headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
     try:
