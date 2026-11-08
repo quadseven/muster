@@ -31,6 +31,7 @@ describe are the code and comments in this tree.
 - [Letting a device know it was revoked](#letting-a-device-know-it-was-revoked) - D27
 - [Answering for a certificate outside muster](#answering-for-a-certificate-outside-muster) - D28 and D35
 - [Erasing a device without losing the way to reach it](#erasing-a-device-without-losing-the-way-to-reach-it) - D29
+- [Running more than one replica](#running-more-than-one-replica) - D36
 
 ---
 
@@ -1833,3 +1834,51 @@ makes common.
 AuthorityKeyIdentifier or SubjectKeyIdentifier (muster#230 items 7 and 9). Both
 change every artifact a relying party sees and wait on a handset check or a
 recorded non-conformance.
+
+## Running more than one replica
+
+### D36. The ceremony state is shared, so any replica can serve any step
+
+**2026-11-08.** Evidence: `server/muster/enroll.py` (`CeremonyStore`,
+`CeremonyUnreachable`), `server/muster/kith.py` (the ceremony methods on
+`MemoryRecords` and `PostgresRecords`), `server/muster/sql/0001_kith.sql`
+(`ceremony_code`, `ceremony_pending`), muster#243.
+
+**Context.** Muster runs as one replica with a `Recreate` rollout, so its
+route is down whenever its node restarts. The kith was already shared state,
+but the short-lived half of the enrollment ceremony still lived in process
+memory: pairing codes and pending requests on `Enrollment`, and the
+certificate held between a vouch and the device collecting it. A device that
+presented to one pod was invisible to a console served by another, so a
+second replica would make vouches 404.
+
+**Chosen. Move the state, not the steps.** Codes and pending requests moved
+into the same store the kith uses (same database, same tables file, same
+memory implementation the tests run against), with the same rules. The
+certificate held for collection was already written to the kith at issuance;
+the pod-local copy beside it is now a cache in front of the store, and
+collection falls through to the store on any replica that does not hold it.
+
+Three properties came with the move, each with a test:
+
+- **Claim is one atomic store step.** Checking a code and spending it were
+  already one critical section in one process; with two replicas there is no
+  longer one process to hold a lock in, so the store does the check-and-spend
+  (a row lock in Postgres, one lock in memory). Two replicas presenting one
+  code get one Pending and one CODE_USED, not two certificates.
+- **An unreachable store is a 503, not a local answer.** Minting into one
+  replica's memory is a code the other has never seen, and the ceremony then
+  fails one request later with a worse lie than a 503. This is the kith's
+  "reads raise, never lie" rule (D8) read onto the ceremony.
+- **The sweeper deletes once.** One DELETE over the shared table, so two
+  instances sweeping at once count each dead code by the first pass only.
+
+**What that does not cover.** Proof challenges stay in process (D32): a
+challenge issued by one replica and verified by another is NO_SUCH_NONCE, a
+refused fetch that keeps the device's last configuration and comes back at
+its next check-in (D17) - odd, not broken, and worth sharing when replicas
+warm up. The `state.issued` cache keeps muster#34's outage behavior - a device
+whose certificate was signed on a pod can still collect it while the store is
+down, because the store copy may still be in the kith backlog. REPLICA COUNT
+and rollout strategy are the infrastructure manifest's decision, deliberately
+not changed here: shared state first, then the number.

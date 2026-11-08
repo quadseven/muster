@@ -165,6 +165,71 @@ def test_collecting_before_a_vouch_says_wait_rather_than_no(client):
     assert waiting.status_code == 202, "202 is retry; 404 would tell the device to stop"
 
 
+# ---- one ceremony, two replicas -------------------------------------------
+#
+# Muster runs one replica today, but every step must already work when the
+# steps land on different replicas: the kith is shared state, and the
+# short-lived half of the ceremony now lives in the same store (muster#243).
+# These tests hold two app instances over one shared store - two States, two
+# Enrollments, two Kiths, one MemoryRecords - and run one ceremony across
+# them: mint on A, present on B, vouch on A, collect on B.
+
+
+def _replica(clock, records, authority):
+    state = State(
+        enrollment=Enrollment(clock=clock, store=records),
+        authority=authority,
+        sign_in=_ADMIN_PROVIDER.sign_in(),
+        kith=kith_store.Kith(records),
+    )
+    return state, TestClient(create_app(state))
+
+
+def test_one_ceremony_runs_across_two_instances_on_one_store(clock):
+    """Mint on A, present on B, vouch on A, collect on B - and the certificate
+    is real: signed by the shared CA, for the key the device holds (muster#243).
+    """
+    records = kith_store.MemoryRecords()
+    authority = Authority.create(
+        "muster test CA",
+        clock=lambda: dt.datetime(2026, 8, 18, tzinfo=dt.timezone.utc),
+    )
+    _state_a, client_a = _replica(clock, records, authority)
+    _state_b, client_b = _replica(clock, records, authority)
+
+    code = client_a.post("/v1/enroll/codes", json={}, cookies=ADMIN).json()["code"]
+
+    csr_pem, key = _csr_pem(common_name="i-would-like-to-be-admin")
+    presented = client_b.post(
+        "/v1/enroll/requests",
+        json={"code": code, "csr_pem": csr_pem, "device_name": "pixel-6a-new"},
+    )
+    assert presented.status_code == 202
+    request_id = presented.json()["request_id"]
+    presented_fingerprint = presented.json()["fingerprint"]
+
+    # The console served by A sees the request B took.
+    listed = client_a.get("/v1/enroll/requests", cookies=ADMIN).json()["pending"]
+    assert [p["fingerprint"] for p in listed] == [presented_fingerprint]
+
+    vouched = client_a.post(
+        f"/v1/enroll/requests/{request_id}/vouch",
+        json={"fingerprint": presented_fingerprint},
+        cookies=ADMIN,
+    )
+    assert vouched.status_code == 200
+
+    # The certificate was signed on A and collected from B.
+    collected = client_b.get(f"/v1/enroll/requests/{request_id}/identity")
+    assert collected.status_code == 200
+    cert = x509.load_pem_x509_certificate(collected.json()["certificate_pem"].encode())
+    assert cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value == "pixel-6a-new"
+    assert cert.public_key().public_numbers() == key.public_key().public_numbers()
+
+    # And it is handed over once, across instances too.
+    assert client_b.get(f"/v1/enroll/requests/{request_id}/identity").status_code == 404
+
+
 # ---- what a stranger cannot do -------------------------------------------
 
 
@@ -496,13 +561,23 @@ def _enrolled(state, name="pixel", record=False):
 def _collect_identity(client, state, request_id=None):
     """The certificate a self-vouched device is issued, as the device sees it.
 
-    Goes through the polling endpoint the handset actually uses rather than
-    reaching into `state.issued`, so the test exercises the same path.
+    Goes through the polling endpoint the handset actually uses, so the test
+    exercises the same path. Without a request id, the one whose certificate
+    has not been collected yet is read out of the kith - which is also where
+    the device would find it, since the held certificate lives there now
+    (muster#243), not in any one pod's memory.
     """
     from muster.ca import Identity
 
     if request_id is None:
-        request_id = next(iter(state.issued))
+        for member in state.kith.roll():
+            for certificate in state.kith.history(member.device.key_id):
+                if certificate.collected_at is None:
+                    request_id = certificate.request_id
+                    break
+            if request_id is not None:
+                break
+        assert request_id is not None, "no uncollected certificate in the kith"
     body = client.get(f"/v1/enroll/requests/{request_id}/identity").json()
     return Identity(
         certificate_pem=body["certificate_pem"].encode(),
@@ -1582,7 +1657,9 @@ def _minted(state):
     """The one code the QR endpoint minted."""
     from muster.enroll import Shape  # noqa: PLC0415
 
-    scanned = [c for c in state.enrollment.codes.values() if c.shape is Shape.SCANNED]
+    scanned = [
+        c for c in state.enrollment.store.list_codes() if c.shape is Shape.SCANNED
+    ]
     assert len(scanned) == 1, f"expected one scanned code, got {len(scanned)}"
     return scanned[0]
 
@@ -1735,6 +1812,7 @@ def test_a_qr_meant_to_be_printed_can_be_minted_without_a_code(state, tmp_path):
     plain = client.get("/v1/provision/qr.svg?hands_free=false", cookies=ADMIN)
     assert plain.status_code == 200
     assert state.enrollment.codes == {}, "a printed QR must mint nothing"
+    assert state.enrollment.store.list_codes() == [], "a printed QR must mint nothing"
     assert "x-muster-pairing-expires-in" not in plain.headers
     assert plain.text == _qr_for(state, apk, "")
 
@@ -1750,6 +1828,7 @@ def test_a_qr_meant_to_be_printed_can_be_minted_without_a_code(state, tmp_path):
         "role": "",
     }
     assert state.enrollment.codes == {}
+    assert state.enrollment.store.list_codes() == []
 
 
 def test_the_plain_qr_says_how_long_it_has_left(state, tmp_path):
@@ -1787,7 +1866,7 @@ def test_the_qr_mints_a_code_that_cannot_be_guessed(state, tmp_path):
     assert len(code) >= 32
 
 
-def test_a_stale_qr_and_a_replayed_one_are_told_apart(state, tmp_path):
+def test_a_stale_qr_and_a_replayed_one_are_told_apart(state, clock, tmp_path):
     """Both refuse the device, and they call for opposite responses: stale means
     render another, replayed means a second device used a code that was on your
     monitor. Separable in telemetry, because averaged into one number neither
@@ -1806,10 +1885,17 @@ def test_a_stale_qr_and_a_replayed_one_are_told_apart(state, tmp_path):
         json={"code": replayed, "csr_pem": csr, "device_name": "pixel-6a"},
     )
 
-    state.enrollment.codes.clear()
+    # The second QR's code is aged past its window by the clock, rather than by
+    # editing its stored record: the store is shared, and a test must not need
+    # to reach into it to move time. The first code is spent by now, so the
+    # one unused code in the store is the second QR's.
     client.get("/v1/provision/qr.svg", cookies=ADMIN)
-    stale = _minted(state).code
-    state.enrollment.codes[stale].created_at -= DEFAULT_SCANNED_CODE_TTL_S + 1
+    unused = [
+        c for c in state.enrollment.store.list_codes() if not c.used
+    ]
+    assert len(unused) == 1
+    stale = unused[0].code
+    clock.advance(DEFAULT_SCANNED_CODE_TTL_S + 1)
     expired = client.post(
         "/v1/enroll/requests",
         json={"code": stale, "csr_pem": csr, "device_name": "pixel-6a"},

@@ -1134,7 +1134,7 @@ def _register_device_routes(app: FastAPI, state: State) -> None:
         )
 
         # HANDED BACK HERE, NOT LEFT TO BE COLLECTED. Enrollment issues into
-        # `state.issued` and makes the device poll, because there a human has to
+        # the kith and makes the device poll, because there a human has to
         # vouch in between. Here the proof already happened in this request, so a
         # collection step would only add a second round trip and a request id
         # that has to travel.

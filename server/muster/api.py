@@ -143,6 +143,11 @@ class State:
     # Where the agent APK sits on disk. Empty means none is published, and the
     # endpoints below say so plainly rather than 404ing like a typo.
     agent_apk: str = ""
+    # Certificates signed but not yet collected, BY REQUEST ID. A cache of the
+    # kith store, not the only copy (muster#243): the certificate is written
+    # to the store at issuance too, so any replica can hand it over, and this
+    # only spares the store read - which is what serves the poll during a
+    # store outage, when that read would 503.
     issued: dict = field(default_factory=dict)
     # The record of the kith. Defaults to an in-memory one for the same reason
     # telemetry defaults to a disabled emitter: every call site can then write
@@ -474,8 +479,15 @@ def app_from_env() -> FastAPI:
     # CrashLoopBackOffs when its store is unreachable has turned the store into
     # the thing that decides whether devices can renew, which is the one
     # property this design exists to avoid.
-    kith = kith_store.from_env(
-        clock=lambda: dt.datetime.now(dt.timezone.utc), emitter=emitter
+    #
+    # The enrollment ceremony shares the same store (muster#243): one records
+    # object, handed to both the kith and the pairing-code state machine, so
+    # a code minted by one replica is claimable on another.
+    records = kith_store.records_from_env()
+    kith = kith_store.Kith(
+        records,
+        clock=lambda: dt.datetime.now(dt.timezone.utc),
+        emitter=emitter,
     )
     telemetry.event(
         "kith store wired",
@@ -496,7 +508,7 @@ def app_from_env() -> FastAPI:
 
     return create_app(
         State(
-            enrollment=Enrollment(clock=clock),
+            enrollment=Enrollment(clock=clock, store=records),
             authority=authority,
             sign_in=sign_in,
             cookie_secure=os.environ.get("MUSTER_COOKIE_SECURE", "true").lower()

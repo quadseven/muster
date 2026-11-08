@@ -25,6 +25,7 @@ from muster.ca import Identity, Untrusted
 from muster.device_channel import _spki_der
 from muster.enroll import (
     DEFAULT_CODE_TTL_S,
+    CeremonyUnreachable,
     Outcome,
     Refused,
     Shape,
@@ -70,12 +71,36 @@ DEVICE_FACING = frozenset(
 
 @dataclass
 class Issued:
-    """A vouched device's identity, held until it collects."""
+    """A vouched device's identity, held until it collects.
+
+    A CACHE OF THE KITH STORE, not the only copy (muster#243): the signed
+    certificate is written to the shared store beside this, and collection
+    falls through to that copy on any instance that does not hold it here. It
+    exists so a store outage does not 503 a device whose certificate was
+    already signed on this pod (the acceptance criteria of muster#34 have a
+    test for exactly that).
+    """
 
     certificate_pem: bytes
     ca_pem: bytes
     not_after: str
     renew_after: str
+
+
+# THE CEREMONY STORE BEING UNREACHABLE IS A 503, NOT A LOCAL ANSWER. A
+# replica that cannot reach the shared store cannot know the codes, the queue
+# or the held certificates, and inventing local answers would hand a device a
+# refusal that is not true of the estate. 503 is the same answer the kith
+# reads already give (kith.Unreachable), and the device reads it as retryable
+# where a 404 ends the enrollment.
+_STORE_DOWN = (
+    "the enrollment store is unreachable; retry - do not start a new enrollment"
+)
+
+
+def _store_down(state: "State") -> HTTPException:
+    state.telemetry.count("enroll.store.unreachable")
+    return HTTPException(status_code=503, detail=_STORE_DOWN)
 
 
 # THERE IS NO PAIRING QR ANY MORE, and its absence is deliberate rather than an
@@ -126,6 +151,13 @@ def _issue(state: "State", request_id: str, pending) -> dict:
         state.telemetry.count("ca.issue.refused", tags=["reason:untrusted-csr"])
         raise HTTPException(status_code=422, detail=str(bad)) from bad
 
+    # CACHED HERE AND WRITTEN TO THE SHARED STORE (muster#243). The
+    # certificate sits in the kith with collected_at NULL until the device
+    # polls, so the pod that signed it need not be the pod that hands it
+    # over. The cache is only so a store outage does not 503 a device whose
+    # certificate was already signed on this pod: the kith write may be
+    # sitting in the backlog at that moment, and refusing would tell a device
+    # to come back for a certificate it already has a right to.
     state.issued[request_id] = Issued(
         certificate_pem=identity.certificate_pem,
         ca_pem=state.authority.certificate_pem,
@@ -186,7 +218,10 @@ def register(app: FastAPI, state: State, admin) -> None:
         type, which is the exact opposite of both paths. /v1/provision/qr.svg is
         where the other shape is minted, and it never returns it as text either.
         """
-        code = state.enrollment.mint(ttl_s=ttl_s, shape=Shape.TYPED)
+        try:
+            code = state.enrollment.mint(ttl_s=ttl_s, shape=Shape.TYPED)
+        except CeremonyUnreachable as unreachable:
+            raise _store_down(state) from unreachable
         telemetry.event("pairing code minted", ttl_s=ttl_s, shape=Shape.TYPED.value)
         state.telemetry.count(
             "enroll.code.minted", tags=[f"shape:{Shape.TYPED.value}"]
@@ -206,6 +241,10 @@ def register(app: FastAPI, state: State, admin) -> None:
         See enroll.py's module docstring for what holds a scanned request up
         instead.
         """
+        try:
+            pending = state.enrollment.list_pending()
+        except CeremonyUnreachable as unreachable:
+            raise _store_down(state) from unreachable
         return {
             "pending": [
                 {
@@ -215,7 +254,7 @@ def register(app: FastAPI, state: State, admin) -> None:
                     "presented_at": p.presented_at,
                     "shape": p.shape.value,
                 }
-                for p in state.enrollment.pending.values()
+                for p in pending
             ]
         }
 
@@ -230,6 +269,8 @@ def register(app: FastAPI, state: State, admin) -> None:
         """
         try:
             pending = state.enrollment.vouch(request_id, fingerprint)
+        except CeremonyUnreachable as unreachable:
+            raise _store_down(state) from unreachable
         except Refused as refused:
             # THE tag that matters. A fingerprint mismatch here is somebody
             # enrolling against the operator's code while they watch, and it
@@ -278,6 +319,8 @@ def register(app: FastAPI, state: State, admin) -> None:
                 public_der,
                 device_name,
             )
+        except CeremonyUnreachable as unreachable:
+            raise _store_down(state) from unreachable
         except Refused as refused:
             # No code, not even truncated - see telemetry's module docstring.
             #
@@ -358,9 +401,11 @@ def register(app: FastAPI, state: State, admin) -> None:
     def collect(request_id: str, response: Response):
         issued = state.issued.get(request_id)
         if issued is not None:
-            # Handed over once. A certificate left collectable forever is a
-            # credential sitting on an endpoint whose only protection is a
-            # request id that has, by this point, travelled.
+            # CACHE HIT, handed over once. The certificate was written to the
+            # shared store at issuance (muster#243), so this copy being gone
+            # would cost a store read, not the certificate. It survives to
+            # serve the same-pod poll during a store outage, when that read
+            # would 503.
             #
             # The store is marked collected on the same deferred path as every
             # other write, so a store outage plus a restart can leave a
@@ -379,16 +424,36 @@ def register(app: FastAPI, state: State, admin) -> None:
                 "renew_after": issued.renew_after,
             }
 
-        if request_id in state.enrollment.pending:
+        # THE ID IS CHECKED BEFORE THE STORE IS ASKED (muster#230). One minted
+        # by the server contains only this alphabet; anything else names no
+        # request, and asking the store anyway lets a NUL byte become a
+        # refused statement on an open route.
+        if not _REQUEST_ID.match(request_id):
+            raise HTTPException(status_code=404, detail="no such request")
+
+        try:
+            waiting = state.enrollment.is_pending(request_id)
+        except CeremonyUnreachable as unreachable:
+            raise _store_down(state) from unreachable
+        if waiting:
             response.status_code = 202
             return {"status": "waiting for an administrator to vouch"}
 
-        # Not in THIS pod's memory. It may have been signed by a pod that has
-        # since been replaced, which before the kith was written down meant the
-        # device lost a certificate that already existed and had to enroll again
-        # with a human present.
-        if not _REQUEST_ID.match(request_id):
-            raise HTTPException(status_code=404, detail="no such request")
+        # CACHE MISS: the held certificate is read from the kith store, where
+        # issuance wrote it. It may have been signed by another replica - this
+        # pod's cache never saw it - or by this one before a restart. Either
+        # way it is collectable here, which is what lets any replica serve any
+        # step of one ceremony.
+        #
+        # Handed over once: collecting marks it collected, so a second poll
+        # gets 404. The marking goes down the same deferred path as every
+        # other write, so a store outage plus a restart can leave a
+        # certificate collectable a second time. That is deliberately accepted
+        # rather than made transactional: a certificate is public and its
+        # private key never left the device, so a second collection hands over
+        # bytes and no capability. Making it exact would mean blocking the
+        # handover on a database write, which is the one thing this whole
+        # module refuses to do.
         try:
             held = state.kith.awaiting_collection(request_id)
         except kith_store.Unreachable as unreachable:

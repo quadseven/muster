@@ -979,6 +979,144 @@ def test_values_are_passed_as_parameters_and_never_interpolated():
     )
 
 
+# ---- the ceremony, in the same store (muster#243) -----------------------
+#
+# The same "the SQL, as far as it can be checked without a Postgres" idea:
+# these assert the statements, their parameters, and the row mapping, because
+# the ceremony is now where a cross-replica bug would hide.
+
+
+def _code_row(code="123456", used=False, attempts=0, created=1000.0, ttl=300.0):
+    return (code, created, ttl, used, attempts, "typed", "")
+
+
+def _pending_row(request_id="req-1"):
+    return (request_id, b"csr-der", b"pub-der", "pixel-6a", 1000.0, "typed", "kiosk")
+
+
+def test_a_minted_code_is_stored_as_a_parameter():
+    """A pairing code reaches SQL as a parameter, never interpolated: it
+    arrives from an open endpoint, and muster#230's NUL byte showed what an
+    unparameterized value in that position costs."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    stored = records.put_code(
+        kith_store.PairingCode(code="123456", created_at=1000.0, ttl_s=300.0)
+    )
+
+    insert = next(sql for sql, _ in connection.log if "INSERT INTO ceremony_code" in sql)
+    assert "ON CONFLICT (code) DO NOTHING" in insert
+    assert "123456" not in insert
+    assert any(params and "123456" in params for _, params in connection.log)
+    assert stored is True
+
+
+def test_claiming_a_code_locks_the_row_and_spends_it():
+    """FOR UPDATE is what makes one code one certificate across replicas: the
+    second presenter waits on the row and then sees `used`, rather than both
+    reading it fresh and being issued."""
+    connection = FakeConnection(rows=[_code_row()])
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    record, spent = records.claim_code("123456", 1100.0)
+
+    select = next(sql for sql, _ in connection.log if "FROM ceremony_code" in sql)
+    assert "FOR UPDATE" in select
+    assert any("UPDATE ceremony_code SET used = true" in sql for sql, _ in connection.log)
+    assert record.used is True
+    assert spent is True
+
+
+def test_claiming_a_spent_code_spends_nothing():
+    connection = FakeConnection(rows=[_code_row(used=True)])
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    _record, spent = records.claim_code("123456", 1100.0)
+
+    assert spent is False
+    assert not any(
+        "UPDATE ceremony_code SET used = true" in sql for sql, _ in connection.log
+    )
+
+
+def test_claiming_an_unknown_code_reads_nothing():
+    connection = FakeConnection(rows=[])
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    assert records.claim_code("000000", 1100.0) == (None, False)
+
+
+def test_charging_attempts_touches_only_unused_typed_codes():
+    """The budget is charged to every live TYPED code - that is what bounds a
+    guessing run when a wrong guess names no code - and to no scanned one,
+    whose 192 bits are not guessed and whose burn would kill a live
+    provisioning run over the open internet."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    records.charge_attempts()
+
+    update = next(sql for sql, _ in connection.log if "UPDATE ceremony_code" in sql)
+    assert "attempts = attempts + 1" in update
+    assert "NOT used" in update
+    assert "shape = 'typed'" in update
+
+
+def test_the_sweep_is_one_delete_with_the_window_as_parameters():
+    """One DELETE, so two instances sweeping the same store cannot both count
+    a code: the second deletes nothing. The window travels as parameters
+    because the clock is a float from the caller, not a literal."""
+    connection = FakeConnection()
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    deleted = records.sweep_codes(5000.0, 2400.0)
+
+    delete = next(sql for sql, _ in connection.log if "DELETE FROM ceremony_code" in sql)
+    assert "created_at + ttl_s + %s <= %s" in delete
+    params = next(params for sql, params in connection.log if "DELETE FROM ceremony_code" in sql)
+    assert params == (2400.0, 5000.0)
+    assert deleted == 1
+
+
+def test_taking_a_pending_request_is_one_delete_returning():
+    """Get-and-remove in one statement, so two administrators vouching for the
+    same request cannot both take it: the second DELETE returns nothing and
+    the voucher is refused NOT_PENDING."""
+    connection = FakeConnection(rows=[_pending_row()])
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    taken = records.take_pending("req-1")
+
+    delete = next(sql for sql, _ in connection.log if "DELETE FROM ceremony_pending" in sql)
+    assert "RETURNING" in delete
+    assert taken.request_id == "req-1"
+    assert taken.csr_der == b"csr-der"
+    assert taken.role == "kiosk"
+    assert taken.fingerprint == fingerprint(b"pub-der")
+
+
+def test_pending_rows_become_pending_requests():
+    connection = FakeConnection(rows=[_pending_row()])
+    records = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: connection
+    )
+    assert records.get_pending("req-1").device_name == "pixel-6a"
+    assert records.list_pending()[0].shape is kith_store.Shape.TYPED
+
+    empty = kith_store.PostgresRecords(
+        "postgresql://x", connect=lambda dsn, timeout: FakeConnection(rows=[])
+    )
+    assert empty.get_pending("nope") is None
+
+
 def test_a_stale_connection_is_retried_once_on_a_fresh_one():
     """The common case, because muster's one connection is almost always idle.
 
