@@ -153,6 +153,28 @@ def test_a_sign_in_left_half_finished_expires(provider):
     assert refused.value.outcome is Outcome.NO_SUCH_FLOW
 
 
+def test_abandoned_sign_ins_cannot_grow_without_bound(sign_in):
+    """/auth/signin is reachable by anyone - it has to be, it is the way in.
+
+    Nothing a stranger loops there may grow inside the process that holds the
+    CA. Since muster#227 the pending sign-in lives in the browser's sealed
+    cookie, so the guarantee is stronger than the old cap: no container on the
+    object grows at all.
+    """
+
+    def sizes():
+        return {
+            name: len(value)
+            for name, value in vars(sign_in).items()
+            if isinstance(value, (dict, list, set, tuple))
+        }
+
+    before = sizes()
+    for _ in range(500):
+        sign_in.start()
+    assert sizes() == before
+
+
 def test_strangers_starting_sign_ins_cannot_evict_the_operators(provider):
     """muster#227: /auth/signin is open by necessity, so a stranger can loop it.
 
