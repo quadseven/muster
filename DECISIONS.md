@@ -1687,10 +1687,14 @@ with the same subject name and refuse an intermediate with the wrong parent.
 
 **Re-enrollment cost.** The repository's last recorded inventory listed three
 enrolled devices on 2026-08-19. That is not a live active-device count on the
-2026-10-27 decision date. No contemporaneous database count is recorded here,
-so the live count remains unverified. Before cutover, the operator must read
-the active count from the live device store, record it, and re-enroll every
-active device: existing leaves chain to the previous issuer. This change
+2026-10-27 decision date. Measured live on 2026-11-08 (muster#91): the
+production pod's own log over the preceding 48 hours shows 3 distinct device
+keys proven and served configuration, so the cutover re-enrolls 3 active
+devices, the same number the August inventory listed. Read with read-only
+`kubectl logs`, counting distinct `key_id` values on `device proven` lines; no
+database credential was used. Before cutover, the operator re-reads that count
+and re-enrolls every active device: existing leaves chain to the previous
+issuer. This change
 records the decision and implementation; it does not perform the signing
 ceremony, change a deployment, or re-enroll a device.
 
