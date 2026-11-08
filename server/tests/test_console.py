@@ -149,8 +149,8 @@ def test_a_providers_error_is_shown_escaped_exactly_once(client, provider):
 def test_a_callback_in_a_browser_that_did_not_start_it_is_refused(client, provider):
     """Login CSRF, which the `state` parameter alone does not stop.
 
-    The flow store is one dict for the whole process, so a returned state proves
-    that SOME browser started a sign-in here. An attacker starts one, takes the
+    A returned state alone proves only that SOME browser started a sign-in
+    here. An attacker starts one, takes the
     state, and hands the operator a link carrying an authorization code for
     their own account - and the operator is signed in as somebody else without
     noticing, on the console that vouches for devices. The flow cookie is what
@@ -840,3 +840,68 @@ def test_the_console_shows_out_of_date_when_patch_level_trails_fleet_newest():
     assert "fleetNewestPatch" in html
     assert "out of date" in html.lower()
     assert "patch < newest" in html or "patch < newestPatch" in html
+
+
+# ---- cross-origin requests (muster#227) -----------------------------------
+
+
+def test_a_sibling_site_cannot_mint_a_code_with_the_operators_cookie(client, provider):
+    """SameSite=Lax is per site: a sibling host's POST still carries the cookie.
+
+    The browser labels that POST `Sec-Fetch-Site: same-site`. It, and a
+    cross-site one, are refused before anything runs.
+    """
+    sign_in_with(client, provider)
+    for site in ("same-site", "cross-site"):
+        refused = client.post(
+            "/v1/enroll/codes",
+            content=b"a=1",
+            headers={
+                "Sec-Fetch-Site": site,
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        assert refused.status_code == 403, site
+        assert "another origin" in refused.text
+
+
+def test_the_consoles_own_page_still_mints_a_code(client, provider):
+    sign_in_with(client, provider)
+    minted = client.post(
+        "/v1/enroll/codes",
+        json={},
+        headers={"Sec-Fetch-Site": "same-origin", "Origin": "https://muster.example.test"},
+    )
+    assert minted.status_code == 201, minted.text
+
+
+def test_an_older_browser_is_judged_by_its_origin(client, provider):
+    sign_in_with(client, provider)
+    refused = client.post(
+        "/v1/enroll/codes", json={}, headers={"Origin": "https://sibling.example.test"}
+    )
+    assert refused.status_code == 403
+    allowed = client.post(
+        "/v1/enroll/codes", json={}, headers={"Origin": "https://muster.example.test"}
+    )
+    assert allowed.status_code == 201, allowed.text
+
+
+def test_a_cross_site_form_cannot_sign_the_operator_out(client, provider):
+    sign_in_with(client, provider)
+    refused = client.post("/auth/signout", headers={"Sec-Fetch-Site": "cross-site"})
+    assert refused.status_code == 403
+    assert "set-cookie" not in refused.headers
+    assert client.get("/v1/enroll/requests").status_code == 200
+
+
+def test_a_request_with_no_browser_headers_is_not_judged(client, provider):
+    """The device agent and the CLI send neither header and carry no cookie."""
+    sign_in_with(client, provider)
+    assert client.post("/v1/enroll/codes", json={}).status_code == 201
+
+
+def test_reading_is_never_refused_for_its_origin(client, provider):
+    sign_in_with(client, provider)
+    read = client.get("/v1/enroll/requests", headers={"Sec-Fetch-Site": "cross-site"})
+    assert read.status_code == 200

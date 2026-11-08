@@ -157,25 +157,32 @@ machine that is not a sign-out.
 
 ## How it works, in the order it happens
 
-    GET  /auth/signin     muster records a flow, puts its `state` in a
-                          short-lived cookie, and sends the browser to the
-                          provider with `state`, `nonce` and a PKCE challenge
+    GET  /auth/signin     muster seals the flow (`state`, PKCE verifier and
+                          `nonce`) into a short-lived cookie, and sends the
+                          browser to the provider with `state`, `nonce` and a
+                          PKCE challenge. The server keeps nothing per flow.
     (the provider does the part with the password in it)
-    GET  /auth/callback   muster checks the returned `state` against BOTH the
-                          flow it started and that cookie, exchanges the code
-                          with the verifier that never left this process,
-                          verifies the token, checks the subject against the
-                          allowlist, and sets the session cookies
+    GET  /auth/callback   muster opens the cookie, checks the returned `state`
+                          against the one sealed in it, exchanges the code with
+                          the verifier from inside it, verifies the token,
+                          checks the subject against the allowlist, and sets
+                          the session cookies
     POST /auth/signout    clears the session cookies and says where to end the
                           session at the provider too
 
-**Both halves of that state check are needed.** The flow store is one dict for
-the whole process, so a returned `state` proves that *some* browser started a
-sign-in here - not that it was this one. An attacker who starts a sign-in, keeps
-the state and hands the operator a link to `/auth/callback` carrying an
+**The flow lives in the browser that started it (muster#227).** The cookie is
+sealed with Fernet (encrypted and authenticated) under a key made when the
+process starts and never written down, so only this process can open it, the
+browser carrying it cannot read the verifier, and an altered or expired cookie
+(older than ten minutes) is refused. A returned `state` alone would prove only
+that *some* browser started a sign-in here: an attacker who starts one, keeps the
+state and hands the operator a link to `/auth/callback` carrying an
 authorization code for their own account would otherwise sign the operator in as
-themselves, on the console that vouches for devices. The cookie is what makes
-the browser that comes back the browser that left.
+themselves. The sealed cookie is what makes the browser that comes back the
+browser that left. It also means a stranger looping `/auth/signin` can no longer
+evict the operator's sign-in: there used to be a 32-entry store with oldest-out
+eviction, and now there is no store. A restart drops sign-ins in flight, as it
+always did.
 
 That cookie is `SameSite=Lax` rather than `Strict` deliberately: the callback is
 a top-level GET navigation *from* the provider, which is cross-site, and Strict
@@ -183,19 +190,39 @@ withholds cookies on exactly that navigation. Every sign-in would fail with a
 message about not having started in this browser.
 
 The session cookies are `HttpOnly`, `Secure` and `SameSite=Lax`. HttpOnly is the
-point:
-a script on the page cannot read the session, which the old token in a variable
-could not claim. SameSite=Lax is also the CSRF control - a browser does not
-attach these to a cross-site POST, so a page on another origin cannot make an
-administrator vouch for a device. **That holds only while every state-changing
-route stays a POST.** A GET that changes something is reachable cross-site with
-the cookie attached.
+point: a script on the page cannot read the session, which the old token in a
+variable could not claim.
+
+**CSRF: SameSite=Lax plus an origin check.** Lax keeps the cookies off a
+cross-site POST, but it is per *site*, not per origin: a sibling host under the
+same registrable domain can still POST here with the cookies attached, and the
+provider pool is shared with other services. So every POST, PUT, PATCH and
+DELETE is refused with 403, before anything runs, when the browser says it came
+from elsewhere: a `Sec-Fetch-Site` other than `same-origin` or `none`, or, from a
+browser too old to send that header, an `Origin` that is not `MUSTER_BASE_URL`'s.
+That covers `/auth/signout` too, so a form on another page cannot sign the
+operator out mid-vouch. A request with neither header is not judged: the device
+agent and the command-line tools send neither, and carry no session cookie.
+Refusals are counted as `auth.cross_origin.refused`. **All of this holds only
+while every state-changing route stays a POST.** A GET that changes something is
+reachable cross-site with the cookie attached.
+
+**Sign-out is local, by decision (muster#227).** It clears both cookies in the
+browser that asks. It does not revoke the id token (it lapses at its own `exp`)
+or the refresh token at the provider, and muster keeps no denylist: a denylist
+held in one process is not shared by a second replica (muster#243), and
+revocation support differs by provider. A captured renewal cookie therefore
+keeps working until the provider expires it; `Secure` and `HttpOnly` are what
+keep it from being captured, which is why `MUSTER_COOKIE_SECURE=false` is for
+development only. Revisit with the shared store from muster#243.
 
 The session token expires in an hour or so; muster renews it in place with the
 second cookie rather than bouncing the operator to the provider in the middle of
-comparing a fingerprint. Neither cookie carries a lifetime of its own, so both
-die with the browser: renewal is there to get somebody through a long afternoon,
-not to say a closed browser is still signed in to the service holding the CA.
+comparing a fingerprint. Neither cookie carries a lifetime of its own, so a
+browser that does not restore its session on relaunch drops both when it
+closes. Browsers that restore sessions keep them, so this is not a sign-out:
+renewal is there to get somebody through a long afternoon, and sign-out is the
+way to end it.
 
 ## What sign-in must never touch
 

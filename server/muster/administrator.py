@@ -37,6 +37,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
+import json
 import os
 import secrets
 import time
@@ -46,6 +48,7 @@ from enum import Enum
 
 import httpx
 import jwt
+from cryptography.fernet import Fernet, InvalidToken
 from jwt.algorithms import RSAAlgorithm
 
 # Everything a session needs and nothing more. `openid` is what makes this an
@@ -59,10 +62,14 @@ SCOPES = "openid email"
 # slot somebody else can fill.
 FLOW_TTL_S = 600.0
 
-# The cap exists because /auth/signin is reachable without a session - it has to
-# be, it is the way in. Without a cap, a stranger looping it grows a dict on the
-# process that holds the CA until the pod is OOMKilled. Oldest out first.
-MAX_PENDING_FLOWS = 32
+# A HALF-FINISHED SIGN-IN LIVES IN THE BROWSER, NOT HERE (muster#227). It used
+# to be a dict on this process capped at 32 with oldest-out eviction, because
+# /auth/signin is open by necessity and an uncapped dict is a memory leak a
+# stranger can drive. The cap made lockout trivial instead: 32 anonymous
+# requests while the operator was at the provider evicted their sign-in. Now
+# the verifier and nonce are sealed (encrypted and authenticated) into the flow
+# cookie with a key that never leaves this process, so the server holds nothing
+# per flow and there is nothing to evict.
 
 # How far apart the provider's clock and this pod's may be before a fresh
 # token reads as issued in the future. Seconds, applied by pyjwt to `iat`,
@@ -248,28 +255,29 @@ class _NotOursToClose(httpx.AsyncBaseTransport):
         return None
 
 
-@dataclass
+@dataclass(frozen=True)
 class _Flow:
     """One sign-in that has been started and not yet come back."""
 
+    state: str
     verifier: str
     nonce: str
-    started_at: float
 
 
 @dataclass(frozen=True)
 class Started:
     """Where to send the browser, and the handle to expect back from it.
 
-    The state comes out separately because the caller has to put it somewhere
-    only THIS browser can return: the store below is one dict for the whole
-    process, so matching a returned state against it proves the sign-in started
-    here, not that it started in the browser that came back. See the flow cookie
-    in console.py.
+    `flow` is the sealed sign-in (state, PKCE verifier, nonce) that the caller
+    puts in a cookie only THIS browser can return. Opening it proves both that
+    the sign-in started here (only this process holds the key) and that it
+    started in the browser that came back (only that browser holds the cookie).
+    See the flow cookie in console.py.
     """
 
     url: str
     state: str
+    flow: str
 
 
 class SignIn:
@@ -301,7 +309,10 @@ class SignIn:
         # its context manager whether or not it owns it - so the second call
         # through an injected transport would raise "already closed".
         self._transport = _NotOursToClose(transport) if transport else None
-        self._flows: dict[str, _Flow] = {}
+        # The key that seals a half-finished sign-in into its cookie. Made per
+        # process: a restart drops sign-ins in flight, which the old in-memory
+        # store did too, and a key that is never written down cannot leak.
+        self._flow_seal = Fernet(Fernet.generate_key())
         self._keys: dict[str, dict] = {}
         # NEGATIVE INFINITY, NOT ZERO. "Never fetched" has to read as older than
         # the interval whatever the clock counts from. Zero works against a wall
@@ -335,16 +346,17 @@ class SignIn:
 
         PKCE (`code_challenge`) is sent whether or not the client has a secret.
         It costs one hash and it means an authorization code intercepted on the
-        way back is worthless without the verifier, which never leaves this
-        process.
+        way back is worthless without the verifier, which travels only inside
+        the sealed flow cookie: never in a URL, and unreadable by the browser
+        that carries it.
         """
-        self._expire_flows()
         state = secrets.token_urlsafe(24)
         verifier = secrets.token_urlsafe(48)
         nonce = secrets.token_urlsafe(24)
-        self._flows[state] = _Flow(
-            verifier=verifier, nonce=nonce, started_at=self.clock()
-        )
+        sealed = self._flow_seal.encrypt_at_time(
+            json.dumps({"state": state, "verifier": verifier, "nonce": nonce}).encode(),
+            int(self.clock()),
+        ).decode()
         challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
         query = urllib.parse.urlencode(
             {
@@ -360,38 +372,44 @@ class SignIn:
         )
         separator = "&" if "?" in self.provider.authorize_url else "?"
         return Started(
-            url=f"{self.provider.authorize_url}{separator}{query}", state=state
+            url=f"{self.provider.authorize_url}{separator}{query}",
+            state=state,
+            flow=sealed,
         )
 
-    def _expire_flows(self) -> None:
-        # `pop` with a default rather than `del`, and a copy to iterate. Sign-in
-        # runs in a sync route handler, which the framework puts on a worker
-        # thread, so two browsers starting at once are two threads in here - and
-        # a `del` for a key another thread just removed is a KeyError on the way
-        # in to the console.
-        now = self.clock()
-        for state, flow in list(self._flows.items()):
-            if now - flow.started_at > FLOW_TTL_S:
-                self._flows.pop(state, None)
-        while len(self._flows) >= MAX_PENDING_FLOWS:
-            # min() over a snapshot, not over the live dict. Iterating one
-            # dictionary while another thread pops from it is a RuntimeError,
-            # and the lookup inside the key function is a second chance to miss.
-            oldest = min(list(self._flows.items()), key=lambda pair: pair[1].started_at)
-            self._flows.pop(oldest[0], None)
+    def open_flow(self, sealed: str, state: str) -> _Flow:
+        """The sign-in this browser started, or NO_SUCH_FLOW.
+
+        Refused when the cookie is missing, was not sealed by this process, has
+        been altered, is older than FLOW_TTL_S, or belongs to a different
+        sign-in than the `state` the provider sent back. Same answer for all of
+        them: start again.
+        """
+        refused = Refused(
+            Outcome.NO_SUCH_FLOW,
+            "this sign-in did not start here, or it took too long",
+        )
+        if not sealed or not state:
+            raise refused
+        try:
+            opened = json.loads(
+                self._flow_seal.decrypt_at_time(
+                    sealed.encode(), int(FLOW_TTL_S), int(self.clock())
+                )
+            )
+        except (InvalidToken, ValueError) as error:
+            raise refused from error
+        if not hmac.compare_digest(str(opened.get("state", "")), state):
+            raise refused
+        return _Flow(state=state, verifier=opened["verifier"], nonce=opened["nonce"])
 
     # ---- finishing --------------------------------------------------------
 
-    async def finish(self, code: str, state: str) -> tuple[Administrator, Tokens]:
+    async def finish(
+        self, code: str, state: str, sealed: str
+    ) -> tuple[Administrator, Tokens]:
         """Trade the authorization code for a session, or say why not."""
-        flow = self._flows.pop(state, None)
-        if flow is None:
-            # Covers both an unknown state and one that expired while the
-            # operator was away. Same answer either way: start again.
-            raise Refused(
-                Outcome.NO_SUCH_FLOW,
-                "this sign-in did not start here, or it took too long",
-            )
+        flow = self.open_flow(sealed, state)
         payload = {
             "grant_type": "authorization_code",
             "code": code,
