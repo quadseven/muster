@@ -241,3 +241,48 @@ ALTER TABLE kith_report
     ADD COLUMN IF NOT EXISTS security_patch text,
     ADD COLUMN IF NOT EXISTS build_id text,
     ADD COLUMN IF NOT EXISTS pending_update jsonb;
+
+-- THE SHORT-LIVED HALF OF THE ENROLLMENT CEREMONY, IN THE SAME DATABASE
+-- (muster#243, "shared state first, then the number").
+--
+-- Until now pairing codes, pending requests and the certificate held for
+-- collection lived in process memory, which is why only one replica could
+-- serve one ceremony. These two tables are the same store the kith uses, so
+-- any replica can serve any step of one ceremony. They are in this file,
+-- created if absent and never altered destructively, for the reason the
+-- header above gives: creating them from the server cannot lose a row.
+--
+-- Times are epoch seconds as DOUBLE PRECISION rather than TIMESTAMPTZ: the
+-- enrollment clock is a float (time.time()), and the expiry rule compares
+-- against it directly. A timestamp column would carry the same value
+-- rounded through a timezone conversion; the float is the one comparison
+-- muster already makes.
+
+-- Which pairing codes exist, and what has happened to each. A code is
+-- single use: `used` is set by the first presentation that claims it, in
+-- the same transaction that checks it was claimable (#243: one check-and-
+-- spend that every replica shares, not one per process). `attempts` is the
+-- typed-code guessing budget; scanned codes are never charged it.
+CREATE TABLE IF NOT EXISTS ceremony_code (
+    code        text PRIMARY KEY,
+    created_at  double precision NOT NULL,
+    ttl_s       double precision NOT NULL,
+    used        boolean NOT NULL DEFAULT false,
+    attempts    integer NOT NULL DEFAULT 0,
+    shape       text NOT NULL,
+    role        text NOT NULL DEFAULT ''
+);
+
+-- A device that presented a typed code and is waiting for a vouch. The CSR
+-- and its public key are held here - never the private key, which never
+-- left the device (CONTEXT.md). A scanned presentation is never stored:
+-- minting its code was the vouch, so there is nothing pending to wait for.
+CREATE TABLE IF NOT EXISTS ceremony_pending (
+    request_id      text PRIMARY KEY,
+    csr_der         bytea NOT NULL,
+    public_key_der  bytea NOT NULL,
+    device_name     text NOT NULL,
+    presented_at    double precision NOT NULL,
+    shape           text NOT NULL,
+    role            text NOT NULL DEFAULT ''
+);

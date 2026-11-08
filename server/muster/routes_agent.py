@@ -17,7 +17,7 @@ from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 
 from muster import provisioning, telemetry
-from muster.enroll import DEFAULT_SCANNED_CODE_TTL_S, Shape
+from muster.enroll import DEFAULT_SCANNED_CODE_TTL_S, CeremonyUnreachable, Shape
 
 if TYPE_CHECKING:
     from muster.api import State
@@ -367,6 +367,13 @@ def register(app: FastAPI, state: State, admin) -> None:
             svg, described = _provision_qr(
                 state, _apk_path(), hands_free=hands_free, role=role
             )
+        except CeremonyUnreachable as unreachable:
+            state.telemetry.count("enroll.store.unreachable")
+            raise HTTPException(
+                status_code=503,
+                detail="the enrollment store is unreachable; retry - do not "
+                       "start a new enrollment",
+            ) from unreachable
         except ValueError as unusable:
             raise HTTPException(status_code=400, detail=str(unusable)) from unusable
         # NEVER CACHED, for the reason /agent.apk beside it is never cached -
@@ -439,6 +446,13 @@ def register(app: FastAPI, state: State, admin) -> None:
                 wifi_password=wifi_password,
                 wifi_security=wifi_security,
             )
+        except CeremonyUnreachable as unreachable:
+            state.telemetry.count("enroll.store.unreachable")
+            raise HTTPException(
+                status_code=503,
+                detail="the enrollment store is unreachable; retry - do not "
+                       "start a new enrollment",
+            ) from unreachable
         except ValueError as unusable:
             # See the .svg route: a typo in a role is the operator's, not a
             # server fault, and a 500 here would put a traceback in the CA's log.

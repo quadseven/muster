@@ -68,6 +68,7 @@ out-of-memory kill, which would take issuance down by the back door.
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import json
 import os
 import pathlib
@@ -77,6 +78,7 @@ from dataclasses import asdict, dataclass, replace
 from typing import Callable, Protocol
 
 from muster import standing, telemetry
+from muster.enroll import MAX_ATTEMPTS, PairingCode, Pending, Shape
 
 # How long to stop touching a store that just failed. Without this, every
 # request during an outage pays a full connect timeout - so "issuance does not
@@ -399,6 +401,14 @@ class MemoryRecords:
         self._revoked_before_wipe: dict[str, dt.datetime] = {}
         self._certificates: dict[str, list[Certificate]] = {}
         self._reports: dict[str, Report] = {}
+        # The ceremony state (muster#243): pairing codes and pending requests,
+        # in the same store the kith records live in, so two replicas sharing
+        # this object can serve one ceremony between them. Guarded by one lock
+        # because claiming a code is check-and-spend and must be atomic.
+        self._codes: dict[str, PairingCode] = {}
+        self._pending: dict[str, Pending] = {}
+        # RLock, not Lock: `claim_code` holds it across a `find_code` lookup.
+        self._ceremony_lock = threading.RLock()
 
     def describe(self) -> str:
         return "memory"
@@ -661,6 +671,96 @@ class MemoryRecords:
             if certificate.request_id == request_id and certificate.collected_at is None
         ]
         return max(matches, key=lambda c: c.issued_at, default=None)
+
+    # ---- the ceremony, in the same store ---------------------------------
+    #
+    # NOTHING HERE IS DEFERRED, unlike the kith writes above. A pairing code
+    # only one replica knows is a code that cannot be presented elsewhere, so
+    # minting, presenting and vouching go to the store first and fail if it
+    # cannot answer - the caller (muster/enroll.py) turns that into a refusal.
+    # Each method takes the lock: claim is check-and-spend, and two
+    # presentations overlapping in one replica already raced before two
+    # replicas shared the table.
+
+    def put_code(self, record: PairingCode) -> bool:
+        """Store a freshly minted code. False if one already exists under
+        that value, so the mint retries rather than overwriting a live code."""
+        with self._ceremony_lock:
+            if record.code in self._codes:
+                return False
+            self._codes[record.code] = record
+            return True
+
+    def find_code(self, code: str) -> PairingCode | None:
+        """The record for a code, or None. Compared with `compare_digest`
+        rather than `==`, as it always has been: equality used to leak how
+        much of a guessed code was right one character at a time."""
+        with self._ceremony_lock:
+            for candidate, held in self._codes.items():
+                if hmac.compare_digest(candidate, code):
+                    return held
+            return None
+
+    def claim_code(
+        self, code: str, now: float
+    ) -> tuple[PairingCode | None, bool]:
+        """Spend the code if it is claimable, atomically. Returns the record
+        and whether THIS call spent it; (None, False) if there is no such
+        code. A record that exists but is not claimable is returned unspent,
+        so the caller can say which refusal it is."""
+        with self._ceremony_lock:
+            held = self.find_code(code)
+            if held is None:
+                return None, False
+            if held.used or held.attempts >= MAX_ATTEMPTS or held.expired_at(now):
+                return held, False
+            held.used = True
+            return held, True
+
+    def charge_attempts(self) -> None:
+        """Charge every live unused typed code one wrong guess. Scanned codes
+        are exempt: 192 bits is not guessed, and charging one hands anyone
+        who can POST five wrong codes a way to kill a live provisioning run."""
+        with self._ceremony_lock:
+            for held in self._codes.values():
+                if not held.used and held.shape is Shape.TYPED:
+                    held.attempts += 1
+
+    def sweep_codes(self, now: float, retention_s: float) -> int:
+        """Delete codes past their window plus retention. Returns how many
+        went; with one store shared by several replicas only the first pass
+        finds them, so each dead code is counted once."""
+        with self._ceremony_lock:
+            dead = [
+                code
+                for code, held in self._codes.items()
+                if now - held.created_at >= held.ttl_s + retention_s
+            ]
+            for code in dead:
+                del self._codes[code]
+            return len(dead)
+
+    def list_codes(self) -> list[PairingCode]:
+        with self._ceremony_lock:
+            return list(self._codes.values())
+
+    def put_pending(self, entry: Pending) -> None:
+        with self._ceremony_lock:
+            self._pending[entry.request_id] = entry
+
+    def get_pending(self, request_id: str) -> Pending | None:
+        with self._ceremony_lock:
+            return self._pending.get(request_id)
+
+    def take_pending(self, request_id: str) -> Pending | None:
+        """Get and remove in one step. Two vouchers racing the same request
+        cannot both take it: the second gets None, not a second ceremony."""
+        with self._ceremony_lock:
+            return self._pending.pop(request_id, None)
+
+    def list_pending(self) -> list[Pending]:
+        with self._ceremony_lock:
+            return list(self._pending.values())
 
 
 def _close_quietly(connection) -> None:
@@ -1280,6 +1380,159 @@ class PostgresRecords:
         row = self._run(work)
         return _certificate_from_row(row) if row is not None else None
 
+    # ---- the ceremony, in the same store ---------------------------------
+    #
+    # Same contract as `MemoryRecords` above, so the two cannot disagree: the
+    # memory store never fails and this one does, but never both ways at once.
+
+    def put_code(self, record: PairingCode) -> bool:
+        def work(cursor):
+            cursor.execute(
+                "INSERT INTO ceremony_code"
+                " (code, created_at, ttl_s, used, attempts, shape, role)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT (code) DO NOTHING",
+                (
+                    record.code,
+                    record.created_at,
+                    record.ttl_s,
+                    record.used,
+                    record.attempts,
+                    record.shape.value,
+                    record.role,
+                ),
+            )
+            return cursor.rowcount
+
+        return bool(self._run(work))
+
+    def find_code(self, code: str) -> PairingCode | None:
+        def work(cursor):
+            cursor.execute(
+                "SELECT code, created_at, ttl_s, used, attempts, shape, role"
+                "  FROM ceremony_code WHERE code = %s",
+                (code,),
+            )
+            return cursor.fetchone()
+
+        row = self._run(work)
+        return _code_from_row(row) if row is not None else None
+
+    def claim_code(
+        self, code: str, now: float
+    ) -> tuple[PairingCode | None, bool]:
+        def work(cursor):
+            # FOR UPDATE, so two replicas presenting the same code at once
+            # serialize on the row: the second waits, then sees `used` and is
+            # refused CODE_USED rather than issued a second certificate.
+            cursor.execute(
+                "SELECT code, created_at, ttl_s, used, attempts, shape, role"
+                "  FROM ceremony_code WHERE code = %s FOR UPDATE",
+                (code,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None, False
+            held = _code_from_row(row)
+            if held.used or held.attempts >= MAX_ATTEMPTS or held.expired_at(now):
+                return held, False
+            cursor.execute(
+                "UPDATE ceremony_code SET used = true WHERE code = %s", (code,)
+            )
+            return replace(held, used=True), True
+
+        return self._run(work)
+
+    def charge_attempts(self) -> None:
+        def work(cursor):
+            cursor.execute(
+                "UPDATE ceremony_code SET attempts = attempts + 1"
+                " WHERE NOT used AND shape = 'typed'"
+            )
+
+        self._run(work)
+
+    def sweep_codes(self, now: float, retention_s: float) -> int:
+        def work(cursor):
+            # One DELETE over the whole table, so concurrent sweepers on
+            # several replicas cannot both count the same dead code: the
+            # second deletes nothing.
+            cursor.execute(
+                "DELETE FROM ceremony_code"
+                " WHERE created_at + ttl_s + %s <= %s",
+                (retention_s, now),
+            )
+            return cursor.rowcount
+
+        return self._run(work)
+
+    def list_codes(self) -> list[PairingCode]:
+        def work(cursor):
+            cursor.execute(
+                "SELECT code, created_at, ttl_s, used, attempts, shape, role"
+                "  FROM ceremony_code"
+            )
+            return cursor.fetchall()
+
+        return [_code_from_row(row) for row in self._run(work)]
+
+    def put_pending(self, entry: Pending) -> None:
+        def work(cursor):
+            cursor.execute(
+                "INSERT INTO ceremony_pending"
+                " (request_id, csr_der, public_key_der, device_name,"
+                "  presented_at, shape, role)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    entry.request_id,
+                    entry.csr_der,
+                    entry.public_key_der,
+                    entry.device_name,
+                    entry.presented_at,
+                    entry.shape.value,
+                    entry.role,
+                ),
+            )
+
+        self._run(work)
+
+    def get_pending(self, request_id: str) -> Pending | None:
+        def work(cursor):
+            cursor.execute(
+                "SELECT request_id, csr_der, public_key_der, device_name,"
+                "       presented_at, shape, role"
+                "  FROM ceremony_pending WHERE request_id = %s",
+                (request_id,),
+            )
+            return cursor.fetchone()
+
+        row = self._run(work)
+        return _pending_from_row(row) if row is not None else None
+
+    def take_pending(self, request_id: str) -> Pending | None:
+        def work(cursor):
+            cursor.execute(
+                "DELETE FROM ceremony_pending WHERE request_id = %s"
+                " RETURNING request_id, csr_der, public_key_der, device_name,"
+                "          presented_at, shape, role",
+                (request_id,),
+            )
+            return cursor.fetchone()
+
+        row = self._run(work)
+        return _pending_from_row(row) if row is not None else None
+
+    def list_pending(self) -> list[Pending]:
+        def work(cursor):
+            cursor.execute(
+                "SELECT request_id, csr_der, public_key_der, device_name,"
+                "       presented_at, shape, role"
+                "  FROM ceremony_pending ORDER BY presented_at"
+            )
+            return cursor.fetchall()
+
+        return [_pending_from_row(row) for row in self._run(work)]
+
 
 def _member_from_row(row) -> Member:
     return Member(
@@ -1323,6 +1576,32 @@ def _certificate_status_from_row(row) -> CertificateStatus:
     return CertificateStatus(
         certificate=_certificate_from_row(row),
         revoked_at=row[7],
+    )
+
+
+def _code_from_row(row) -> PairingCode:
+    return PairingCode(
+        code=row[0],
+        created_at=row[1],
+        ttl_s=row[2],
+        used=row[3],
+        attempts=row[4],
+        shape=Shape(row[5]),
+        role=row[6],
+    )
+
+
+def _pending_from_row(row) -> Pending:
+    # The fingerprint is derived in `Pending.__post_init__` from the public
+    # key, so it is never stored beside it and cannot drift from it.
+    return Pending(
+        request_id=row[0],
+        csr_der=row[1],
+        public_key_der=row[2],
+        device_name=row[3],
+        presented_at=row[4],
+        shape=Shape(row[5]),
+        role=row[6],
     )
 
 
@@ -1944,6 +2223,25 @@ class Kith:
                 self._drain()
 
 
+def records_from_env() -> Records:
+    """The store, wired from the environment. Kept apart from `from_env` so a
+    caller can hand the SAME store to everything that shares it - the kith
+    and the enrollment ceremony (muster#243) - rather than opening two
+    connections to one database and calling them shared.
+    """
+    dsn = os.environ.get("MUSTER_DATABASE_URL", "").strip()
+    records: Records = PostgresRecords(dsn) if dsn else MemoryRecords()
+    if not dsn:
+        telemetry.event(
+            "MUSTER_DATABASE_URL is not set: the kith is in memory only and will "
+            "not survive a restart. Devices already issued to keep working - "
+            "their certificate is their membership - but muster will not list "
+            "them after a restart until they next prove possession.",
+            kith_durable=False,
+        )
+    return records
+
+
 def from_env(
     *,
     clock: Callable[[], dt.datetime] | None = None,
@@ -1958,14 +2256,4 @@ def from_env(
     back to memory and says so, at boot, in the logs and on /readyz, because
     "configured but absent" is the failure this estate keeps rediscovering.
     """
-    dsn = os.environ.get("MUSTER_DATABASE_URL", "").strip()
-    records: Records = PostgresRecords(dsn) if dsn else MemoryRecords()
-    if not dsn:
-        telemetry.event(
-            "MUSTER_DATABASE_URL is not set: the kith is in memory only and will "
-            "not survive a restart. Devices already issued to keep working - "
-            "their certificate is their membership - but muster will not list "
-            "them after a restart until they next prove possession.",
-            kith_durable=False,
-        )
-    return Kith(records, clock=clock, emitter=emitter)
+    return Kith(records_from_env(), clock=clock, emitter=emitter)

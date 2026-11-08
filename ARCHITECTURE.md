@@ -632,8 +632,11 @@ agent *inside the built image*.
   platform-neutral by construction - a key, a request, a certificate - and the
   agent is where the platform lives.
 - **Hold a device's private key, ever.** See section 3.
-- **Run more than one replica.** The kith is shared state, but the short-lived
+- **Run more than one replica.** The kith is shared state, and the short-lived
   half of the ceremony - pairing codes, pending requests, and the certificate
-  held between a vouch and the device collecting it - is still in memory. Shared
-  state first, then the number, as two decisions rather than discovering both at
-  once.
+  held between a vouch and the device collecting it - now is too (muster#243,
+  D36): any replica can serve any step of one ceremony, and the sweeper counts
+  a dead code once across replicas. The `Recreate` rollout and the replica
+  count are the infrastructure manifest's decision, not this list's - shared
+  state first, then the number, as two decisions rather than discovering both
+  at once.

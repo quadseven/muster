@@ -57,6 +57,17 @@ comparison defended against cannot exist.
 `Shape.TYPED` IS UNTOUCHED AND KEEPS ITS VOUCH. Six digits is guessable by
 design, the human is standing at the device, and the fingerprint on its screen is
 a real second copy. Everything the paragraph above says is false for a typed code.
+
+WHERE THE STATE LIVES (muster#243). The codes, the pending requests and the
+certificate held for collection used to be dicts on the Enrollment object, so
+a ceremony was visibly bound to the process that started it: hand the request
+to another replica and it was invisible there. They now live in the same shared
+store as the kith (`CeremonyStore` below; both implementations are in
+muster/kith.py), so any replica can serve any step of one ceremony. The state
+machine itself is unchanged - it still has no HTTP and no clock of its own -
+it reads and writes through the store instead of its own dicts, and a store
+that cannot be reached is a refusal rather than a private answer: a code
+minted into one replica's memory is a code the other has never seen.
 """
 from __future__ import annotations
 
@@ -68,6 +79,7 @@ import secrets
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Protocol
 
 # Six digits, because a human reads it off a screen and types it on a phone.
 # The length is a usability choice and is ALLOWED to be weak - see the module
@@ -159,7 +171,7 @@ MAX_ATTEMPTS = 5
 
 log = logging.getLogger("muster.enroll")
 
-# How long a dead pairing code stays in `codes` past its window, so a replay is
+# How long a dead pairing code stays stored past its window, so a replay is
 # still answered CODE_USED (or CODE_EXPIRED for one that was never used) instead
 # of NO_SUCH_CODE.
 #
@@ -389,29 +401,129 @@ class Pending:
             self.fingerprint = fingerprint(self.public_key_der)
 
 
+class CeremonyUnreachable(Exception):
+    """The shared ceremony store could not be read or written.
+
+    NOT "there is nothing there". Mint, present and vouch ask the store, and
+    a store that cannot answer is refused rather than answered locally: a
+    pairing code minted into one replica's memory is invisible to the
+    replica that serves the presenting device, and the ceremony then fails
+    one request later with a worse lie than a 503.
+    """
+
+
+class CeremonyStore(Protocol):
+    """Where pairing codes and pending requests live (muster#243).
+
+    Two implementations, in muster/kith.py: memory (tests, and running
+    without a database) and Postgres (the estate's database, beside the kith
+    tables). Every replica talks to the SAME store, so a step can be served
+    by any of them.
+
+    Methods that must be atomic are one call, not a read followed by a write:
+    claiming a code checks and spends it together, and taking a pending
+    request removes it, so two replicas presenting one code or two
+    administrators vouching for one request cannot both succeed.
+    """
+
+    def put_code(self, record: PairingCode) -> bool:
+        """Store a minted code. False if one is already stored under that
+        value, so the mint retries rather than overwriting a live code."""
+        ...
+
+    def find_code(self, code: str) -> PairingCode | None:
+        """The stored record for a code, or None if there is none."""
+        ...
+
+    def claim_code(self, code: str, now: float) -> tuple[PairingCode | None, bool]:
+        """Spend the code if it is claimable (unused, budget left, unexpired),
+        atomically. Returns the record and whether THIS call spent it.
+        (None, False) if there is no such code; a record that exists but is
+        not claimable comes back unspent so the caller can name the refusal."""
+        ...
+
+    def charge_attempts(self) -> None:
+        """Charge one wrong guess to every live unused typed code."""
+        ...
+
+    def sweep_codes(self, now: float, retention_s: float) -> int:
+        """Delete codes past their window plus retention; how many went."""
+        ...
+
+    def list_codes(self) -> list[PairingCode]:
+        """Every code currently stored."""
+        ...
+
+    def put_pending(self, entry: Pending) -> None:
+        """Store a request that is waiting for a vouch."""
+        ...
+
+    def get_pending(self, request_id: str) -> Pending | None:
+        """The request waiting under an id, or None. Does not remove it."""
+        ...
+
+    def take_pending(self, request_id: str) -> Pending | None:
+        """Remove and return the request under an id, in one step."""
+        ...
+
+    def list_pending(self) -> list[Pending]:
+        """Every request waiting for a vouch."""
+        ...
+
+
+def _default_store() -> CeremonyStore:
+    """One in-process store, for tests and for running without a database.
+
+    Imported here rather than at module scope because muster/kith.py imports
+    this module for its record types: the two must not import each other at
+    module level, and by the time an Enrollment is built both modules are
+    loaded anyway.
+    """
+    from muster.kith import MemoryRecords  # noqa: PLC0415
+
+    return MemoryRecords()
+
+
 @dataclass
 class Enrollment:
-    """The state machine. No HTTP, no disk, no clock of its own.
+    """The state machine. No HTTP, no clock of its own.
 
     `clock` is injected because every rule here is about time and a test that
     cannot move time can only assert the happy path.
+
+    `store` is where codes and pending requests live (muster#243). They used
+    to be dicts on this object, which is why a ceremony belonged to the
+    process that started it. In production the store is the same database
+    the kith writes to, so any replica can serve any step; the default is
+    one in-memory store, for tests.
     """
 
     clock: object
-    codes: dict = field(default_factory=dict)
-    pending: dict = field(default_factory=dict)
+    store: CeremonyStore = field(default_factory=_default_store)
     # The sweeper thread, if the app lifespan started one. Kept off the
     # dataclass's public surface: it is lifecycle, not state.
     _sweeper: threading.Thread | None = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
-    # Guards `codes`. The sweeper thread deletes from it while request threads
-    # mint, look up and charge attempts against it; an unguarded delete landing
-    # mid-iteration tears the dict (RuntimeError). The lock is never held across
-    # a call into another method, so it cannot deadlock with itself.
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def _now(self) -> float:
         return self.clock()  # type: ignore[operator]
+
+    def _call(self, fn, *args):
+        """A store call, with a store failure turned into a refusal.
+
+        The store's own errors name drivers and hosts that must not reach an
+        HTTP response; they become `CeremonyUnreachable`, which the routes
+        answer with a 503 and the honest instruction to retry.
+        """
+        try:
+            return fn(*args)
+        except (CeremonyUnreachable, Refused):
+            raise
+        except Exception as exc:
+            raise CeremonyUnreachable(
+                "the ceremony store is unreachable; retry - do not start a "
+                "new enrollment"
+            ) from exc
 
     # ---- mint ------------------------------------------------------------
 
@@ -449,12 +561,18 @@ class Enrollment:
                 if shape is Shape.SCANNED
                 else DEFAULT_CODE_TTL_S
             )
-        code = _mint_code(shape)
-        with self._lock:
-            self.codes[code] = PairingCode(
+        # RETRIED ON COLLISION rather than overwritten: six digits has a
+        # million values and the store refuses to overwrite a live code, so a
+        # minted value that already exists is reminted instead of clobbering
+        # the record a device may be presenting against right now.
+        for _ in range(10):
+            code = _mint_code(shape)
+            record = PairingCode(
                 code=code, created_at=self._now(), ttl_s=ttl_s, shape=shape, role=role
             )
-        return code
+            if self._call(self.store.put_code, record):
+                return code
+        raise RuntimeError("could not mint a pairing code that does not exist")
 
     # ---- present ---------------------------------------------------------
 
@@ -472,11 +590,12 @@ class Enrollment:
         A SCANNED code was minted by an authenticated administrator asking for
         one device to be enrolled, so presenting it is the last step rather than
         the first: the returned Pending is `self_vouched` and the CALLER issues
-        against it immediately. Such a request is deliberately NOT put in
-        `self.pending` - there is nothing pending about it, and leaving it there
-        would put a row in the console asking an administrator to approve
-        something already approved. That row is exactly what a QR-provisioned
-        phone produced before this, and clicking it enrolled a second device.
+        against it immediately. Such a request is deliberately NOT stored as a
+        pending request - there is nothing pending about it, and leaving it
+        stored would put a row in the console asking an administrator to
+        approve something already approved. That row is exactly what a
+        QR-provisioned phone produced before this, and clicking it enrolled a
+        second device.
         """
         record = self._claim(code)
 
@@ -491,62 +610,49 @@ class Enrollment:
             role=record.role,
         )
         if not entry.self_vouched:
-            self.pending[request_id] = entry
+            self._call(self.store.put_pending, entry)
         return entry
 
     def _claim(self, code: str) -> PairingCode:
         """Spend a code, or raise one of the four refusals, in the order they can be told apart.
 
-        CHECKED AND SPENT UNDER ONE LOCK. This used to look the code up under
-        the lock, release it, read `used` off the record, and let `present`
-        set `used = True` afterwards. Two presentations of the same code that
-        overlapped in that gap each saw it unspent and each got a Pending -
-        and on the scanned path a Pending is a certificate, issued with nobody
-        asked. "Spent by the first device to use it" (CONTEXT.md) is the
-        whole of what stands between a photographed QR and a second device,
-        so the check and the spend are one critical section, and a code is
-        marked used before anything else can read it.
-
-        Compared with `hmac.compare_digest` rather than `==`. The timing signal
-        on a six-digit code is not the weak point here, but a lookup that leaks
-        how much of a code was right is the kind of thing that becomes the weak
-        point later when someone lengthens the code and assumes it got stronger.
+        CHECKED AND SPENT IN ONE ATOMIC STORE STEP. This used to look the code
+        up under a lock, release it, read `used` off the record, and let
+        `present` set `used = True` afterwards. Two presentations of the same
+        code that overlapped in that gap each saw it unspent and each got a
+        Pending - and on the scanned path a Pending is a certificate, issued
+        with nobody asked. "Spent by the first device to use it" (CONTEXT.md)
+        is the whole of what stands between a photographed QR and a second
+        device, and with two replicas there is no longer even one process to
+        hold a lock in - so the check and the spend are one store step
+        (`CeremonyStore.claim_code`), and a code is marked used before
+        anything else can read it.
 
         NON-ASCII IS A WRONG GUESS, not a crash. `hmac.compare_digest` raises
-        TypeError on strings it cannot compare byte-for-byte, and `code` arrives
-        here straight off an UNAUTHENTICATED endpoint - so without this line a
-        POST carrying one accented character answers 500 and puts a traceback in
-        the log of the process that holds the CA. No minted code of either shape
-        contains a non-ASCII character, so nothing legitimate is turned away.
+        TypeError on strings it cannot compare byte-for-byte, and `code`
+        arrives here straight off an UNAUTHENTICATED endpoint - so without
+        this line a POST carrying one accented character answers 500 and puts
+        a traceback in the log of the process that holds the CA. No minted
+        code of either shape contains a non-ASCII character, so nothing
+        legitimate is turned away.
 
-        SO IS ANYTHING ABSURDLY LONG, and for the neighbouring reason: the loop
-        below costs one comparison per live code, and an unauthenticated caller
-        should not be able to buy that work by the megabyte. Both checks happen
-        BEFORE the loop, so the expensive thing is what they guard.
+        SO IS ANYTHING ABSURDLY LONG, and for the neighbouring reason: an
+        unauthenticated caller should not be able to buy store work by the
+        megabyte. Both checks happen BEFORE the store is asked, so the
+        expensive thing is what they guard.
         """
-        record = None
         if code.isascii() and len(code) <= MAX_CODE_LENGTH:
-            # `_charge_attempts` takes the lock itself, which is why the
-            # unknown-code refusal is raised after this block exits rather
-            # than inside it. Every other refusal, and the spend, stay inside:
-            # the moment the lock is released the record may be read by the
-            # next presentation, and it has to be marked by then.
-            with self._lock:
-                for candidate, held in self.codes.items():
-                    if hmac.compare_digest(candidate, code):
-                        record = held
-                        break
-                if record is not None:
-                    if record.used:
-                        raise Refused(Outcome.CODE_USED, shape=record.shape)
-                    if record.attempts >= MAX_ATTEMPTS:
-                        raise Refused(
-                            Outcome.TOO_MANY_ATTEMPTS, shape=record.shape
-                        )
-                    if record.expired_at(self._now()):
-                        raise Refused(Outcome.CODE_EXPIRED, shape=record.shape)
-                    record.used = True
+            record, spent = self._call(self.store.claim_code, code, self._now())
+            if record is not None:
+                if spent:
                     return record
+                if record.used:
+                    raise Refused(Outcome.CODE_USED, shape=record.shape)
+                if record.attempts >= MAX_ATTEMPTS:
+                    raise Refused(
+                        Outcome.TOO_MANY_ATTEMPTS, shape=record.shape
+                    )
+                raise Refused(Outcome.CODE_EXPIRED, shape=record.shape)
         self._charge_attempts()
         raise Refused(Outcome.NO_SUCH_CODE)
 
@@ -567,10 +673,7 @@ class Enrollment:
         service against the whole point of the QR, available to the open
         internet, in five requests.
         """
-        with self._lock:
-            for held in self.codes.values():
-                if not held.used and held.shape is Shape.TYPED:
-                    held.attempts += 1
+        self._call(self.store.charge_attempts)
 
     # ---- vouch -----------------------------------------------------------
 
@@ -595,11 +698,11 @@ class Enrollment:
         """
         # LOOKED UP WITHOUT BEING TAKEN. The request stays pending until the
         # fingerprint below matches, so a mistyped fingerprint can be retried,
-        # and the pop at the end is what spends it. Two administrators
-        # vouching for the same request at once both reach that pop, and the
+        # and the take at the end is what spends it. Two administrators
+        # vouching for the same request at once both reach that take, and the
         # second must get the same `NOT_PENDING` the first would have got a
-        # moment later - not a KeyError.
-        entry = self.pending.get(request_id)
+        # moment later - not a missing row.
+        entry = self._call(self.store.get_pending, request_id)
         if entry is None:
             raise Refused(Outcome.NOT_PENDING)
 
@@ -612,10 +715,23 @@ class Enrollment:
                 "the fingerprint on the device does not match this request - "
                 "somebody else may be enrolling against your pairing code",
             )
-        taken = self.pending.pop(request_id, None)
+        taken = self._call(self.store.take_pending, request_id)
         if taken is None:
             raise Refused(Outcome.NOT_PENDING)
         return taken
+
+    def is_pending(self, request_id: str) -> bool:
+        """Is anything waiting for a vouch under this id?
+
+        Used by collection, which answers "still waiting" (202) rather than
+        "no such request" (404, which a device reads as stop polling) while a
+        human is still to be asked.
+        """
+        return self._call(self.store.get_pending, request_id) is not None
+
+    def list_pending(self) -> list[Pending]:
+        """What is waiting to be vouched for, for the console's queue."""
+        return self._call(self.store.list_pending)
 
     # ---- housekeeping ----------------------------------------------------
 
@@ -629,28 +745,23 @@ class Enrollment:
 
         Wired to the app lifespan (`start_sweeping`, beside the kith flusher) -
         muster#103. A sweep that only runs when something else happens to run is
-        decoration on a fleet this quiet, and `codes` would grow without bound.
+        decoration on a fleet this quiet, and the stored codes would grow
+        without bound.
+
+        One DELETE in the store, so with two instances sweeping the same store
+        a dead code is deleted - and counted - by the first pass only.
 
         Returns how many went.
         """
-        with self._lock:
-            now = self._now()
-            dead = [
-                c
-                for c, held in self.codes.items()
-                if now - held.created_at >= held.ttl_s + CODE_RETENTION_S
-            ]
-            for code in dead:
-                del self.codes[code]
-            return len(dead)
+        return self._call(self.store.sweep_codes, self._now(), CODE_RETENTION_S)
 
     def start_sweeping(self, interval_s: float = SWEEP_INTERVAL_S) -> None:
         """Sweep dead codes on a timer, because nothing else may ever run.
 
         Pairing codes are minted by administrators drawing QRs, which on a quiet
-        fleet can be weeks apart - and every QR mints one. Without a timer,
-        `codes` grows for the life of the pod, and the two scans that touch
-        every live code (`_claim`, `_charge_attempts`) grow with it, on the
+        fleet can be weeks apart - and every QR mints one. Without a timer, the
+        code table grows for the life of the pod, and the scans that touch
+        every live code (`claim_code`, `charge_attempts`) grow with it, on the
         process that holds the CA private key. Daemon thread, so it can never
         hold a shutdown open. Started and stopped by the app lifespan.
         """

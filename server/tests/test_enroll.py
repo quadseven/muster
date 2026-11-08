@@ -213,12 +213,12 @@ def test_sweep_drops_only_codes_past_retention(enroll):
     enroll.clock.advance(10.0)
 
     assert enroll.sweep() == 0, "the used code is still evidence inside retention"
-    assert live in enroll.codes
-    assert spent in enroll.codes
+    assert enroll.store.find_code(live) is not None
+    assert enroll.store.find_code(spent) is not None
 
     enroll.clock.advance(DEFAULT_CODE_TTL_S + CODE_RETENTION_S)
     assert enroll.sweep() == 2
-    assert enroll.codes == {}
+    assert enroll.store.list_codes() == []
 
 
 def test_sweep_keeps_a_used_code_reportable_through_retention(enroll):
@@ -263,7 +263,7 @@ def test_a_dead_code_is_kept_for_four_of_its_own_lifetimes(enroll, shape):
     nobody.
     """
     code = enroll.mint(shape=shape)
-    ttl = enroll.codes[code].ttl_s
+    ttl = enroll.store.find_code(code).ttl_s
     enroll.clock.advance(ttl + 4 * ttl - 1.0)  # dead, inside four of its lives
 
     assert enroll.sweep() == 0, "a code inside retention is still evidence"
@@ -407,7 +407,7 @@ def test_minting_a_scanned_code_is_the_vouch(enroll):
     # NOTHING PENDING, because nothing is. A row here is a console asking an
     # administrator to approve what they already approved - and clicking it is
     # what enrolled a second device.
-    assert pending.request_id not in enroll.pending
+    assert not enroll.is_pending(pending.request_id)
 
 
 def test_a_scanned_code_survives_a_measured_pixel_provisioning_run(enroll):
@@ -426,8 +426,12 @@ def test_scanned_code_default_ttl_is_longer_than_typed(enroll):
     codes default to 600s to cover the measured 332s provisioning run with headroom."""
     typed_code = enroll.mint(shape=Shape.TYPED)
     scanned_code = enroll.mint(shape=Shape.SCANNED)
-    assert enroll.codes[typed_code].ttl_s == DEFAULT_CODE_TTL_S == 300.0
-    assert enroll.codes[scanned_code].ttl_s == DEFAULT_SCANNED_CODE_TTL_S == 600.0
+    assert enroll.store.find_code(typed_code).ttl_s == DEFAULT_CODE_TTL_S == 300.0
+    assert (
+        enroll.store.find_code(scanned_code).ttl_s
+        == DEFAULT_SCANNED_CODE_TTL_S
+        == 600.0
+    )
 
 
 def test_scanned_code_expires_after_its_own_ttl(enroll):
@@ -452,7 +456,7 @@ def test_a_typed_device_still_has_to_be_vouched_for(enroll):
     code = enroll.mint(shape=Shape.TYPED)
     pending = _present(enroll, code)
     assert not pending.self_vouched
-    assert pending.request_id in enroll.pending
+    assert enroll.is_pending(pending.request_id)
     with pytest.raises(Refused) as caught:
         enroll.vouch(pending.request_id, fingerprint(OTHER_PUB))
     assert caught.value.outcome is Outcome.FINGERPRINT_MISMATCH
@@ -501,40 +505,40 @@ def test_a_non_ascii_code_is_a_wrong_guess_and_not_a_crash(enroll):
 def test_an_absurdly_long_code_is_refused_before_anything_is_compared(
     enroll, monkeypatch
 ):
-    """The comparison loop costs one pass per live code, and `code` arrives in a
-    JSON body from the open internet. Without a ceiling, one POST carrying a
-    megabyte buys an attacker that work for free, over and over - and the loop
-    only stays cheap because the lifespan sweeps dead codes (muster#103).
+    """The claim costs one pass per live code, and `code` arrives in a JSON
+    body from the open internet. Without a ceiling, one POST carrying a
+    megabyte buys an attacker that work for free, over and over - and the
+    table only stays small because the lifespan sweeps dead codes.
 
-    COUNTING THE COMPARISONS IS THE WHOLE TEST. The outcome is NO_SUCH_CODE
-    either way - a long string matches nothing - so asserting the refusal would
-    pass with the ceiling deleted and prove nothing at all. What the guard buys
-    is that the expensive thing never runs, so that is what is measured.
+    COUNTING THE CLAIMS IS THE WHOLE TEST. The outcome is NO_SUCH_CODE either
+    way - a long string matches nothing - so asserting the refusal would pass
+    with the ceiling deleted and prove nothing at all. What the guard buys is
+    that the expensive thing never runs, so that is what is measured.
     """
-    import muster.enroll as module  # noqa: PLC0415
+    claimed = []
+    real_claim = enroll.store.claim_code
 
-    compared = []
-    real = module.hmac.compare_digest
-    monkeypatch.setattr(
-        module.hmac, "compare_digest",
-        lambda a, b: compared.append(1) or real(a, b),
-    )
+    def counting_claim(code, now):
+        claimed.append(code)
+        return real_claim(code, now)
+
+    monkeypatch.setattr(enroll.store, "claim_code", counting_claim)
 
     live = enroll.mint()
     with pytest.raises(Refused) as caught:
         _present(enroll, "x" * (MAX_CODE_LENGTH + 1))
     assert caught.value.outcome is Outcome.NO_SUCH_CODE
-    assert compared == [], "the oversized code was compared against every live code"
+    assert claimed == [], "the oversized code reached the store"
 
-    # A code of the permitted length still reaches the comparison, or the
-    # ceiling would be turning legitimate traffic away rather than junk.
+    # A code of the permitted length still reaches the claim, or the ceiling
+    # would be turning legitimate traffic away rather than junk.
     with pytest.raises(Refused):
         _present(enroll, "x" * MAX_CODE_LENGTH)
-    assert compared, "nothing at all is being compared any more"
+    assert claimed, "nothing at all is being claimed any more"
 
     # Both are still wrong guesses, so both still cost the window an attempt - a
     # refusal that was free would be a way to probe without paying for it.
-    assert enroll.codes[live].attempts == 2
+    assert enroll.store.find_code(live).attempts == 2
 
 
 def test_sweep_racing_requests_does_not_tear_the_table(enroll, monkeypatch):
@@ -644,35 +648,20 @@ def test_two_administrators_vouching_at_once_get_a_refusal_not_a_crash(enroll):
     """`vouch` reads the request, compares the fingerprint, and only then takes
     it. A second vouch that lands between the read and the take must be
     refused as NOT_PENDING, the answer it would have got a moment later -
-    not a KeyError that becomes a 500 on the console."""
+    not a missing row that becomes a 500 on the console."""
     code = enroll.mint()
     pending = _present(enroll, code)
-    # The other administrator's vouch wins between this one's read and its pop.
-    enroll.pending.pop(pending.request_id)
-    enroll.pending[pending.request_id] = pending
-    real_get = enroll.pending.get
+    # The other administrator's vouch wins between this one's read and its take.
+    real_take = enroll.store.take_pending
 
-    def get_then_lose_the_race(request_id):
-        entry = real_get(request_id)
-        if entry is not None:
-            del enroll.pending[request_id]
-        return entry
+    def take_then_lose_the_race(request_id):
+        real_take(request_id)
+        return real_take(request_id)
 
-    enroll.pending = _RacingDict(enroll.pending, get_then_lose_the_race)
+    enroll.store.take_pending = take_then_lose_the_race
     with pytest.raises(Refused) as caught:
         enroll.vouch(pending.request_id, pending.fingerprint)
     assert caught.value.outcome is Outcome.NOT_PENDING
-
-
-class _RacingDict(dict):
-    """A pending table whose `get` is followed by another thread's pop."""
-
-    def __init__(self, source, get):
-        super().__init__(source)
-        self._get = get
-
-    def get(self, key, default=None):
-        return self._get(key)
 
 
 def test_a_failing_sweep_does_not_end_the_sweeper(enroll, monkeypatch):
@@ -772,3 +761,112 @@ def test_a_role_that_looks_like_a_key_id_is_refused(enroll):
     one would let a QR address another device's policy scope."""
     with pytest.raises(ValueError):
         enroll.mint(shape=Shape.SCANNED, role="a" * 64)
+
+
+# ---- the ceremony across two replicas sharing one store ------------------
+#
+# Muster runs one replica today, but every step of the ceremony must already
+# work when the steps land on different replicas ("shared state first, then
+# the number", ARCHITECTURE.md). These tests hold two Enrollment instances
+# over one shared store and run one ceremony across them: mint on A, present
+# on B, vouch on A. The certificate collection half lives in the kith and is
+# exercised across two app instances in test_api.py.
+
+
+def _shared_pair():
+    """Two Enrollment instances on one store, on one clock."""
+    from muster.kith import MemoryRecords  # noqa: PLC0415
+
+    store = MemoryRecords()
+    clock = Clock()
+    return (
+        Enrollment(clock=clock, store=store),
+        Enrollment(clock=clock, store=store),
+        clock,
+        store,
+    )
+
+
+def test_one_ceremony_runs_across_two_instances_on_one_store():
+    """Mint on A, present on B, vouch on A: the pending request B created is
+    the one A vouches for, because both read the same store."""
+    enroll_a, enroll_b, _clock, _store = _shared_pair()
+
+    code = enroll_a.mint()
+    pending = _present(enroll_b, code)
+    assert enroll_b.is_pending(pending.request_id)
+    assert enroll_a.is_pending(pending.request_id)
+
+    vouched = enroll_a.vouch(pending.request_id, pending.fingerprint)
+    assert vouched.csr_der == CSR
+    assert vouched.device_name == "pixel-6a"
+    assert not enroll_b.is_pending(pending.request_id)
+
+
+def test_expiry_holds_when_present_lands_on_another_instance():
+    """Minted on A, presented on B after the TTL: B refuses it as expired,
+    not as a code it has never seen."""
+    enroll_a, enroll_b, clock, _store = _shared_pair()
+
+    code = enroll_a.mint(ttl_s=300.0)
+    clock.advance(300.0)
+
+    with pytest.raises(Refused) as caught:
+        _present(enroll_b, code)
+    assert caught.value.outcome is Outcome.CODE_EXPIRED
+
+
+def test_the_attempt_limit_holds_when_guesses_land_on_another_instance():
+    """Wrong guesses on B burn the budget of the code A minted: the correct
+    guess presented back on A is refused once the budget is spent."""
+    enroll_a, enroll_b, _clock, _store = _shared_pair()
+
+    code = enroll_a.mint()
+    wrong = "999999" if code != "999999" else "111111"
+    for _ in range(MAX_ATTEMPTS):
+        with pytest.raises(Refused):
+            _present(enroll_b, wrong)
+
+    with pytest.raises(Refused) as caught:
+        _present(enroll_a, code)
+    assert caught.value.outcome is Outcome.TOO_MANY_ATTEMPTS
+
+
+def test_a_spent_code_is_spent_for_the_other_instance_too():
+    """Single use is a property of the store, not of the process: presented
+    on B, the same code is CODE_USED on A."""
+    enroll_a, enroll_b, _clock, _store = _shared_pair()
+
+    code = enroll_a.mint()
+    _present(enroll_b, code)
+    with pytest.raises(Refused) as caught:
+        _present(enroll_a, code)
+    assert caught.value.outcome is Outcome.CODE_USED
+
+
+def test_two_instances_sweeping_delete_each_dead_code_once():
+    """Both instances sweep the same store. A dead code is deleted by one
+    pass, and the other's reports zero rather than a double count."""
+    enroll_a, enroll_b, clock, _store = _shared_pair()
+
+    enroll_a.mint(ttl_s=300.0)
+    enroll_b.mint(ttl_s=300.0)
+    clock.advance(DEFAULT_CODE_TTL_S + CODE_RETENTION_S + 1.0)
+
+    assert enroll_a.sweep() == 2
+    assert enroll_b.sweep() == 0
+
+
+def test_an_unreachable_store_refuses_rather_than_minting_locally():
+    """A replica that cannot reach the shared store must not mint a code only
+    it knows: the other replica could never see it, and the ceremony would
+    fail one request later anyway, less honestly."""
+    from muster.enroll import CeremonyUnreachable  # noqa: PLC0415
+
+    class Down:
+        def put_code(self, record):
+            raise OSError("connection refused")
+
+    down = Enrollment(clock=Clock(), store=Down())
+    with pytest.raises(CeremonyUnreachable):
+        down.mint()
