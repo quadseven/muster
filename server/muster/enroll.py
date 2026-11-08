@@ -525,6 +525,26 @@ class Enrollment:
                 "new enrollment"
             ) from exc
 
+    # ---- inspection views -------------------------------------------------
+    # Snapshot dicts rebuilt from the shared store on every access. They are
+    # views, not state: nothing ceremony-shaped lives on this object
+    # (muster#243), which is the point of the shared store. Kept so callers
+    # that only need to ask what is stored (tests, operator debugging) do not
+    # have to reach past the state machine into its store implementation.
+
+    @property
+    def codes(self) -> dict:
+        """The stored pairing codes, by code."""
+        return {record.code: record for record in self._call(self.store.list_codes)}
+
+    @property
+    def pending(self) -> dict:
+        """The requests waiting for a vouch, by request id."""
+        return {
+            entry.request_id: entry
+            for entry in self._call(self.store.list_pending)
+        }
+
     # ---- mint ------------------------------------------------------------
 
     def mint(

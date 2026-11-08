@@ -1811,6 +1811,7 @@ def test_a_qr_meant_to_be_printed_can_be_minted_without_a_code(state, tmp_path):
 
     plain = client.get("/v1/provision/qr.svg?hands_free=false", cookies=ADMIN)
     assert plain.status_code == 200
+    assert state.enrollment.codes == {}, "a printed QR must mint nothing"
     assert state.enrollment.store.list_codes() == [], "a printed QR must mint nothing"
     assert "x-muster-pairing-expires-in" not in plain.headers
     assert plain.text == _qr_for(state, apk, "")
@@ -1826,6 +1827,7 @@ def test_a_qr_meant_to_be_printed_can_be_minted_without_a_code(state, tmp_path):
         # nothing acts on.
         "role": "",
     }
+    assert state.enrollment.codes == {}
     assert state.enrollment.store.list_codes() == []
 
 

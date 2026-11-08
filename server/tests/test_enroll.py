@@ -213,11 +213,14 @@ def test_sweep_drops_only_codes_past_retention(enroll):
     enroll.clock.advance(10.0)
 
     assert enroll.sweep() == 0, "the used code is still evidence inside retention"
+    assert live in enroll.codes
+    assert spent in enroll.codes
     assert enroll.store.find_code(live) is not None
     assert enroll.store.find_code(spent) is not None
 
     enroll.clock.advance(DEFAULT_CODE_TTL_S + CODE_RETENTION_S)
     assert enroll.sweep() == 2
+    assert enroll.codes == {}
     assert enroll.store.list_codes() == []
 
 
@@ -407,6 +410,7 @@ def test_minting_a_scanned_code_is_the_vouch(enroll):
     # NOTHING PENDING, because nothing is. A row here is a console asking an
     # administrator to approve what they already approved - and clicking it is
     # what enrolled a second device.
+    assert pending.request_id not in enroll.pending
     assert not enroll.is_pending(pending.request_id)
 
 
@@ -426,6 +430,8 @@ def test_scanned_code_default_ttl_is_longer_than_typed(enroll):
     codes default to 600s to cover the measured 332s provisioning run with headroom."""
     typed_code = enroll.mint(shape=Shape.TYPED)
     scanned_code = enroll.mint(shape=Shape.SCANNED)
+    assert enroll.codes[typed_code].ttl_s == DEFAULT_CODE_TTL_S == 300.0
+    assert enroll.codes[scanned_code].ttl_s == DEFAULT_SCANNED_CODE_TTL_S == 600.0
     assert enroll.store.find_code(typed_code).ttl_s == DEFAULT_CODE_TTL_S == 300.0
     assert (
         enroll.store.find_code(scanned_code).ttl_s
@@ -456,6 +462,7 @@ def test_a_typed_device_still_has_to_be_vouched_for(enroll):
     code = enroll.mint(shape=Shape.TYPED)
     pending = _present(enroll, code)
     assert not pending.self_vouched
+    assert pending.request_id in enroll.pending
     assert enroll.is_pending(pending.request_id)
     with pytest.raises(Refused) as caught:
         enroll.vouch(pending.request_id, fingerprint(OTHER_PUB))
@@ -505,16 +512,28 @@ def test_a_non_ascii_code_is_a_wrong_guess_and_not_a_crash(enroll):
 def test_an_absurdly_long_code_is_refused_before_anything_is_compared(
     enroll, monkeypatch
 ):
-    """The claim costs one pass per live code, and `code` arrives in a JSON
-    body from the open internet. Without a ceiling, one POST carrying a
-    megabyte buys an attacker that work for free, over and over - and the
-    table only stays small because the lifespan sweeps dead codes.
+    """The comparison loop costs one pass per live code, and `code` arrives in a
+    JSON body from the open internet. Without a ceiling, one POST carrying a
+    megabyte buys an attacker that work for free, over and over - and the loop
+    only stays cheap because the lifespan sweeps dead codes (muster#103).
 
-    COUNTING THE CLAIMS IS THE WHOLE TEST. The outcome is NO_SUCH_CODE either
-    way - a long string matches nothing - so asserting the refusal would pass
-    with the ceiling deleted and prove nothing at all. What the guard buys is
-    that the expensive thing never runs, so that is what is measured.
+    COUNTING THE COMPARISONS IS THE WHOLE TEST. The outcome is NO_SUCH_CODE
+    either way - a long string matches nothing - so asserting the refusal would
+    pass with the ceiling deleted and prove nothing at all. What the guard buys
+    is that the expensive thing never runs, so that is what is measured. The
+    store claim is counted too: the oversized code must not reach the store,
+    and a code of the permitted length must reach it.
     """
+    import muster.enroll as module  # noqa: PLC0415
+
+    compared = []
+    real = module.hmac.compare_digest
+    monkeypatch.setattr(
+        module.hmac,
+        "compare_digest",
+        lambda a, b: compared.append(1) or real(a, b),
+    )
+
     claimed = []
     real_claim = enroll.store.claim_code
 
@@ -529,15 +548,18 @@ def test_an_absurdly_long_code_is_refused_before_anything_is_compared(
         _present(enroll, "x" * (MAX_CODE_LENGTH + 1))
     assert caught.value.outcome is Outcome.NO_SUCH_CODE
     assert claimed == [], "the oversized code reached the store"
+    assert compared == [], "the oversized code was compared against every live code"
 
     # A code of the permitted length still reaches the claim, or the ceiling
     # would be turning legitimate traffic away rather than junk.
     with pytest.raises(Refused):
         _present(enroll, "x" * MAX_CODE_LENGTH)
     assert claimed, "nothing at all is being claimed any more"
+    assert compared, "nothing at all is being compared any more"
 
     # Both are still wrong guesses, so both still cost the window an attempt - a
     # refusal that was free would be a way to probe without paying for it.
+    assert enroll.codes[live].attempts == 2
     assert enroll.store.find_code(live).attempts == 2
 
 
