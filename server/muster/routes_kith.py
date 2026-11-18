@@ -380,9 +380,10 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
             reports = state.kith.reports()
         except kith_store.Unreachable as exc:
             raise _unreachable(exc) from exc
+        now = state.kith.now()
         return {
             "store": state.kith.status(),
-            "devices": [_member(m, reports.get(m.device.key_id)) for m in members],
+            "devices": [_member(m, reports.get(m.device.key_id), now) for m in members],
             # BESIDE THE ROLL, the devices muster signed for and the store does
             # not hold (muster#166). After an outage that dropped writes, the
             # roll answers again and these are the phones missing from it.
@@ -607,7 +608,7 @@ def _register_kith_routes(app: FastAPI, state: State, admin) -> None:
         except kith_store.Unreachable as exc:
             raise _unreachable(exc) from exc
         return {
-            "device": _member(member, report),
+            "device": _member(member, report, state.kith.now()),
             # WHAT IT LAST SAID IT DID (muster#146), or null if it never said.
             # Null and not an empty report: an empty one would read as every
             # step fine and nothing installed.
@@ -653,7 +654,19 @@ def _unrecorded(state: State) -> list[dict]:
     ]
 
 
-def _member(member: kith_store.Member, report: kith_store.Report | None = None) -> dict:
+def _report_freshness(
+    report: kith_store.Report | None, interval_s: int | None, now: dt.datetime
+) -> str:
+    """Use the report's receipt time. A later check-in may omit its report."""
+    if report is None or not interval_s or report.received_at > now:
+        return "unknown"
+    threshold = dt.timedelta(seconds=interval_s * CHECK_IN_STALE_AFTER_PERIODS)
+    return "stale" if now - report.received_at > threshold else "fresh"
+
+
+def _member(
+    member: kith_store.Member, report: kith_store.Report | None, now: dt.datetime
+) -> dict:
     """One device on the roll, as JSON.
 
     `certificates` is a COUNT and not a list on this shape deliberately: the
@@ -711,4 +724,5 @@ def _member(member: kith_store.Member, report: kith_store.Report | None = None) 
         "security_patch": report.security_patch if report is not None else None,
         "build_id": report.build_id if report is not None else None,
         "pending_update": report.pending_update if report is not None else None,
+        "report_freshness": _report_freshness(report, member.device.check_in_interval_s, now),
     }

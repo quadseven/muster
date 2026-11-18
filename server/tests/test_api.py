@@ -826,6 +826,34 @@ def test_roll_carries_security_patch_build_id_and_pending_update(state):
     assert dev["pending_update"] is False
 
 
+def test_report_freshness_uses_report_time_not_last_seen(state, monkeypatch):
+    from muster import routes_kith
+
+    now = [dt.datetime.now(dt.timezone.utc)]
+    state.kith = kith_store.Kith(kith_store.MemoryRecords(), clock=lambda: now[0])
+    monkeypatch.setattr(routes_kith, "CHECK_IN_STALE_AFTER_PERIODS", 2)
+    client = _proof_client(state)
+    key, identity, device_id = _enrolled(state, record=True)
+    assert _send_report(client, key, identity, [], [], pending_update=True).status_code == 202
+
+    def assert_freshness(expected):
+        roll = client.get("/v1/kith", cookies=ADMIN).json()["devices"]
+        detail = client.get(f"/v1/kith/{device_id}", cookies=ADMIN).json()["device"]
+        assert next(d for d in roll if d["key_id"] == device_id)["report_freshness"] == expected
+        assert detail["report_freshness"] == expected
+        assert detail["pending_update"] is True
+
+    assert_freshness("unknown")
+    now[0] += dt.timedelta(seconds=1800)
+    state.kith.seen(device_id, interval_s=900)
+    state.kith.flush()
+    assert_freshness("fresh")
+    now[0] += dt.timedelta(seconds=1)
+    state.kith.seen(device_id, interval_s=900)
+    state.kith.flush()
+    assert_freshness("stale")
+
+
 def test_a_device_that_never_reported_shows_no_report_rather_than_an_empty_one(state):
     """An empty report would read as "every step fine, nothing installed"."""
     client = _proof_client(state)
