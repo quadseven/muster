@@ -1,6 +1,7 @@
 package app.muster.agent
 
 import android.app.Activity
+import android.app.KeyguardManager
 import android.app.admin.DevicePolicyManager
 import android.app.role.RoleManager
 import android.content.Context
@@ -226,6 +227,7 @@ class StatusActivity : Activity() {
             agentVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown",
             lastCheckIn = CheckIn.last(this),
             now = now,
+            screenLockConfigured = getSystemService(KeyguardManager::class.java)?.isDeviceSecure,
         )
     }
 

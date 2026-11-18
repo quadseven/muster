@@ -239,6 +239,12 @@ exemption, so a wake configuration requires this operator step after the scan.
 
 ### A5. Check it, later, over adb
 
+On the Muster status screen, the Screen lock credential row shows whether
+Android confirms a PIN, pattern, or password for the agent's user. If the
+status is unknown or unconfirmed, check Android Settings. Verify the
+automatic lock timeout separately. The observation stays on the handset.
+[Android's secure lock screen API](https://developer.android.com/reference/android/app/KeyguardManager#isDeviceSecure())
+
 Verification still goes over adb - wireless is fine, it does not need the cable
 Route A avoided. Enable developer options and wireless debugging on the phone,
 then:
