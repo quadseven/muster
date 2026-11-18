@@ -73,6 +73,7 @@ object DeviceStatus {
         val agentVersion: String,
         val lastCheckIn: Long?,
         val now: Long,
+        val screenLockConfigured: Boolean?,
     )
 
     fun render(facts: Facts): View {
@@ -131,6 +132,14 @@ object DeviceStatus {
 
         val rows = mutableListOf<Row>()
         rows += Row("Managed by", if (facts.deviceOwner) "Muster (Device Owner)" else "nothing")
+        rows += Row(
+            "Screen lock credential",
+            when (facts.screenLockConfigured) {
+                true -> "configured"
+                false -> "not confirmed"
+                null -> "unknown"
+            },
+        )
         facts.serverUrl?.takeIf { it.isNotBlank() }?.let {
             rows += Row("Control plane", it, machine = true)
         }

@@ -31,6 +31,7 @@ class DeviceStatusTest {
         telephonyIncomingScreened: Boolean = false,
         agentVersion: String = "0.1.0",
         hasIdentity: Boolean = stance !is Stance.Unenrolled,
+        screenLockConfigured: Boolean? = null,
     ) = DeviceStatus.Facts(
         deviceOwner = deviceOwner,
         hasIdentity = hasIdentity,
@@ -46,6 +47,7 @@ class DeviceStatusTest {
         agentVersion = agentVersion,
         lastCheckIn = lastCheckIn,
         now = 1_000_060L,
+        screenLockConfigured = screenLockConfigured,
     )
 
     @Test
@@ -129,6 +131,20 @@ class DeviceStatusTest {
         assertEquals("none", none.rows.single { it.label == "Restrictions in force" }.value)
         val some = DeviceStatus.render(facts(restrictions = listOf("no_safe_boot", "no_add_user")))
         assertTrue(some.rows.single { it.label == "Restrictions in force" }.value.contains("no_add_user"))
+    }
+
+    @Test
+    fun anUnavailableScreenLockObservationStaysUnknown() {
+        val view = DeviceStatus.render(facts())
+        assertEquals("unknown", view.rows.single { it.label == "Screen lock credential" }.value)
+    }
+
+    @Test
+    fun theScreenLockCredentialRowReflectsThePlatformObservation() {
+        val configured = DeviceStatus.render(facts(screenLockConfigured = true))
+        assertEquals("configured", configured.rows.single { it.label == "Screen lock credential" }.value)
+        val unconfirmed = DeviceStatus.render(facts(screenLockConfigured = false))
+        assertEquals("not confirmed", unconfirmed.rows.single { it.label == "Screen lock credential" }.value)
     }
 
     @Test
