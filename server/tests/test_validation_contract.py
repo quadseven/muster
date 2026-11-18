@@ -15,8 +15,9 @@ MANAGED_FILES_CHECK = (
 )
 AFFECTED = (
     "printf '%s\\n' \"$LOOM_CHANGED_FILES\""
-    " | grep -qE '^(agent/android/|\\.github/workflows/check\\.agent-android\\.yml$)' || exit 0;"
-    " (cd agent/android/app && bash ../../tools/jvm-tests.sh) || exit 1; "
+    " | grep -qE '^(agent/(android/|tools/jvm-)|\\.loom/validation\\.conf$"
+    "|\\.github/workflows/check\\.agent-android\\.yml$)' || exit 0;"
+    " bash agent/tools/jvm-lane-check.sh || exit 1; "
     + MANAGED_FILES_CHECK
 )
 
@@ -45,7 +46,7 @@ def test_validation_contract_matches_pull_request_check():
 
 
 def test_affected_runs_the_managed_files_step_ci_runs():
-    """The affected command runs the step CI runs, for CI's paths only."""
+    """The affected command includes the managed-file check from Android CI."""
     workflow = ANDROID_WORKFLOW.read_text()
     assert "      - 'agent/android/**'\n" in workflow
     assert "      - '.github/workflows/check.agent-android.yml'\n" in workflow
