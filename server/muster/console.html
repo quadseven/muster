@@ -1024,7 +1024,10 @@
       facts.append(patchEl);
     }
     if (device.pending_update) {
-      facts.append(element('span', '', 'Update pending'));
+      const freshness = device.report_freshness;
+      const hint = freshness === 'stale' ? ' (stale report)'
+        : freshness === 'unknown' ? ' (report freshness unknown)' : '';
+      facts.append(element('span', '', 'Update pending' + hint));
     }
     if (device.not_after) {
       const cert = element('span', '', 'Certificate to ' + shortDate(device.not_after));

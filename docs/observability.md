@@ -118,6 +118,12 @@ The console marks a device stale after `MUSTER_CHECK_IN_STALE_AFTER_PERIODS`
 reported check-in periods (default 3). This is a positive integer and is
 returned with the device data, so the browser and server use the same setting.
 
+The device view also surfaces `report_freshness` as `fresh`, `stale`, or
+`unknown`. It uses the same period threshold with the last report's server
+receipt time. A new check-in without a report does not refresh the old update
+status. The console labels a pending update when its report is stale or
+when freshness cannot be determined.
+
 **`device.report.concerns` is the one to alert on for installs (muster#146).**
 Diagnostics are logged and gone; the check-in report is STORED, newest per
 device, and returned as `report` on `GET /v1/kith/{key_id}` with each step's
