@@ -77,6 +77,7 @@ ALLOWED = frozenset(
         # Pages project on Cloudflare, not specific to this one.
         "pages.dev",
         "pypi.org",
+        "repo.maven.apache.org",
         "schemas.android.com",
         # The SIL Open Font License's own canonical URL, which appears in the
         # verbatim license text the bundled typefaces ship under. The text is

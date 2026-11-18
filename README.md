@@ -65,6 +65,10 @@ cd server && uv run --group dev --python 3.12 python -m pytest -q
 ```
 
 Agent tests: `agent/tools/jvm-tests.sh` needs a JDK and the Gradle cache.
+For Android changes, Loom uses `agent/tools/jvm-lane-check.sh` to stage
+SHA-256-pinned Maven Central jars in its scratch directory before running
+the same harness. Keep `agent/tools/jvm-dependencies.lock` aligned with the
+Android Gradle dependency versions when updating them.
 `cd agent/android && ./gradlew --no-daemon testDebugUnitTest` needs an Android
 SDK. CI runs the Gradle one on a self-hosted Mac.
 
