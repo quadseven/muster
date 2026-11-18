@@ -472,6 +472,7 @@ def app_from_env() -> FastAPI:
         provider=provider,
         administrators=subjects,
         redirect_uri=base_url.rstrip("/") + "/auth/callback",
+        flow_seal=administrator.flow_seal_from_env(),
     )
 
     # The kith is wired from the environment too, and it does NOT refuse to

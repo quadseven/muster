@@ -68,8 +68,7 @@ FLOW_TTL_S = 600.0
 # stranger can drive. The cap made lockout trivial instead: 32 anonymous
 # requests while the operator was at the provider evicted their sign-in. Now
 # the verifier and nonce are sealed (encrypted and authenticated) into the flow
-# cookie with a key that never leaves this process, so the server holds nothing
-# per flow and there is nothing to evict.
+# cookie, so the server holds nothing per flow and there is nothing to evict.
 
 # How far apart the provider's clock and this pod's may be before a fresh
 # token reads as issued in the future. Seconds, applied by pyjwt to `iat`,
@@ -230,6 +229,23 @@ def administrators_from_env(env: dict | None = None) -> frozenset[str]:
     return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
+def flow_seal_from_env() -> Fernet | None:
+    """Load the deployment's shared cookie seal when it is configured."""
+    value = os.environ.get("MUSTER_OIDC_FLOW_KEY", "").strip()
+    if not value:
+        return None
+    try:
+        key = base64.b64decode(value, altchars=b"-_", validate=True)
+    except ValueError:
+        key = b""
+    if len(key) != 32 or base64.urlsafe_b64encode(key).decode() != value:
+        raise RuntimeError(
+            "MUSTER_OIDC_FLOW_KEY must be a Fernet key. Generate one with "
+            "cryptography.fernet.Fernet.generate_key() and store it as a secret."
+        )
+    return Fernet(value.encode())
+
+
 def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
@@ -297,6 +313,8 @@ class SignIn:
         redirect_uri: str,
         clock=time.time,
         transport: httpx.AsyncBaseTransport | None = None,
+        *,
+        flow_seal: Fernet | None = None,
     ) -> None:
         self.provider = provider
         self.administrators = administrators
@@ -309,10 +327,9 @@ class SignIn:
         # its context manager whether or not it owns it - so the second call
         # through an injected transport would raise "already closed".
         self._transport = _NotOursToClose(transport) if transport else None
-        # The key that seals a half-finished sign-in into its cookie. Made per
-        # process: a restart drops sign-ins in flight, which the old in-memory
-        # store did too, and a key that is never written down cannot leak.
-        self._flow_seal = Fernet(Fernet.generate_key())
+        self._flow_seal = (
+            flow_seal if flow_seal is not None else Fernet(Fernet.generate_key())
+        )
         self._keys: dict[str, dict] = {}
         # NEGATIVE INFINITY, NOT ZERO. "Never fetched" has to read as older than
         # the interval whatever the clock counts from. Zero works against a wall
@@ -380,8 +397,8 @@ class SignIn:
     def open_flow(self, sealed: str, state: str) -> _Flow:
         """The sign-in this browser started, or NO_SUCH_FLOW.
 
-        Refused when the cookie is missing, was not sealed by this process, has
-        been altered, is older than FLOW_TTL_S, or belongs to a different
+        Refused when the cookie is missing, does not match the seal, has been
+        altered, is older than FLOW_TTL_S, or belongs to a different
         sign-in than the `state` the provider sent back. Same answer for all of
         them: start again.
         """

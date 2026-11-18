@@ -20,6 +20,7 @@ from email.utils import format_datetime
 
 import pytest
 from cryptography import x509
+from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509 import ocsp
@@ -2885,6 +2886,7 @@ def _ca_on_disk(tmp_path, monkeypatch):
 
 
 def _configure_sign_in(monkeypatch):
+    monkeypatch.delenv("MUSTER_OIDC_FLOW_KEY", raising=False)
     monkeypatch.setenv("MUSTER_OIDC_ISSUER", "https://identity.example.test/pool")
     monkeypatch.setenv(
         "MUSTER_OIDC_JWKS_URL", "https://identity.example.test/pool/keys"
@@ -2914,6 +2916,75 @@ def test_sign_in_alone_is_a_way_in(monkeypatch, tmp_path):
         ).status_code
         == 401
     )
+
+
+@pytest.mark.parametrize(
+    "callback", ["valid", "wrong-state", "wrong-nonce", "expired", "wrong-key"]
+)
+def test_administrator_sign_in_across_replicas(monkeypatch, tmp_path, provider, callback):
+    from muster import administrator
+    from muster.api import app_from_env
+
+    _ca_on_disk(tmp_path, monkeypatch)
+    _configure_sign_in(monkeypatch)
+    monkeypatch.setenv("MUSTER_ADMIN_SUBJECTS", provider.subject)
+    monkeypatch.setenv("MUSTER_OIDC_FLOW_KEY", Fernet.generate_key().decode())
+    clock = [dt.datetime.now(dt.timezone.utc).timestamp()]
+    sign_in = administrator.SignIn
+
+    def use_test_provider(**settings):
+        return sign_in(**settings, transport=provider.transport, clock=lambda: clock[0])
+
+    monkeypatch.setattr(administrator, "SignIn", use_test_provider)
+    first = TestClient(app_from_env(), base_url="https://enroll.muster.example")
+    started = first.get("/auth/signin", follow_redirects=False)
+    assert started.status_code == 303
+    code, state = provider.redeem(started.headers["location"])
+
+    if callback == "wrong-state":
+        state = "a-different-state"
+    if callback == "wrong-nonce":
+        provider.nonce_to_return = "a-different-nonce"
+    if callback == "expired":
+        clock[0] += administrator.FLOW_TTL_S + 1
+    if callback == "wrong-key":
+        monkeypatch.setenv("MUSTER_OIDC_FLOW_KEY", Fernet.generate_key().decode())
+
+    second = TestClient(app_from_env(), base_url="https://enroll.muster.example")
+    second.cookies.update(first.cookies)
+    landed = second.get(
+        "/auth/callback", params={"code": code, "state": state}, follow_redirects=False
+    )
+
+    if callback == "valid":
+        assert landed.status_code == 303, landed.text
+        assert second.get("/v1/session").json()["subject"] == provider.subject
+        refused = second.post("/auth/signout", headers={"Sec-Fetch-Site": "same-site"})
+        assert refused.status_code == 403
+        assert second.get("/v1/session").json()["signed_in"] is True
+    else:
+        assert landed.status_code == 403
+        assert second.get("/v1/session").json()["signed_in"] is False
+    expected_exchanges = 1 if callback in {"valid", "wrong-nonce"} else 0
+    assert len(provider.token_requests) == expected_exchanges
+
+
+def test_administrator_sign_in_refuses_a_bad_flow_key_at_startup(
+    monkeypatch, tmp_path, capfd
+):
+    from muster.api import app_from_env
+
+    _ca_on_disk(tmp_path, monkeypatch)
+    _configure_sign_in(monkeypatch)
+    monkeypatch.setenv("MUSTER_ADMIN_SUBJECTS", "s-0001-administrator")
+    bad_key = "bad-test-fixture"
+    monkeypatch.setenv("MUSTER_OIDC_FLOW_KEY", bad_key)
+
+    with pytest.raises(RuntimeError, match="MUSTER_OIDC_FLOW_KEY") as caught:
+        app_from_env()
+
+    captured = capfd.readouterr()
+    assert all(bad_key not in output for output in (str(caught.value), *captured))
 
 
 @pytest.mark.parametrize(

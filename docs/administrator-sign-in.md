@@ -133,6 +133,7 @@ creating it plus a restart is the whole cutover.
     MUSTER_OIDC_TOKEN_URL         where the code is exchanged
     MUSTER_OIDC_CLIENT_ID         the client created above
     MUSTER_OIDC_CLIENT_SECRET     optional
+    MUSTER_OIDC_FLOW_KEY          optional, shared flow-cookie seal for replicas
     MUSTER_OIDC_END_SESSION_URL   optional, and worth setting - see below
     MUSTER_ADMIN_SUBJECTS         comma separated `sub` claims
 
@@ -171,18 +172,22 @@ machine that is not a sign-out.
                           session at the provider too
 
 **The flow lives in the browser that started it (muster#227).** The cookie is
-sealed with Fernet (encrypted and authenticated) under a key made when the
-process starts and never written down, so only this process can open it, the
-browser carrying it cannot read the verifier, and an altered or expired cookie
-(older than ten minutes) is refused. A returned `state` alone would prove only
-that *some* browser started a sign-in here: an attacker who starts one, keeps the
-state and hands the operator a link to `/auth/callback` carrying an
-authorization code for their own account would otherwise sign the operator in as
-themselves. The sealed cookie is what makes the browser that comes back the
-browser that left. It also means a stranger looping `/auth/signin` can no longer
-evict the operator's sign-in: there used to be a 32-entry store with oldest-out
-eviction, and now there is no store. A restart drops sign-ins in flight, as it
-always did.
+sealed with Fernet. The browser carrying it cannot read the verifier, and an
+altered or expired cookie (older than ten minutes) is refused. A returned
+`state` alone would prove only that *some* browser started a sign-in here: an
+attacker who starts one, keeps the state and sends the operator an
+`/auth/callback` link with their own authorization code would otherwise sign
+the operator into the attacker's account. The sealed cookie binds the callback
+to the original browser. The server keeps no per-flow records, so repeated
+requests to `/auth/signin` cannot evict the operator's sign-in.
+
+To let a callback land on any replica, generate a Fernet key with
+`cryptography.fernet.Fernet.generate_key()` and set the same `MUSTER_OIDC_FLOW_KEY`
+on every replica of this deployment through its secret manager. A malformed key
+stops startup. With the setting empty, each process generates its own key and a
+restart drops sign-ins in flight. Rotating the shared key invalidates flows
+sealed with the previous key. Refresh-token coordination and rolling-restart
+verification are tracked in muster#250.
 
 That cookie is `SameSite=Lax` rather than `Strict` deliberately: the callback is
 a top-level GET navigation *from* the provider, which is cross-site, and Strict
