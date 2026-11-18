@@ -6,6 +6,8 @@ route in order; every step here exists because skipping it costs a factory
 reset.
 
 Read [android-constraints.md](android-constraints.md) first if you have not.
+For controller selection and recovery, see
+[company-owned Android enrollment and recovery](company-owned-android.md).
 The short version is that there are now two routes:
 
     Route A   QR, six taps, no cable       measured working once, 2026-08-19
@@ -45,20 +47,19 @@ wallpaper now reach a device only by fetch; steps B4a and B4b say how.
 
 ## Before you start, either route
 
-**The APK is debug-signed.** A Device Owner app cannot be replaced by a
-differently-signed APK, and Device Owner cannot be reassigned without a factory
-reset - so the eventual release-signed agent will cost one more wipe of this
-device. That is a deliberate trade for proving the route on hardware now, on a
-phone that carries nothing. Do not do this to a phone you are relying on, and
-read the warning in `state-of-play.md` before pointing either route at one.
+The first tests used a debug-signed APK. The build can now produce a debug or
+release APK. Check the signer against the approved release certificate before
+provisioning a company handset. An update must use the installed agent's
+signing key. Replacing a debug-signed Device Owner with the release-signed
+agent requires a reset and reprovisioning in this procedure.
 
 Have ready:
 
 - the phone, and the ability to unenroll it from whatever owns it
 - for Route A: an administrator token, and the control plane reachable from
   wherever the phone will sit
-- for Route B: a cable, and the `muster-agent-debug-apk` artifact from the
-  newest green `agent - android` run
+- for Route B: a cable and the signer-verified APK from a successful
+  `agent - android` build, published as `muster-agent-apk`
 - zippie's companion APK, if you want the phone to be a leg
 
 ## 1. Free the device from its current owner
@@ -207,8 +208,9 @@ boot or when somebody taps Sync - nothing is lost and nothing has to be redone.
 
 ### A4b. Enroll it by hand, if it did not present itself
 
-This is also the path for a device provisioned from a `hands_free=false` QR, and
-for one re-enrolling after its identity lapsed.
+This is also the path for a device provisioned from a `hands_free=false` QR.
+If a lapsed device retains its old certificate, the enrollment form can refuse.
+See [Muster handset recovery](company-owned-android.md#recover-a-muster-handset).
 
 Open the muster agent on the phone, mint a pairing code on the console, type the
 six digits, and **vouch by comparing the key fingerprint on both screens**. The
@@ -292,7 +294,7 @@ another factory reset.
 
 ```sh
 uv run --group dev python -m muster.cli provision <serial> \
-    --apk /path/to/app-debug.apk \
+    --apk /path/to/agent.apk \
     --also-install /path/to/zippie-companion.apk \
     --package app.zippie.companion \
     --server-url https://muster.example.invalid

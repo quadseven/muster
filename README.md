@@ -141,3 +141,4 @@ A merge deploys nothing, to the server or to the site.
   deployment. Parts are stale.
 - [docs/provisioning-a-pixel.md](docs/provisioning-a-pixel.md),
   [docs/signing-ceremony.md](docs/signing-ceremony.md).
+- [Company-owned Android enrollment and recovery](docs/company-owned-android.md).
