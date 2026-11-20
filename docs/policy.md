@@ -230,10 +230,10 @@ provisioning QR carries, and `passphrase` is required unless it is `NONE`.
 are refused: never served, and a log line names the file (never its content).
 A device file that does not parse is likewise not served, with a log line saying
 why; the rest of that device's configuration is unaffected. This includes a file
-that cannot be read or is not valid UTF-8: wifi is the one managed file where an
-unreadable file is treated as unparsable rather than failing the whole config
-with a 503 (every other managed file keeps that rule). Neither the log nor
-a metric ever carries the passphrase.
+that cannot be read, is not valid UTF-8, or exceeds the 1 MiB policy file limit.
+Wifi is the one managed file where an unreadable file is treated as unparsable
+rather than failing the whole config with a 503 (every other managed file
+keeps that rule). Neither the log nor a metric ever carries the passphrase.
 
 **On the device.** `WifiSteward` adds or updates the network as Device Owner
 when the file is served, and changes nothing when the file is identical to the

@@ -1830,10 +1830,23 @@ synchronized clocks, and a revocation younger than the backdate carries a
 revocationDate after thisUpdate, which RFC 5280 permits and a longer backdate
 makes common.
 
-**Still open.** The CRL carries no CRLNumber, and issued certificates carry no
-AuthorityKeyIdentifier or SubjectKeyIdentifier (muster#230 items 7 and 9). Both
-change every artifact a relying party sees and wait on a handset check or a
-recorded non-conformance.
+**Accepted non-conformance (2026-11-20, #230 items 7 and 9).** Keep the
+current CRL and device certificate formats. RFC 5280 section 5.2.3 requires
+CRLNumber. Without it, a relying party cannot use a sequence number to tell
+which CRL supersedes another. Section 4.2.1.1 requires AuthorityKeyIdentifier
+on issued device certificates, and section 4.2.1.2 recommends
+SubjectKeyIdentifier for end-entity certificates. The CRL carries
+AuthorityKeyIdentifier. Relying parties that enforce the omitted requirements
+may reject the CRL or the device certificate.
+
+The OpenSSL check recorded in `docs/state-of-play.md` consumed an unnumbered
+CRL. Muster's own device proof verifies certificates against the configured
+issuer (`server/muster/proof.py`, `Proofs.verify`). This decision preserves the
+existing artifact formats without assuming compatibility with stricter
+relying parties. Revisit when a relying party requires these extensions. The
+CRL is signed on demand, so numbering would need to increase across issuer
+replicas and restarts. Check enrollment and renewal on a handset before
+shipping a device certificate format change.
 
 ## Running more than one replica
 

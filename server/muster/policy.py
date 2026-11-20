@@ -780,10 +780,9 @@ class Policies:
         it holds a passphrase, and the operator who wrote it expects devices to
         join a network, so ignoring it silently would be the "configured but
         absent" failure. The log names the file and never its content.
-        A file that does not parse, or cannot be read or decoded as UTF-8, is
-        not served either, and the log says why with fixed text and no value;
-        the rest of the answer is unaffected (the one managed file where an
-        unreadable file does not raise Unreadable).
+        The file must fit the policy size limit, decode as UTF-8, and parse.
+        On failure, the log gives a reason without file content and the rest
+        of the device's configuration is still served.
         """
         refused = [f"{KITH_SCOPE}.{WIFI_FILE}"]
         if role:
@@ -800,8 +799,9 @@ class Policies:
         if not mine.is_file():
             return None
         try:
-            text = mine.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            # Preserve the universal newline handling of read_text.
+            text = _read(mine).replace("\r\n", "\n").replace("\r", "\n")
+        except Unreadable:
             # Unlike every other managed file (see `_read`), an unreadable wifi
             # file is treated as unparsable: not served, and the rest of the
             # device's configuration still is. The reason is fixed text; the
@@ -809,7 +809,7 @@ class Policies:
             telemetry.event(
                 "muster will not serve a wifi file it cannot parse",
                 key_id=key_id,
-                reason="the file could not be read as UTF-8 text",
+                reason="the file could not be read as UTF-8 within the policy size limit",
             )
             return None
         try:
