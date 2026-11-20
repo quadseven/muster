@@ -920,6 +920,15 @@ def test_a_wifi_file_that_is_not_utf8_is_not_served_but_the_rest_is(root):
     assert "restrictions" in served.files
 
 
+def test_a_wifi_file_past_the_size_cap_is_not_served_but_the_rest_is(root):
+    _shared(root, "restrictions").write_text("DISALLOW_SAFE_BOOT\n")
+    _own(root, A, "wifi").write_text(_WIFI + "#" + "x" * policy.MAX_BYTES)
+
+    served = policy.Policies(root=root).for_device(A)
+
+    assert served.files.keys() == {"restrictions"}
+
+
 def test_a_malformed_wifi_log_event_never_carries_the_passphrase(root, monkeypatch):
     secret = "pw-SECRET-c0ffee-9d1"
     events = []
