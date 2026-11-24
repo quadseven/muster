@@ -5999,3 +5999,22 @@ def test_a_stored_role_that_is_not_a_role_is_a_503_not_a_500(state, tmp_path, mo
     assert response.status_code == 503
     assert "DISALLOW_SAFE_BOOT" not in response.text
     assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_gzip_compresses_large_responses_and_preserves_middleware_order(state):
+    app = create_app(state)
+    console.assert_middleware_order(app)
+
+    with TestClient(app) as client:
+        large_gzip = client.get("/", headers={"Accept-Encoding": "gzip"})
+        large_plain = client.get("/", headers={"Accept-Encoding": "identity"})
+        small_gzip = client.get("/livez", headers={"Accept-Encoding": "gzip"})
+
+    assert large_gzip.status_code == 200
+    assert len(large_plain.content) >= 1000
+    assert large_gzip.headers.get("content-encoding") == "gzip"
+    assert "accept-encoding" in large_gzip.headers.get("vary", "").lower()
+    assert large_plain.headers.get("content-encoding") is None
+    assert small_gzip.status_code == 200
+    assert len(small_gzip.content) < 1000
+    assert small_gzip.headers.get("content-encoding") is None
