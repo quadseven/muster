@@ -6018,3 +6018,56 @@ def test_gzip_compresses_large_responses_and_preserves_middleware_order(state):
     assert small_gzip.status_code == 200
     assert len(small_gzip.content) < 1000
     assert small_gzip.headers.get("content-encoding") is None
+
+
+# Over GZipMiddleware's minimum_size and highly compressible, so the only thing
+# that can keep these bodies uncompressed is the content-type exclusion.
+_LARGE_BODY = b"\x00" * 8192
+
+
+def test_revocation_artifacts_and_the_apk_are_never_gzipped(
+    state, tmp_path, monkeypatch
+):
+    from muster import revocation  # noqa: PLC0415
+
+    def large(*_args):
+        return revocation.Artifact(_LARGE_BODY, None, None)
+
+    monkeypatch.setattr(revocation.Responder, "crl", large)
+    monkeypatch.setattr(revocation.Responder, "ocsp", large)
+    apk = tmp_path / "agent.apk"
+    apk.write_bytes(_LARGE_BODY)
+    state.agent_apk = str(apk)
+    crl_url = urllib.parse.urlsplit(state.authority.crl_url)
+    ocsp_url = urllib.parse.urlsplit(state.authority.ocsp_url)
+    gzip = {"Accept-Encoding": "gzip"}
+
+    with TestClient(create_app(state)) as client:
+        responses = {
+            "application/pkix-crl": client.get(
+                crl_url.path or "/",
+                headers={**gzip, "host": crl_url.hostname or ""},
+            ),
+            "application/ocsp-response": client.post(
+                ocsp_url.path or "/",
+                content=b"\x30\x00",
+                headers={
+                    **gzip,
+                    "host": ocsp_url.hostname or "",
+                    "content-type": "application/ocsp-request",
+                },
+            ),
+            "application/vnd.android.package-archive": client.get(
+                "/agent.apk", headers=gzip
+            ),
+        }
+        json_route = client.get("/openapi.json", headers=gzip)
+
+    for media_type, response in responses.items():
+        assert response.status_code == 200, media_type
+        assert response.headers["content-type"] == media_type
+        assert response.headers.get("content-encoding") is None, media_type
+        assert response.content == _LARGE_BODY, media_type
+    assert json_route.status_code == 200
+    assert json_route.headers["content-type"] == "application/json"
+    assert json_route.headers.get("content-encoding") == "gzip"
