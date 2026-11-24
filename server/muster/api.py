@@ -101,6 +101,7 @@ import threading
 from dataclasses import dataclass, field
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from starlette.concurrency import run_in_threadpool
 
 from muster.ca import Authority
@@ -273,6 +274,10 @@ def create_app(state: State) -> FastAPI:
     routes_revocation.register(app, state)
     # Before any route is registered, and in an order this asserts: who is
     # acting has to be established before anything writes down what they did.
+    # GZipMiddleware sits inside BaseHTTPMiddleware so it sees each route's
+    # Content-Length and enforces minimum_size instead of treating wrapped
+    # responses as unbounded streams.
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
     console.install_middleware(app, state)
     admin = Depends(_require_admin(state))
 
