@@ -14,6 +14,7 @@ from email.utils import format_datetime
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request, Response
+from starlette.concurrency import run_in_threadpool
 from starlette.routing import Host, Route, Router
 
 from muster import kith as kith_store
@@ -62,7 +63,7 @@ def register(app: FastAPI, state: State) -> None:
 
     async def crl(_request: Request) -> Response:
         try:
-            artifact = responder.crl()
+            artifact = await run_in_threadpool(responder.crl)
         except kith_store.Unreachable as exc:
             # AN EMPTY CRL IS AN AUTHORITATIVE LIE. During a store outage the
             # only safe answer is no artifact, so a cache cannot replace a
@@ -161,7 +162,7 @@ async def _ocsp_response(
     if len(request_der) > 16 * 1024:
         request_der = b""
     try:
-        artifact = responder.ocsp(request_der)
+        artifact = await run_in_threadpool(responder.ocsp, request_der)
     except kith_store.Unreachable:
         # RFC 6960 has a signed-protocol answer for this exact condition. It is
         # deliberately not cached: the store may recover before the next poll.

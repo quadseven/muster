@@ -101,6 +101,8 @@ import threading
 from dataclasses import dataclass, field
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
+from starlette.middleware.gzip import DEFAULT_EXCLUDED_CONTENT_TYPES
 from starlette.concurrency import run_in_threadpool
 
 from muster.ca import Authority
@@ -126,6 +128,19 @@ CHECK_IN_METRIC_INTERVAL_S = float(
 )
 if CHECK_IN_METRIC_INTERVAL_S <= 0:
     raise ValueError("MUSTER_CHECK_IN_METRIC_INTERVAL_S must be positive")
+
+# NEVER GZIPPED: the signed and binary bodies. A CRL or OCSP answer is DER that
+# relying parties fetch with minimal HTTP clients, and one that skips
+# Content-Encoding parses gzip bytes as DER and fails the revocation check. The
+# APK is already a zip: compressing it again costs CPU in the process that holds
+# the CA and changes the bytes Android's setup wizard downloads. Starlette's own
+# defaults (images, archives, event streams) stay excluded alongside these.
+GZIP_EXCLUDED_CONTENT_TYPES = (
+    *DEFAULT_EXCLUDED_CONTENT_TYPES,
+    "application/pkix-crl",
+    "application/ocsp-response",
+    "application/vnd.android.package-archive",
+)
 
 
 @dataclass
@@ -273,6 +288,14 @@ def create_app(state: State) -> FastAPI:
     routes_revocation.register(app, state)
     # Before any route is registered, and in an order this asserts: who is
     # acting has to be established before anything writes down what they did.
+    # GZipMiddleware sits inside BaseHTTPMiddleware so it sees each route's
+    # Content-Length and enforces minimum_size instead of treating wrapped
+    # responses as unbounded streams.
+    app.add_middleware(
+        GZipMiddleware,
+        minimum_size=1000,
+        exclude_content_types=GZIP_EXCLUDED_CONTENT_TYPES,
+    )
     console.install_middleware(app, state)
     admin = Depends(_require_admin(state))
 
