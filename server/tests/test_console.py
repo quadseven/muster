@@ -719,6 +719,15 @@ def test_the_console_does_not_contradict_what_the_server_does_with_an_erase(clie
     assert "revoked if it was revoked before the erase" in body
 
 
+def test_a_device_can_be_armed_for_one_short_renewal_from_the_console(client):
+    """The served page offers the one-shot renewal and explains its scope."""
+    body = client.get("/").text
+
+    assert "Arm short renewal" in body
+    assert "/short-renewal" in body
+    assert "Later renewals use the normal lifetime." in body
+
+
 def test_a_revoked_device_can_be_readmitted_from_the_same_row(client):
     """Revocation is reversible by design (muster#11, D27), and the console was
     the one place where it was not: a revoked row showed a disabled button

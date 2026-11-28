@@ -896,6 +896,12 @@
     rename.onclick = () => openDeviceAction(device, 'rename');
     actions.append(rename);
 
+    const shortRenewal = document.createElement('button');
+    shortRenewal.className = 'action';
+    shortRenewal.textContent = 'Arm short renewal';
+    shortRenewal.onclick = () => openDeviceAction(device, 'short-renewal');
+    actions.append(shortRenewal);
+
     // WHAT THE SERVER OFFERS, NOT WHAT THIS PAGE DECIDES (muster#217). Each
     // roll entry carries `offered`, the administrator verbs `standing.offered`
     // allows from this device's standing, and every button below is drawn
@@ -1154,6 +1160,14 @@
       confirm: 'Reboot device',
       path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/reboot',
       body: { reboot: true },
+    },
+    'short-renewal': {
+      question: 'Arm a short renewal for this device?',
+      lede: 'The next check-in can renew this device with a short-lived certificate. '
+        + 'Its current certificate stays in place until it renews. Later renewals use the normal lifetime.',
+      confirm: 'Arm short renewal',
+      path: (device) => '/v1/kith/' + encodeURIComponent(device.key_id) + '/short-renewal',
+      body: { armed: true },
     },
     'cancel-reboot': {
       question: 'Call off this reboot?',
